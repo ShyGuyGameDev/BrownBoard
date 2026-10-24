@@ -1,36 +1,27 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Pencil, PenTool, Plus, Search, Trash2, X } from 'lucide-react'
 import { supabase } from './lib/supabase'
+import { useRoom } from './lib/room.tsx'
+import { bus, isTyping, toast } from './lib/bus.ts'
+import {
+  DEFAULT_STATUS,
+  DEFAULT_URGENCY,
+  type TaskOption,
+  type TaskOptionType,
+  badgeStyle,
+  resolveOption,
+  rowToOption,
+  slugify,
+  splitCustom,
+} from './lib/options.ts'
 
-type DefaultStatus = 'not_started' | 'in_progress' | 'completed' | 'tabled'
-type DefaultUrgency = 'critical' | 'high' | 'medium' | 'low' | 'tabled'
-type TaskStatus = DefaultStatus | string
-type TaskUrgency = DefaultUrgency | string
-type TaskOptionType = 'status' | 'urgency'
-
-interface TaskOption {
-  id?: string
-  value: string
-  label: string
-  color: string
-  badgeClass?: string
-  dotClass?: string
-  type: TaskOptionType
-  isCustom?: boolean
-}
-
-type DbCategory = {
-  id: string
-  name: string
-  position: number | null
-}
-
+type DbCategory = { id: string; name: string; position: number | null }
 type DbTask = {
   id: string
   title: string
   description: string | null
-  status: TaskStatus
-  urgency?: TaskUrgency | null
+  status: string
+  urgency?: string | null
   category_id: string
   position: number | null
 }
@@ -39,8 +30,8 @@ interface Task {
   id: string
   title: string
   description: string
-  status: TaskStatus
-  urgency: TaskUrgency
+  status: string
+  urgency: string
   categoryId: string
   position: number
 }
@@ -52,1066 +43,710 @@ interface Category {
   tasks: Task[]
 }
 
-const toTitleCase = (value: string) =>
-  value
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-
-const slugify = (value: string) => {
-  const base = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
-  return base || `custom_${Date.now()}`
-}
-
-const hexToRgba = (hex: string, alpha: number) => {
-  let clean = hex.replace('#', '')
-  if (clean.length === 3) {
-    clean = clean
-      .split('')
-      .map((c) => c + c)
-      .join('')
-  }
-  if (clean.length !== 6) return `rgba(107, 114, 128, ${alpha})`
-  const num = parseInt(clean, 16)
-  const r = (num >> 16) & 255
-  const g = (num >> 8) & 255
-  const b = num & 255
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`
-}
-
-const getContrastTextColor = (hex: string) => {
-  let clean = hex.replace('#', '')
-  if (clean.length === 3) {
-    clean = clean
-      .split('')
-      .map((c) => c + c)
-      .join('')
-  }
-  if (clean.length !== 6) return '#111827'
-  const num = parseInt(clean, 16)
-  const r = (num >> 16) & 255
-  const g = (num >> 8) & 255
-  const b = num & 255
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-  return luminance > 0.6 ? '#111827' : '#ffffff'
-}
-
-const DEFAULT_STATUS_OPTIONS: TaskOption[] = [
-  {
-    value: 'not_started',
-    label: 'Not started',
-    color: '#6b7280',
-    badgeClass: 'bg-gray-200 text-gray-700',
-    dotClass: 'bg-gray-500',
-    type: 'status',
-  },
-  {
-    value: 'in_progress',
-    label: 'In progress',
-    color: '#f59e0b',
-    badgeClass: 'bg-amber-100 text-amber-800',
-    dotClass: 'bg-amber-500',
-    type: 'status',
-  },
-  {
-    value: 'completed',
-    label: 'Completed',
-    color: '#10b981',
-    badgeClass: 'bg-emerald-100 text-emerald-800',
-    dotClass: 'bg-emerald-500',
-    type: 'status',
-  },
-  {
-    value: 'tabled',
-    label: 'Tabled',
-    color: '#3b82f6',
-    badgeClass: 'bg-blue-100 text-blue-800',
-    dotClass: 'bg-blue-500',
-    type: 'status',
-  },
-]
-
-const DEFAULT_URGENCY_OPTIONS: TaskOption[] = [
-  {
-    value: 'critical',
-    label: 'Critical',
-    color: '#ef4444',
-    badgeClass: 'bg-red-100 text-red-800',
-    dotClass: 'bg-red-500',
-    type: 'urgency',
-  },
-  {
-    value: 'high',
-    label: 'High',
-    color: '#f97316',
-    badgeClass: 'bg-orange-100 text-orange-800',
-    dotClass: 'bg-orange-500',
-    type: 'urgency',
-  },
-  {
-    value: 'medium',
-    label: 'Medium',
-    color: '#eab308',
-    badgeClass: 'bg-yellow-100 text-yellow-800',
-    dotClass: 'bg-yellow-500',
-    type: 'urgency',
-  },
-  {
-    value: 'low',
-    label: 'Low',
-    color: '#22c55e',
-    badgeClass: 'bg-green-100 text-green-800',
-    dotClass: 'bg-green-500',
-    type: 'urgency',
-  },
-  {
-    value: 'tabled',
-    label: 'Tabled',
-    color: '#3b82f6',
-    badgeClass: 'bg-blue-100 text-blue-800',
-    dotClass: 'bg-blue-500',
-    type: 'urgency',
-  },
-]
-
-const mapTask = (task: DbTask): Task => ({
-  id: task.id,
-  title: task.title,
-  description: task.description || '',
-  status: task.status,
-  urgency: task.urgency ?? 'medium',
-  categoryId: task.category_id,
-  position: task.position ?? 0,
+const mapTask = (t: DbTask): Task => ({
+  id: t.id,
+  title: t.title,
+  description: t.description || '',
+  status: t.status,
+  urgency: t.urgency ?? 'medium',
+  categoryId: t.category_id,
+  position: t.position ?? 0,
 })
 
 const buildBoard = (categories: DbCategory[], tasks: DbTask[]): Category[] => {
-  const sortedCats = [...categories].sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-  const buckets = new Map<string, Task[]>()
-  sortedCats.forEach((cat) => buckets.set(cat.id, []))
-
+  const cats = [...categories].sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+  const buckets = new Map<string, Task[]>(cats.map((c) => [c.id, []]))
   tasks
     .map(mapTask)
     .sort((a, b) => a.position - b.position)
-    .forEach((task) => {
-      const bucket = buckets.get(task.categoryId)
-      if (bucket) bucket.push(task)
-    })
-
-  return sortedCats.map((cat) => ({
-    id: cat.id,
-    name: cat.name,
-    position: cat.position ?? 0,
-    tasks: buckets.get(cat.id) ?? [],
-  }))
+    .forEach((t) => buckets.get(t.categoryId)?.push(t))
+  return cats.map((c) => ({ id: c.id, name: c.name, position: c.position ?? 0, tasks: buckets.get(c.id) ?? [] }))
 }
 
-export const KanbanBoard: React.FC = () => {
+interface MenuState {
+  kind: TaskOptionType
+  taskId: string
+  categoryId: string
+  x: number
+  y: number
+}
+
+export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) => {
+  const { roomId, send, on } = useRoom()
+
   const [categories, setCategories] = useState<Category[]>([])
-  const [newCategoryName, setNewCategoryName] = useState('')
-  const [newTaskInputs, setNewTaskInputs] = useState<Record<string, string>>({})
-  const [statusMenu, setStatusMenu] = useState<{ taskId: string; categoryId: string } | null>(null)
-  const [urgencyMenu, setUrgencyMenu] = useState<{ taskId: string; categoryId: string } | null>(null)
-  const [draggedTask, setDraggedTask] = useState<{ taskId: string; fromCategoryId: string } | null>(null)
-  const [editingTask, setEditingTask] = useState<{
-    taskId: string
-    categoryId: string
-    title: string
-    description: string
-  } | null>(null)
-  const [customStatusOptions, setCustomStatusOptions] = useState<TaskOption[]>([])
-  const [customUrgencyOptions, setCustomUrgencyOptions] = useState<TaskOption[]>([])
-  const [addOptionForm, setAddOptionForm] = useState<{
-    open: boolean
-    type: TaskOptionType
-    label: string
-    color: string
-    anchorTaskId?: string
-    anchorCategoryId?: string
-  }>({ open: false, type: 'status', label: '', color: '#3b82f6' })
-  const [savingOption, setSavingOption] = useState(false)
+  const categoriesRef = useRef<Category[]>([])
+  categoriesRef.current = categories
+
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
 
-  const maxCategoryPosition = useMemo(
-    () => Math.max(0, ...(categories.map((c) => c.position).filter((p) => typeof p === 'number') as number[])),
-    [categories],
-  )
+  const [addingList, setAddingList] = useState(false)
+  const [newListName, setNewListName] = useState('')
+  const [renamingCat, setRenamingCat] = useState<{ id: string; name: string } | null>(null)
+  const [newTaskInputs, setNewTaskInputs] = useState<Record<string, string>>({})
+  const [editingTask, setEditingTask] = useState<{ id: string; title: string; description: string } | null>(null)
 
-  const mapOptionRow = (row: any): TaskOption => ({
-    id: row.id,
-    value: row.value,
-    label: row.label,
-    color: row.color || '#6b7280',
-    type: row.type as TaskOptionType,
-    isCustom: true,
-  })
+  const [customStatus, setCustomStatus] = useState<TaskOption[]>([])
+  const [customUrgency, setCustomUrgency] = useState<TaskOption[]>([])
+  const [menu, setMenu] = useState<MenuState | null>(null)
+  const [optForm, setOptForm] = useState<{ label: string; color: string } | null>(null)
 
-  const loadTaskOptions = useCallback(async () => {
-    const { data, error: optionsError } = await supabase
-      .from('task_options')
-      .select('*')
-      .order('created_at', { ascending: true })
+  const [dragId, setDragId] = useState<string | null>(null)
+  const dragRef = useRef<{ taskId: string } | null>(null)
+  const [dropAt, setDropAt] = useState<{ cat: string; index: number } | null>(null)
+  const dropAtRef = useRef<{ cat: string; index: number } | null>(null)
+  const [flashId, setFlashId] = useState<string | null>(null)
 
-    if (optionsError) {
-      setError(optionsError.message)
-      return
-    }
+  const statusOptions = useMemo(() => [...DEFAULT_STATUS, ...customStatus], [customStatus])
+  const urgencyOptions = useMemo(() => [...DEFAULT_URGENCY, ...customUrgency], [customUrgency])
 
-    if (data) {
-      const defaultStatusValues = new Set(DEFAULT_STATUS_OPTIONS.map((o) => o.value))
-      const defaultUrgencyValues = new Set(DEFAULT_URGENCY_OPTIONS.map((o) => o.value))
-      const customStatus = data.filter((row) => row.type === 'status' && !defaultStatusValues.has(row.value)).map(mapOptionRow)
-      const customUrgency = data
-        .filter((row) => row.type === 'urgency' && !defaultUrgencyValues.has(row.value))
-        .map(mapOptionRow)
+  /** Tell everyone else (and the canvas in this window) that board data changed. */
+  const sync = useCallback(() => send('board', {}, true), [send])
 
-      setCustomStatusOptions(customStatus)
-      setCustomUrgencyOptions(customUrgency)
-    }
+  const fail = useCallback((message: string) => {
+    setError(message)
+    toast(message)
   }, [])
 
-  const statusOptions = useMemo(
-    () => [...DEFAULT_STATUS_OPTIONS, ...customStatusOptions],
-    [customStatusOptions],
-  )
+  // ---------- loading ----------
 
-  const urgencyOptions = useMemo(
-    () => [...DEFAULT_URGENCY_OPTIONS, ...customUrgencyOptions],
-    [customUrgencyOptions],
-  )
-
-  const resetAddOptionForm = useCallback(() => {
-    setAddOptionForm({ open: false, type: 'status', label: '', color: '#3b82f6' })
-    setSavingOption(false)
-  }, [])
-
-  const ensureOption = useCallback(
-    (options: TaskOption[], value: string | null | undefined, type: TaskOptionType): TaskOption => {
-      if (!value) return { value: '', label: 'Unknown', color: '#6b7280', type }
-      const found = options.find((o) => o.value === value)
-      if (found) return found
-      return {
-        value,
-        label: toTitleCase(value),
-        color: '#6b7280',
-        type,
-        isCustom: true,
+  const loadBoard = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true)
+      const [c, t, o] = await Promise.all([
+        supabase.from('categories').select('*').eq('room_id', roomId).order('position', { ascending: true }),
+        supabase.from('tasks').select('*').eq('room_id', roomId).order('position', { ascending: true }),
+        supabase.from('task_options').select('*').eq('room_id', roomId).order('created_at', { ascending: true }),
+      ])
+      if (c.error || t.error) {
+        setError(c.error?.message || t.error?.message || 'Unable to load the board')
+        setLoading(false)
+        return
       }
-    },
-    [],
-  )
-
-  const getBadgeClass = (option: TaskOption) => option.badgeClass ?? ''
-  const getBadgeStyle = (option: TaskOption) =>
-    option.badgeClass
-      ? undefined
-      : {
-          backgroundColor: hexToRgba(option.color, 0.16),
-          color: getContrastTextColor(option.color),
-        }
-  const getDotClass = (option: TaskOption) => option.dotClass ?? ''
-  const getDotStyle = (option: TaskOption) => (option.dotClass ? undefined : { backgroundColor: option.color })
-
-  const loadBoard = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    const [{ data: categoryData, error: categoryError }, { data: taskData, error: taskError }] = await Promise.all([
-      supabase.from('categories').select('*').order('position', { ascending: true }),
-      supabase.from('tasks').select('*').order('position', { ascending: true }),
-    ])
-
-    if (categoryError || taskError) {
-      setError(categoryError?.message || taskError?.message || 'Unable to load board')
+      setError(null)
+      setCategories(buildBoard(c.data || [], t.data || []))
+      if (o.data) {
+        const split = splitCustom(o.data)
+        setCustomStatus(split.status)
+        setCustomUrgency(split.urgency)
+      }
       setLoading(false)
-      return
-    }
-
-    setCategories(buildBoard(categoryData || [], taskData || []))
-    setLoading(false)
-  }, [])
+    },
+    [roomId],
+  )
 
   useEffect(() => {
     loadBoard()
-    loadTaskOptions()
-  }, [loadBoard, loadTaskOptions])
+  }, [loadBoard])
+
+  // Live updates from teammates (debounced, and never mid-drag).
+  useEffect(() => {
+    let timer: number | undefined
+    const off = on('board', (_payload, fromSelf) => {
+      if (fromSelf) return
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        if (!dragRef.current) loadBoard(true)
+      }, 150)
+    })
+    return () => {
+      off()
+      window.clearTimeout(timer)
+    }
+  }, [on, loadBoard])
+
+  // Jump here from a task card on the canvas.
+  useEffect(() => {
+    return bus.on('board:focus-task', ({ taskId }: { taskId: string }) => {
+      setQuery('')
+      setFlashId(taskId)
+      window.setTimeout(() => {
+        document.getElementById(`task-${taskId}`)?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
+      }, 60)
+      window.setTimeout(() => setFlashId(null), 2200)
+    })
+  }, [])
+
+  // "/" focuses search.
+  useEffect(() => {
+    if (!active) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === '/' && !e.metaKey && !e.ctrlKey && !isTyping(e)) {
+        e.preventDefault()
+        searchRef.current?.focus()
+      } else if (e.key === 'Escape') {
+        setMenu(null)
+        setOptForm(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [active])
+
+  // ---------- categories ----------
 
   const addCategory = async () => {
-    const trimmed = newCategoryName.trim()
-    if (!trimmed) return
-
-    const position = maxCategoryPosition + 1
-    const { data, error: insertError } = await supabase
-      .from('categories')
-      .insert({ name: trimmed, position })
-      .select()
-      .single()
-
-    if (insertError) {
-      setError(insertError.message)
-      return
-    }
-
+    const name = newListName.trim()
+    if (!name) return
+    const position = Math.max(0, ...categories.map((c) => c.position)) + 1
+    const { data, error: err } = await supabase.from('categories').insert({ name, position, room_id: roomId }).select().single()
+    if (err) return fail(err.message)
     if (data) {
       setCategories((prev) => [...prev, { id: data.id, name: data.name, position: data.position ?? position, tasks: [] }])
-      setNewCategoryName('')
+      setNewListName('')
+      setAddingList(false)
+      sync()
     }
   }
+
+  const renameCategory = async () => {
+    if (!renamingCat) return
+    const name = renamingCat.name.trim()
+    const id = renamingCat.id
+    setRenamingCat(null)
+    if (!name) return
+    setCategories((prev) => prev.map((c) => (c.id === id ? { ...c, name } : c)))
+    const { error: err } = await supabase.from('categories').update({ name }).eq('id', id)
+    if (err) {
+      fail(err.message)
+      loadBoard(true)
+    } else sync()
+  }
+
+  const deleteCategory = async (cat: Category) => {
+    if (cat.tasks.length > 0 && !window.confirm(`Delete "${cat.name}" and its ${cat.tasks.length} task(s)?`)) return
+    setCategories((prev) => prev.filter((c) => c.id !== cat.id))
+    const r1 = await supabase.from('tasks').delete().eq('category_id', cat.id)
+    if (r1.error) {
+      fail(r1.error.message)
+      loadBoard(true)
+      return
+    }
+    const r2 = await supabase.from('categories').delete().eq('id', cat.id)
+    if (r2.error) {
+      fail(r2.error.message)
+      loadBoard(true)
+    } else sync()
+  }
+
+  // ---------- tasks ----------
 
   const addTask = async (categoryId: string) => {
     const title = newTaskInputs[categoryId]?.trim()
     if (!title) return
-
-    const category = categories.find((c) => c.id === categoryId)
-    const position = category ? category.tasks.length : 0
-
-    const { data, error: insertError } = await supabase
+    const cat = categories.find((c) => c.id === categoryId)
+    const position = cat ? cat.tasks.length : 0
+    setNewTaskInputs((prev) => ({ ...prev, [categoryId]: '' }))
+    const { data, error: err } = await supabase
       .from('tasks')
-      .insert({ title, status: 'not_started', urgency: 'medium', category_id: categoryId, position })
+      .insert({ title, status: 'not_started', urgency: 'medium', category_id: categoryId, position, room_id: roomId })
       .select()
       .single()
-
-    if (insertError) {
-      setError(insertError.message)
-      return
-    }
-
+    if (err) return fail(err.message)
     if (data) {
       const mapped = mapTask(data)
-      setCategories((prev) =>
-        prev.map((cat) => (cat.id === categoryId ? { ...cat, tasks: [...cat.tasks, mapped] } : cat)),
-      )
-      setNewTaskInputs((prev) => {
-        const next = { ...prev }
-        delete next[categoryId]
-        return next
-      })
+      setCategories((prev) => prev.map((c) => (c.id === categoryId ? { ...c, tasks: [...c.tasks, mapped] } : c)))
+      sync()
     }
   }
 
-  const updateTaskStatus = async (categoryId: string, taskId: string, status: TaskStatus) => {
+  const patchTask = async (taskId: string, patch: Partial<Pick<Task, 'status' | 'urgency' | 'title' | 'description'>>) => {
     setCategories((prev) =>
-      prev.map((cat) =>
-        cat.id === categoryId
-          ? { ...cat, tasks: cat.tasks.map((t) => (t.id === taskId ? { ...t, status } : t)) }
-          : cat,
-      ),
+      prev.map((c) => ({ ...c, tasks: c.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)) })),
     )
-
-    const { error: updateError } = await supabase.from('tasks').update({ status }).eq('id', taskId)
-    if (updateError) {
-      setError(updateError.message)
-      loadBoard()
-    }
-
-    setStatusMenu(null)
+    const dbPatch: Record<string, unknown> = { ...patch }
+    if ('description' in patch) dbPatch.description = patch.description?.trim() || null
+    const { error: err } = await supabase.from('tasks').update(dbPatch).eq('id', taskId)
+    if (err) {
+      fail(err.message)
+      loadBoard(true)
+    } else sync()
   }
 
-  const updateTaskUrgency = async (categoryId: string, taskId: string, urgency: TaskUrgency) => {
-    setCategories((prev) =>
-      prev.map((cat) =>
-        cat.id === categoryId
-          ? { ...cat, tasks: cat.tasks.map((t) => (t.id === taskId ? { ...t, urgency } : t)) }
-          : cat,
-      ),
-    )
-
-    const { error: updateError } = await supabase.from('tasks').update({ urgency }).eq('id', taskId)
-    if (updateError) {
-      setError(updateError.message)
-      loadBoard()
-    }
-
-    setUrgencyMenu(null)
-  }
-
-  const openAddOptionForm = (type: TaskOptionType, categoryId: string, taskId: string) => {
-    setAddOptionForm({
-      open: true,
-      type,
-      label: '',
-      color: '#3b82f6',
-      anchorCategoryId: categoryId,
-      anchorTaskId: taskId,
-    })
-  }
-
-  const saveNewOption = async () => {
-    if (!addOptionForm.open) return
-    const trimmedLabel = addOptionForm.label.trim()
-    if (!trimmedLabel) return
-    const color = addOptionForm.color || '#3b82f6'
-    setSavingOption(true)
-
-    const { data, error: insertError } = await supabase
-      .from('task_options')
-      .insert({
-        type: addOptionForm.type,
-        value: slugify(trimmedLabel),
-        label: trimmedLabel,
-        color,
-      })
-      .select()
-      .single()
-
-    if (insertError) {
-      setError(insertError.message)
-      setSavingOption(false)
-      return
-    }
-
-    const mapped = data ? mapOptionRow(data) : null
-    if (mapped) {
-      if (mapped.type === 'status') {
-        setCustomStatusOptions((prev) => [...prev, mapped])
-      } else {
-        setCustomUrgencyOptions((prev) => [...prev, mapped])
-      }
-
-      if (addOptionForm.anchorCategoryId && addOptionForm.anchorTaskId) {
-        if (mapped.type === 'status') {
-          updateTaskStatus(addOptionForm.anchorCategoryId, addOptionForm.anchorTaskId, mapped.value)
-        } else {
-          updateTaskUrgency(addOptionForm.anchorCategoryId, addOptionForm.anchorTaskId, mapped.value as TaskUrgency)
-        }
-      }
-    }
-
-    setSavingOption(false)
-    resetAddOptionForm()
-  }
-
-  const updateTaskDetails = async (categoryId: string, taskId: string, title: string, description: string) => {
-    const trimmedTitle = title.trim()
-    if (!trimmedTitle) return
-
-    setCategories((prev) =>
-      prev.map((cat) =>
-        cat.id === categoryId
-          ? {
-              ...cat,
-              tasks: cat.tasks.map((t) =>
-                t.id === taskId ? { ...t, title: trimmedTitle, description: description.trim() } : t,
-              ),
-            }
-          : cat,
-      ),
-    )
-
-    const { error: updateError } = await supabase
-      .from('tasks')
-      .update({ title: trimmedTitle, description: description.trim() || null })
-      .eq('id', taskId)
-
-    if (updateError) {
-      setError(updateError.message)
-      loadBoard()
-    }
-
+  const saveEdit = () => {
+    if (!editingTask) return
+    const title = editingTask.title.trim()
+    if (title) patchTask(editingTask.id, { title, description: editingTask.description.trim() })
     setEditingTask(null)
   }
 
-  const deleteTask = async (taskId: string, categoryId: string) => {
-    setCategories((prev) =>
-      prev.map((cat) => (cat.id === categoryId ? { ...cat, tasks: cat.tasks.filter((t) => t.id !== taskId) } : cat)),
-    )
-    const { error: deleteError } = await supabase.from('tasks').delete().eq('id', taskId)
-    if (deleteError) {
-      setError(deleteError.message)
-      loadBoard()
-    }
+  const deleteTask = async (taskId: string) => {
+    setCategories((prev) => prev.map((c) => ({ ...c, tasks: c.tasks.filter((t) => t.id !== taskId) })))
+    const { error: err } = await supabase.from('tasks').delete().eq('id', taskId)
+    if (err) {
+      fail(err.message)
+      loadBoard(true)
+    } else sync()
   }
 
-  const deleteCategory = async (categoryId: string) => {
-    setCategories((prev) => prev.filter((cat) => cat.id !== categoryId))
-    setNewTaskInputs((prev) => {
-      const next = { ...prev }
-      delete next[categoryId]
-      return next
-    })
-    setEditingTask((prev) => (prev?.categoryId === categoryId ? null : prev))
-    setStatusMenu((prev) => (prev?.categoryId === categoryId ? null : prev))
-    setUrgencyMenu((prev) => (prev?.categoryId === categoryId ? null : prev))
-
-    const { error: deleteTasksError } = await supabase.from('tasks').delete().eq('category_id', categoryId)
-    if (deleteTasksError) {
-      setError(deleteTasksError.message)
-      loadBoard()
-      return
-    }
-
-    const { error: deleteCategoryError } = await supabase.from('categories').delete().eq('id', categoryId)
-    if (deleteCategoryError) {
-      setError(deleteCategoryError.message)
-      loadBoard()
-    }
+  const sendToCanvas = (taskId: string) => {
+    bus.emit('nav', 'canvas')
+    // Give the canvas a frame to become active before it places the card.
+    window.setTimeout(() => bus.emit('canvas:add-task', { taskId }), 30)
   }
 
-  const handleDragStart = (taskId: string, categoryId: string, e: React.DragEvent<HTMLDivElement>) => {
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', taskId)
-    setDraggedTask({ taskId, fromCategoryId: categoryId })
-  }
+  // ---------- status / urgency menu ----------
 
-  const handleColumnDragOver = (e: React.DragEvent<HTMLDivElement>, categoryId: string) => {
-    e.preventDefault()
-    if (!draggedTask) return
-    if (draggedTask.fromCategoryId === categoryId) return
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-    e.currentTarget.classList.add('bg-blue-50')
-  }
-
-  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    e.currentTarget.classList.remove('bg-blue-50')
-  }
-
-  const handleTaskDragOver = (e: React.DragEvent<HTMLDivElement>, categoryId: string, targetTaskId: string) => {
-    e.preventDefault()
-    if (!draggedTask) return
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-    const isSameCategory = draggedTask.fromCategoryId === categoryId
-
-    setCategories((prev) => {
-      const sourceIndex = prev.findIndex((cat) => cat.id === draggedTask.fromCategoryId)
-      const targetIndex = prev.findIndex((cat) => cat.id === categoryId)
-      if (sourceIndex === -1 || targetIndex === -1) return prev
-
-      const sourceCat = prev[sourceIndex]
-      const targetCat = prev[targetIndex]
-
-      const sourceTasks = [...sourceCat.tasks]
-      const fromIdx = sourceTasks.findIndex((t) => t.id === draggedTask.taskId)
-      if (fromIdx === -1) return prev
-
-      const [movedTask] = sourceTasks.splice(fromIdx, 1)
-      const targetTasks = isSameCategory ? sourceTasks : [...targetCat.tasks]
-
-      const targetIdx = targetTasks.findIndex((t) => t.id === targetTaskId)
-      const insertIdx = targetIdx === -1 ? targetTasks.length : targetIdx
-
-      // Avoid no-op reorders
-      if (isSameCategory && insertIdx === fromIdx) return prev
-
-      targetTasks.splice(insertIdx, 0, { ...movedTask, categoryId })
-
-      const next = [...prev]
-      next[sourceIndex] = { ...sourceCat, tasks: isSameCategory ? targetTasks : sourceTasks }
-      next[targetIndex] = { ...targetCat, tasks: targetTasks }
-
-      return next
+  const openMenu = (e: React.MouseEvent<HTMLElement>, kind: TaskOptionType, taskId: string, categoryId: string) => {
+    e.stopPropagation()
+    const r = e.currentTarget.getBoundingClientRect()
+    setOptForm(null)
+    setMenu({
+      kind,
+      taskId,
+      categoryId,
+      x: Math.min(r.left, window.innerWidth - 232),
+      y: Math.min(r.bottom + 4, window.innerHeight - 340),
     })
   }
 
-  const handleDrop = async (categoryId: string, e: React.DragEvent<HTMLDivElement>) => {
+  const pick = (value: string) => {
+    if (!menu) return
+    patchTask(menu.taskId, menu.kind === 'status' ? { status: value } : { urgency: value })
+    setMenu(null)
+    setOptForm(null)
+  }
+
+  const createOption = async () => {
+    if (!menu || !optForm) return
+    const label = optForm.label.trim()
+    if (!label) return
+    const pool = menu.kind === 'status' ? statusOptions : urgencyOptions
+    const value = slugify(label)
+    const existing = pool.find((o) => o.value === value)
+    if (existing) return pick(existing.value)
+    const { data, error: err } = await supabase
+      .from('task_options')
+      .insert({ type: menu.kind, value, label, color: optForm.color, room_id: roomId })
+      .select()
+      .single()
+    if (err) return fail(err.message)
+    const opt = rowToOption(data)
+    if (menu.kind === 'status') setCustomStatus((p) => [...p, opt])
+    else setCustomUrgency((p) => [...p, opt])
+    pick(opt.value)
+  }
+
+  // ---------- drag and drop (move happens on drop, so the dragged node never remounts mid-drag) ----------
+
+  const setDrop = (v: { cat: string; index: number } | null) => {
+    dropAtRef.current = v
+    setDropAt(v)
+  }
+
+  const onCardDragOver = (e: React.DragEvent<HTMLElement>, catId: string, index: number) => {
+    if (!dragRef.current) return
     e.preventDefault()
-    e.currentTarget.classList.remove('bg-blue-50')
-    if (!draggedTask) return
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'move'
+    const r = e.currentTarget.getBoundingClientRect()
+    const idx = index + (e.clientY > r.top + r.height / 2 ? 1 : 0)
+    const cur = dropAtRef.current
+    if (!cur || cur.cat !== catId || cur.index !== idx) setDrop({ cat: catId, index: idx })
+  }
 
-    let sourceOrder: Task[] = []
-    let destinationOrder: Task[] = []
+  const onColumnDragOver = (e: React.DragEvent<HTMLElement>, cat: Category) => {
+    if (!dragRef.current) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    const cur = dropAtRef.current
+    if (!cur || cur.cat !== cat.id || cur.index !== cat.tasks.length) setDrop({ cat: cat.id, index: cat.tasks.length })
+  }
 
-    setCategories((prev) => {
-      const destination = prev.find((cat) => cat.id === categoryId)
-      const destinationHasTask = destination?.tasks.some((t) => t.id === draggedTask.taskId)
+  const endDrag = () => {
+    dragRef.current = null
+    setDragId(null)
+    setDrop(null)
+  }
 
-      if (destinationHasTask) {
-        const next = prev.map((cat) =>
-          cat.id === categoryId ? cat : { ...cat, tasks: cat.tasks.filter((t) => t.id !== draggedTask.taskId) },
-        )
-        sourceOrder = next.find((c) => c.id === draggedTask.fromCategoryId)?.tasks ?? []
-        destinationOrder = next.find((c) => c.id === categoryId)?.tasks ?? []
-        return next
-      }
+  const onDrop = (e: React.DragEvent<HTMLElement>) => {
+    e.preventDefault()
+    const drag = dragRef.current
+    const target = dropAtRef.current
+    endDrag()
+    if (!drag || !target) return
 
-      let taskToMove: Task | undefined
-      const stripped = prev.map((cat) => {
-        const remaining = cat.tasks.filter((t) => {
-          if (t.id === draggedTask.taskId) {
-            taskToMove = t
-            return false
-          }
-          return true
-        })
-        return { ...cat, tasks: remaining }
+    const prev = categoriesRef.current
+    const fromCat = prev.find((c) => c.tasks.some((t) => t.id === drag.taskId))
+    const task = fromCat?.tasks.find((t) => t.id === drag.taskId)
+    if (!fromCat || !task) return
+
+    let index = target.index
+    if (fromCat.id === target.cat) {
+      const fromIdx = fromCat.tasks.findIndex((t) => t.id === drag.taskId)
+      if (fromIdx < index) index -= 1
+      if (index === fromIdx) return
+    }
+
+    const next = prev.map((c) => {
+      const tasks = c.tasks.filter((t) => t.id !== drag.taskId)
+      if (c.id === target.cat) tasks.splice(index, 0, { ...task, categoryId: target.cat })
+      return { ...c, tasks: tasks.map((t, i) => ({ ...t, position: i })) }
+    })
+    setCategories(next)
+
+    // Persist only what changed.
+    const before = new Map(prev.flatMap((c) => c.tasks.map((t) => [t.id, t] as const)))
+    const writes = next
+      .filter((c) => c.id === fromCat.id || c.id === target.cat)
+      .flatMap((c) => c.tasks)
+      .filter((t) => {
+        const o = before.get(t.id)
+        return !o || o.position !== t.position || o.categoryId !== t.categoryId
       })
+      .map((t) => supabase.from('tasks').update({ position: t.position, category_id: t.categoryId }).eq('id', t.id))
 
-      const next = stripped.map((cat) =>
-        cat.id === categoryId && taskToMove
-          ? { ...cat, tasks: [...cat.tasks, { ...taskToMove, categoryId }] }
-          : cat,
-      )
-
-      sourceOrder = next.find((c) => c.id === draggedTask.fromCategoryId)?.tasks ?? []
-      destinationOrder = next.find((c) => c.id === categoryId)?.tasks ?? []
-
-      return next
+    Promise.all(writes).then((results) => {
+      const failed = results.find((r) => r.error)
+      if (failed?.error) {
+        fail(failed.error.message)
+        loadBoard(true)
+      } else sync()
     })
-
-    const updates: Array<PromiseLike<{ error: any }>> = destinationOrder.map(
-      (task, index) =>
-        supabase
-          .from('tasks')
-          .update({ position: index, category_id: categoryId })
-          .eq('id', task.id) as unknown as PromiseLike<{ error: any }>,
-    )
-
-    if (categoryId !== draggedTask.fromCategoryId) {
-      updates.push(
-        ...sourceOrder.map(
-          (task, index) =>
-            supabase
-              .from('tasks')
-              .update({ position: index, category_id: task.categoryId })
-              .eq('id', task.id) as unknown as PromiseLike<{ error: any }>,
-        ),
-      )
-    }
-
-    const results = await Promise.all(updates)
-    const updateError = (results as Array<{ error?: any }>).find((r) => r.error)?.error
-
-    if (updateError) {
-      setError(updateError.message)
-      loadBoard()
-    }
-
-    setDraggedTask(null)
   }
 
-  const isAddCategoryDisabled = newCategoryName.trim().length === 0
+  // ---------- derived ----------
+
+  const q = query.trim().toLowerCase()
+  const matches = (t: Task) => !q || t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)
+  const totals = useMemo(() => {
+    const all = categories.flatMap((c) => c.tasks)
+    return { all: all.length, done: all.filter((t) => t.status === 'completed').length }
+  }, [categories])
+
+  // ---------- render ----------
 
   if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-gray-50">
-        <p className="text-sm text-gray-500">Loading board...</p>
+      <div className="flex h-full items-center justify-center">
+        <p className="text-sm" style={{ color: 'var(--dv-muted)' }}>
+          Loading board…
+        </p>
       </div>
     )
   }
 
+  const menuOptions = menu ? (menu.kind === 'status' ? statusOptions : urgencyOptions) : []
+  const menuTask = menu ? categories.flatMap((c) => c.tasks).find((t) => t.id === menu.taskId) : null
+  const menuCurrent = menuTask ? (menu!.kind === 'status' ? menuTask.status : menuTask.urgency) : null
+
   return (
-    <div className="flex h-screen min-h-0 bg-gray-50 overflow-hidden">
-      <div className="flex-1 min-h-0 overflow-x-auto p-6 space-y-4 flex flex-col">
-        <div className="flex items-center gap-3">
+    <div className="flex h-full min-h-0 flex-col" onDrop={onDrop} onDragOver={(e) => dragRef.current && e.preventDefault()}>
+      {/* Toolbar */}
+      <div className="flex shrink-0 items-center gap-3 px-6 pb-3 pt-4">
+        <div className="relative w-72">
+          <Search size={14} className="pointer-events-none absolute left-2.5 top-2.5" style={{ color: 'var(--dv-muted)' }} />
           <input
-            type="text"
-            placeholder="Add a category..."
-            value={newCategoryName}
-            onChange={(e) => setNewCategoryName(e.target.value)}
+            ref={searchRef}
+            className="dv-input"
+            style={{ paddingLeft: 30, paddingRight: 30 }}
+            placeholder="Filter tasks"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') addCategory()
+              if (e.key === 'Escape') {
+                setQuery('')
+                e.currentTarget.blur()
+              }
             }}
-            className="w-64 px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 bg-white"
           />
-          <button
-            onClick={addCategory}
-            disabled={isAddCategoryDisabled}
-            className={`inline-flex items-center gap-2 px-3 py-2 rounded transition-colors text-sm ${
-              isAddCategoryDisabled
-                ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                : 'bg-blue-600 text-white hover:bg-blue-700'
-            }`}
-            title="Add category"
-          >
-            <Plus size={16} />
-            Add List
-          </button>
-          {error && <span className="text-sm text-red-600">{error}</span>}
+          {query ? (
+            <button className="absolute right-1.5 top-1.5 dv-iconbtn !h-6 !w-6" onClick={() => setQuery('')} title="Clear filter">
+              <X size={13} />
+            </button>
+          ) : (
+            <span className="dv-kbd absolute right-2 top-[6px]">/</span>
+          )}
         </div>
+        <span className="text-xs" style={{ color: 'var(--dv-muted)' }}>
+          {totals.done} of {totals.all} done
+        </span>
+        {error && (
+          <button
+            className="ml-auto flex items-center gap-1.5 rounded-md px-2 py-1 text-xs"
+            style={{ background: 'color-mix(in srgb, var(--dv-danger) 14%, transparent)', color: 'var(--dv-danger)' }}
+            onClick={() => setError(null)}
+            title="Dismiss"
+          >
+            {error}
+            <X size={12} />
+          </button>
+        )}
+      </div>
 
-        <div className="flex gap-6 h-full min-h-0 flex-1 min-w-min">
-          {categories.map((category) => {
-            const taskInputValue = newTaskInputs[category.id] || ''
-            const isAddTaskDisabled = taskInputValue.trim().length === 0
-
-            return (
-              <div
-                key={category.id}
-                className="flex flex-col h-full bg-white rounded-lg shadow-sm border border-gray-200 w-80 flex-shrink-0"
-              >
-              <div className="px-4 py-4 border-b border-gray-200 bg-gray-50 rounded-t-lg flex items-start justify-between gap-2">
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-800">{category.name}</h2>
-                  <p className="text-xs text-gray-500 mt-1">{category.tasks.length} tasks</p>
-                </div>
-                <button
-                  onClick={() => deleteCategory(category.id)}
-                  className="text-gray-400 hover:text-red-600 p-1 rounded hover:bg-red-50"
-                  title="Delete category"
-                >
-                  <Trash2 size={16} />
+      {/* Columns */}
+      <div className="dv-scroll flex min-h-0 flex-1 items-start gap-4 overflow-x-auto px-6 pb-6">
+        {categories.map((cat) => {
+          const visible = cat.tasks.filter(matches)
+          const input = newTaskInputs[cat.id] || ''
+          const isDropCol = dropAt?.cat === cat.id
+          return (
+            <section
+              key={cat.id}
+              className="dv-col"
+              style={isDropCol ? { borderColor: 'var(--dv-accent-soft)', background: 'color-mix(in srgb, var(--dv-accent) 6%, var(--dv-panel-2))' } : undefined}
+              onDragOver={(e) => onColumnDragOver(e, cat)}
+            >
+              <header className="group flex items-center gap-2 px-3 pb-2 pt-3">
+                {renamingCat?.id === cat.id ? (
+                  <input
+                    autoFocus
+                    className="dv-input !h-7 font-semibold"
+                    value={renamingCat.name}
+                    onChange={(e) => setRenamingCat({ id: cat.id, name: e.target.value })}
+                    onBlur={renameCategory}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') renameCategory()
+                      if (e.key === 'Escape') setRenamingCat(null)
+                    }}
+                  />
+                ) : (
+                  <h2
+                    className="min-w-0 flex-1 cursor-text truncate text-[13.5px] font-semibold"
+                    title="Double-click to rename"
+                    onDoubleClick={() => setRenamingCat({ id: cat.id, name: cat.name })}
+                  >
+                    {cat.name}
+                  </h2>
+                )}
+                <span className="text-xs tabular-nums" style={{ color: 'var(--dv-muted)' }}>
+                  {q ? `${visible.length}/${cat.tasks.length}` : cat.tasks.length}
+                </span>
+                <button className="dv-iconbtn danger !h-6 !w-6 opacity-0 group-hover:opacity-100" onClick={() => deleteCategory(cat)} title="Delete list">
+                  <Trash2 size={13} />
                 </button>
-              </div>
+              </header>
 
-              <div
-                className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 transition-colors"
-                onDragOver={(e) => handleColumnDragOver(e, category.id)}
-                onDragLeave={handleDragLeave}
-                onDrop={(e) => handleDrop(category.id, e)}
-              >
-                {category.tasks.map((task) => {
-                  const isEditing = editingTask?.taskId === task.id && editingTask?.categoryId === category.id
-                  const statusMeta = ensureOption(statusOptions, task.status, 'status')
-                  const urgencyMeta = ensureOption(urgencyOptions, task.urgency, 'urgency')
-
+              <div className="dv-scroll min-h-[44px] flex-1 overflow-y-auto px-2">
+                {visible.map((task, index) => {
+                  const status = resolveOption(statusOptions, task.status, 'status')
+                  const urgency = resolveOption(urgencyOptions, task.urgency, 'urgency')
+                  const isEditing = editingTask?.id === task.id
+                  const done = task.status === 'completed'
                   return (
                     <div
                       key={task.id}
-                      draggable
-                      onDragStart={(e) => handleDragStart(task.id, category.id, e)}
-                      onDragOver={(e) => handleTaskDragOver(e, category.id, task.id)}
-                      className="relative bg-white border border-gray-200 rounded-lg p-3 cursor-move hover:shadow-md transition-shadow hover:border-gray-300 group"
+                      id={`task-${task.id}`}
+                      className="pb-2"
+                      onDragOver={(e) => onCardDragOver(e, cat.id, index)}
                     >
-                      {!isEditing ? (
-                        <>
-                          <div className="flex items-start justify-between gap-2">
-                            <h3 className="text-sm font-medium text-gray-800">
+                      {dropAt?.cat === cat.id && dropAt.index === index && <div className="dv-drop-line" />}
+                      <article
+                        draggable={!isEditing && !q}
+                        data-dragging={dragId === task.id}
+                        className={`dv-card ${flashId === task.id ? 'dv-flash' : ''}`}
+                        onDragStart={(e) => {
+                          e.dataTransfer.effectAllowed = 'move'
+                          e.dataTransfer.setData('text/plain', task.id)
+                          dragRef.current = { taskId: task.id }
+                          setDragId(task.id)
+                        }}
+                        onDragEnd={endDrag}
+                        onDoubleClick={() => !isEditing && setEditingTask({ id: task.id, title: task.title, description: task.description })}
+                      >
+                        <span className="dv-card-bar" style={{ background: urgency.color }} title={`Urgency: ${urgency.label}`} />
+                        {isEditing ? (
+                          <div className="flex flex-col gap-2">
+                            <input
+                              autoFocus
+                              className="dv-input"
+                              value={editingTask.title}
+                              placeholder="Task title"
+                              onChange={(e) => setEditingTask({ ...editingTask, title: e.target.value })}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') saveEdit()
+                                if (e.key === 'Escape') setEditingTask(null)
+                              }}
+                            />
+                            <textarea
+                              className="dv-input"
+                              rows={3}
+                              value={editingTask.description}
+                              placeholder="Notes, links, context…"
+                              onChange={(e) => setEditingTask({ ...editingTask, description: e.target.value })}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') setEditingTask(null)
+                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveEdit()
+                              }}
+                            />
+                            <div className="flex justify-end gap-2">
+                              <button className="dv-btn" onClick={() => setEditingTask(null)}>
+                                Cancel
+                              </button>
+                              <button className="dv-btn primary" onClick={saveEdit}>
+                                Save
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <h3
+                              className="text-[13.5px] font-medium leading-snug"
+                              style={{ color: done ? 'var(--dv-muted)' : undefined, textDecoration: done ? 'line-through' : undefined }}
+                            >
                               {task.title}
                             </h3>
-                            {statusMeta && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setUrgencyMenu(null)
-                                  setStatusMenu((prev) =>
-                                    prev?.taskId === task.id && prev?.categoryId === category.id
-                                      ? null
-                                      : { taskId: task.id, categoryId: category.id },
-                                  )
-                                }}
-                                className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-full transition-colors hover:brightness-95 ${getBadgeClass(statusMeta)}`}
-                                style={getBadgeStyle(statusMeta)}
-                                title="Change status"
-                              >
-                                <span
-                                  className={`inline-block h-2 w-2 rounded-full ${getDotClass(statusMeta)}`}
-                                  style={getDotStyle(statusMeta)}
-                                />
-                                {statusMeta.label}
-                              </button>
+                            {task.description && (
+                              <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
+                                {task.description}
+                              </p>
                             )}
-                          </div>
-                          {urgencyMeta && (
-                            <div className="flex items-start justify-between gap-2 mt-2">
-                              <span className="text-[11px] text-gray-500">Urgency</span>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setStatusMenu(null)
-                                  setUrgencyMenu((prev) =>
-                                    prev?.taskId === task.id && prev?.categoryId === category.id
-                                      ? null
-                                      : { taskId: task.id, categoryId: category.id },
-                                  )
-                                }}
-                                className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-full transition-colors hover:brightness-95 ${getBadgeClass(urgencyMeta)}`}
-                                style={getBadgeStyle(urgencyMeta)}
-                                title="Change urgency"
-                              >
-                                <span
-                                  className={`inline-block h-2 w-2 rounded-full ${getDotClass(urgencyMeta)}`}
-                                  style={getDotStyle(urgencyMeta)}
-                                />
-                                {urgencyMeta.label}
+                            <div className="mt-2.5 flex items-center gap-1.5">
+                              <button className="dv-chip" style={badgeStyle(status.color)} title="Change status" onClick={(e) => openMenu(e, 'status', task.id, cat.id)}>
+                                <span className="dv-dot" style={{ background: status.color }} />
+                                {status.label}
                               </button>
-                            </div>
-                          )}
-                          {task.description && (
-                            <p className="text-xs text-gray-600 mt-1 whitespace-pre-wrap">{task.description}</p>
-                          )}
-                          <div className="flex gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity justify-start">
-                            <button
-                              onClick={() =>
-                                setEditingTask({
-                                  taskId: task.id,
-                                  categoryId: category.id,
-                                  title: task.title,
-                                  description: task.description || '',
-                                })
-                              }
-                              className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"
-                              title="Edit task"
-                            >
-                              <Pencil size={14} />
-                            </button>
-                            <button
-                              onClick={() => deleteTask(task.id, category.id)}
-                              className="text-gray-400 hover:text-red-600 p-1 rounded hover:bg-red-50"
-                              title="Delete task"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-
-                          {statusMenu?.taskId === task.id && statusMenu?.categoryId === category.id && (
-                            <div className="absolute right-2 top-10 z-20 w-44 rounded-md border border-gray-200 bg-white shadow-md">
-                              <div className="px-3 py-2 text-xs font-semibold text-gray-500">Set status</div>
-                              <div className="flex flex-col divide-y divide-gray-100">
-                                {statusOptions.map((option) => (
-                                  <button
-                                    key={option.value}
-                                    onClick={() => updateTaskStatus(category.id, task.id, option.value)}
-                                    className={`flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-gray-50 ${
-                                      task.status === option.value ? 'text-blue-600 font-semibold' : 'text-gray-700'
-                                    }`}
-                                  >
-                                    <span className="flex items-center gap-2">
-                                      <span
-                                        className={`h-2 w-2 rounded-full ${getDotClass(option)}`}
-                                        style={getDotStyle(option)}
-                                      />
-                                      {option.label}
-                                    </span>
-                                    {task.status === option.value && <span className="text-[10px]">Selected</span>}
-                                  </button>
-                                ))}
-                                <button
-                                  onClick={() => openAddOptionForm('status', category.id, task.id)}
-                                  className="flex items-center justify-between px-3 py-2 text-left text-xs text-blue-600 hover:bg-blue-50"
-                                >
-                                  <span className="flex items-center gap-2">
-                                    <Plus size={12} />
-                                    Add status
-                                  </span>
+                              <button className="dv-chip" style={badgeStyle(urgency.color)} title="Change urgency" onClick={(e) => openMenu(e, 'urgency', task.id, cat.id)}>
+                                {urgency.label}
+                              </button>
+                              <div className="dv-actions ml-auto flex items-center">
+                                <button className="dv-iconbtn !h-6 !w-6" title="Send to canvas" onClick={() => sendToCanvas(task.id)}>
+                                  <PenTool size={13} />
                                 </button>
                                 <button
-                                  onClick={() => setStatusMenu(null)}
-                                  className="flex items-center justify-between px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50"
+                                  className="dv-iconbtn !h-6 !w-6"
+                                  title="Edit"
+                                  onClick={() => setEditingTask({ id: task.id, title: task.title, description: task.description })}
                                 >
-                                  <span className="flex items-center gap-2">Cancel</span>
+                                  <Pencil size={13} />
+                                </button>
+                                <button className="dv-iconbtn danger !h-6 !w-6" title="Delete" onClick={() => deleteTask(task.id)}>
+                                  <Trash2 size={13} />
                                 </button>
                               </div>
-                              {addOptionForm.open &&
-                                addOptionForm.type === 'status' &&
-                                addOptionForm.anchorTaskId === task.id &&
-                                addOptionForm.anchorCategoryId === category.id && (
-                                  <div className="absolute left-full top-0 ml-2 w-56 rounded-md border border-gray-200 bg-white shadow-md p-3">
-                                    <p className="text-xs font-semibold text-gray-700 mb-2">Add status</p>
-                                    <div className="space-y-2">
-                                      <input
-                                        type="text"
-                                        value={addOptionForm.label}
-                                        onChange={(e) => setAddOptionForm((prev) => ({ ...prev, label: e.target.value }))}
-                                        placeholder="Status name"
-                                        className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:border-blue-500"
-                                      />
-                                      <label className="flex items-center justify-between text-xs text-gray-600">
-                                        <span>Color</span>
-                                        <input
-                                          type="color"
-                                          value={addOptionForm.color}
-                                          onChange={(e) => setAddOptionForm((prev) => ({ ...prev, color: e.target.value }))}
-                                          className="h-7 w-12 cursor-pointer border border-gray-200 rounded"
-                                        />
-                                      </label>
-                                      <div className="flex justify-end gap-2 pt-1">
-                                        <button
-                                          onClick={resetAddOptionForm}
-                                          className="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded hover:bg-gray-200"
-                                        >
-                                          Cancel
-                                        </button>
-                                        <button
-                                          onClick={saveNewOption}
-                                          disabled={savingOption || addOptionForm.label.trim().length === 0}
-                                          className={`px-2 py-1 text-xs rounded ${
-                                            savingOption || addOptionForm.label.trim().length === 0
-                                              ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                                              : 'bg-blue-600 text-white hover:bg-blue-700'
-                                          }`}
-                                        >
-                                          Done
-                                        </button>
-                                      </div>
-                                    </div>
-                                  </div>
-                                )}
                             </div>
-                          )}
-
-                          {urgencyMenu?.taskId === task.id && urgencyMenu?.categoryId === category.id && (
-                            <div className="absolute right-2 top-28 z-20 w-44 rounded-md border border-gray-200 bg-white shadow-md">
-                              <div className="px-3 py-2 text-xs font-semibold text-gray-500">Set urgency</div>
-                              <div className="flex flex-col divide-y divide-gray-100">
-                                {urgencyOptions.map((option) => (
-                                  <button
-                                    key={option.value}
-                                    onClick={() => updateTaskUrgency(category.id, task.id, option.value)}
-                                    className={`flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-gray-50 ${
-                                      task.urgency === option.value ? 'text-blue-600 font-semibold' : 'text-gray-700'
-                                    }`}
-                                  >
-                                    <span className="flex items-center gap-2">
-                                      <span
-                                        className={`h-2 w-2 rounded-full ${getDotClass(option)}`}
-                                        style={getDotStyle(option)}
-                                      />
-                                      {option.label}
-                                    </span>
-                                    {task.urgency === option.value && <span className="text-[10px]">Selected</span>}
-                                  </button>
-                                ))}
-                                <button
-                                  onClick={() => openAddOptionForm('urgency', category.id, task.id)}
-                                  className="flex items-center justify-between px-3 py-2 text-left text-xs text-blue-600 hover:bg-blue-50"
-                                >
-                                  <span className="flex items-center gap-2">
-                                    <Plus size={12} />
-                                    Add status
-                                  </span>
-                                </button>
-                                <button
-                                  onClick={() => setUrgencyMenu(null)}
-                                  className="flex items-center justify-between px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50"
-                                >
-                                  <span className="flex items-center gap-2">Cancel</span>
-                                </button>
-                              </div>
-                              {addOptionForm.open &&
-                                addOptionForm.type === 'urgency' &&
-                                addOptionForm.anchorTaskId === task.id &&
-                                addOptionForm.anchorCategoryId === category.id && (
-                                  <div className="absolute left-full top-0 ml-2 w-56 rounded-md border border-gray-200 bg-white shadow-md p-3">
-                                    <p className="text-xs font-semibold text-gray-700 mb-2">Add status</p>
-                                    <div className="space-y-2">
-                                      <input
-                                        type="text"
-                                        value={addOptionForm.label}
-                                        onChange={(e) => setAddOptionForm((prev) => ({ ...prev, label: e.target.value }))}
-                                        placeholder="Status name"
-                                        className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:border-blue-500"
-                                      />
-                                      <label className="flex items-center justify-between text-xs text-gray-600">
-                                        <span>Color</span>
-                                        <input
-                                          type="color"
-                                          value={addOptionForm.color}
-                                          onChange={(e) => setAddOptionForm((prev) => ({ ...prev, color: e.target.value }))}
-                                          className="h-7 w-12 cursor-pointer border border-gray-200 rounded"
-                                        />
-                                      </label>
-                                      <div className="flex justify-end gap-2 pt-1">
-                                        <button
-                                          onClick={resetAddOptionForm}
-                                          className="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded hover:bg-gray-200"
-                                        >
-                                          Cancel
-                                        </button>
-                                        <button
-                                          onClick={saveNewOption}
-                                          disabled={savingOption || addOptionForm.label.trim().length === 0}
-                                          className={`px-2 py-1 text-xs rounded ${
-                                            savingOption || addOptionForm.label.trim().length === 0
-                                              ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                                              : 'bg-blue-600 text-white hover:bg-blue-700'
-                                          }`}
-                                        >
-                                          Done
-                                        </button>
-                                      </div>
-                                    </div>
-                                  </div>
-                                )}
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <div className="space-y-2">
-                          <input
-                            type="text"
-                            value={editingTask.title}
-                            onChange={(e) =>
-                              setEditingTask((prev) => (prev ? { ...prev, title: e.target.value } : prev))
-                            }
-                            placeholder="Task title"
-                            className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500"
-                            autoFocus
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                updateTaskDetails(category.id, task.id, editingTask.title, editingTask.description)
-                              } else if (e.key === 'Escape') {
-                                setEditingTask(null)
-                              }
-                            }}
-                          />
-                          <textarea
-                            value={editingTask.description}
-                            onChange={(e) =>
-                              setEditingTask((prev) => (prev ? { ...prev, description: e.target.value } : prev))
-                            }
-                            placeholder="Description (optional)"
-                            className="w-full px-2 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:border-blue-500 resize-none"
-                            rows={3}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Escape') {
-                                setEditingTask(null)
-                              }
-                            }}
-                          />
-                          <div className="flex gap-2 justify-end">
-                            <button
-                              onClick={() =>
-                                updateTaskDetails(category.id, task.id, editingTask.title, editingTask.description)
-                              }
-                              className="px-2 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600"
-                            >
-                              Save
-                            </button>
-                            <button
-                              onClick={() => setEditingTask(null)}
-                              className="px-2 py-1 bg-gray-200 text-gray-700 text-xs rounded hover:bg-gray-300"
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      )}
+                          </>
+                        )}
+                      </article>
                     </div>
                   )
                 })}
-
-                {category.tasks.length === 0 && (
-                  <div className="flex items-center justify-center h-32 text-gray-400">
-                    <p className="text-xs">No tasks yet</p>
-                  </div>
+                {dropAt?.cat === cat.id && dropAt.index >= visible.length && <div className="dv-drop-line" />}
+                {visible.length === 0 && (
+                  <p className="px-1 py-4 text-center text-xs" style={{ color: 'var(--dv-muted)' }}>
+                    {q ? 'No matching tasks' : 'Nothing here yet'}
+                  </p>
                 )}
               </div>
 
-              <div className="px-3 py-3 border-t border-gray-200 bg-gray-50 rounded-b-lg">
-                <div className="flex gap-2">
+              <div className="p-2">
+                <div className="flex gap-1.5">
                   <input
-                    type="text"
-                    placeholder="Add a task..."
-                    value={taskInputValue}
-                    onChange={(e) =>
-                      setNewTaskInputs((prev) => ({
-                        ...prev,
-                        [category.id]: e.target.value,
-                      }))
-                    }
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        addTask(category.id)
-                      }
-                    }}
-                    className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500"
+                    className="dv-input"
+                    placeholder="Add a task"
+                    value={input}
+                    onChange={(e) => setNewTaskInputs((p) => ({ ...p, [cat.id]: e.target.value }))}
+                    onKeyDown={(e) => e.key === 'Enter' && addTask(cat.id)}
                   />
-                  <button
-                    onClick={() => addTask(category.id)}
-                    disabled={isAddTaskDisabled}
-                    className={`p-1.5 rounded transition-colors ${
-                      isAddTaskDisabled ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-blue-500 text-white hover:bg-blue-600'
-                    }`}
-                    title="Add task"
-                  >
-                    <Plus size={16} />
+                  <button className="dv-iconbtn shrink-0" style={{ background: 'var(--dv-panel)', border: '1px solid var(--dv-border)' }} disabled={!input.trim()} onClick={() => addTask(cat.id)} title="Add task">
+                    <Plus size={15} />
                   </button>
                 </div>
               </div>
+            </section>
+          )
+        })}
+
+        {/* Add list */}
+        <div className="w-[304px] shrink-0">
+          {addingList ? (
+            <div className="dv-col !max-h-none gap-2 p-2">
+              <input
+                autoFocus
+                className="dv-input"
+                placeholder="List name"
+                value={newListName}
+                onChange={(e) => setNewListName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') addCategory()
+                  if (e.key === 'Escape') {
+                    setAddingList(false)
+                    setNewListName('')
+                  }
+                }}
+              />
+              <div className="flex gap-2">
+                <button className="dv-btn primary" disabled={!newListName.trim()} onClick={addCategory}>
+                  Add list
+                </button>
+                <button
+                  className="dv-btn"
+                  onClick={() => {
+                    setAddingList(false)
+                    setNewListName('')
+                  }}
+                >
+                  Cancel
+                </button>
               </div>
-            )
-          })}
+            </div>
+          ) : (
+            <button
+              className="flex h-11 w-full items-center gap-2 rounded-[14px] border border-dashed px-4 text-[13px] font-medium"
+              style={{ borderColor: 'var(--dv-border)', color: 'var(--dv-muted)', background: 'transparent' }}
+              onClick={() => setAddingList(true)}
+            >
+              <Plus size={15} />
+              Add list
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Status / urgency menu (fixed so column scrolling can't clip it) */}
+      {menu && (
+        <>
+          <div className="fixed inset-0 z-40" onPointerDown={() => { setMenu(null); setOptForm(null) }} />
+          <div className="dv-menu fixed z-50 w-56" style={{ left: menu.x, top: menu.y }}>
+            <div className="px-2 pb-1 pt-1.5 text-xs font-semibold" style={{ color: 'var(--dv-muted)' }}>
+              {menu.kind === 'status' ? 'Set status' : 'Set urgency'}
+            </div>
+            {menuOptions.map((o) => (
+              <button key={o.value} className="dv-menu-item" data-selected={menuCurrent === o.value} onClick={() => pick(o.value)}>
+                <span className="dv-dot" style={{ background: o.color }} />
+                <span className="flex-1">{o.label}</span>
+                {menuCurrent === o.value && <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>Current</span>}
+              </button>
+            ))}
+            <div className="my-1 h-px" style={{ background: 'var(--dv-border)' }} />
+            {optForm ? (
+              <div className="flex flex-col gap-2 p-2">
+                <input
+                  autoFocus
+                  className="dv-input"
+                  placeholder={menu.kind === 'status' ? 'Status name' : 'Urgency name'}
+                  value={optForm.label}
+                  onChange={(e) => setOptForm({ ...optForm, label: e.target.value })}
+                  onKeyDown={(e) => e.key === 'Enter' && createOption()}
+                />
+                <label className="flex items-center justify-between text-xs" style={{ color: 'var(--dv-muted)' }}>
+                  Color
+                  <input
+                    type="color"
+                    value={optForm.color}
+                    onChange={(e) => setOptForm({ ...optForm, color: e.target.value })}
+                    className="h-7 w-12 cursor-pointer rounded border-0 bg-transparent"
+                  />
+                </label>
+                <div className="flex justify-end gap-2">
+                  <button className="dv-btn" onClick={() => setOptForm(null)}>Back</button>
+                  <button className="dv-btn primary" disabled={!optForm.label.trim()} onClick={createOption}>
+                    Create
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button className="dv-menu-item" style={{ color: 'var(--dv-accent)' }} onClick={() => setOptForm({ label: '', color: '#3b82f6' })}>
+                <Plus size={13} />
+                New {menu.kind}
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   )
 }

@@ -1,1635 +1,1921 @@
-import React, { useRef, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Pen,
-  Trash2,
-  Minus,
-  Plus,
-  Undo2,
-  Redo2,
-  Settings,
-  X,
-  MousePointer2,
-  Square,
+  ArrowUpRight,
   Circle,
-  Star,
   Heart,
   ImageIcon,
+  ListTodo,
+  Maximize,
+  Minus,
+  MousePointer2,
+  Pen,
+  Plus,
+  Redo2,
+  Settings,
+  Square,
+  Star,
+  StickyNote,
+  Trash2,
+  Type,
+  Undo2,
 } from 'lucide-react'
 import { HexColorPicker } from 'react-colorful'
 import { supabase } from './lib/supabase'
+import { useRoom } from './lib/room.tsx'
+import { bus, isTyping, toast } from './lib/bus.ts'
+import { useRoomTasks } from './lib/tasks.ts'
 
-interface DrawAction {
-  id?: string
-  type: 'stroke' | 'shape' | 'image'
+/* ================================================================== */
+/* Types                                                               */
+/* ================================================================== */
+console.log('[WHITEBOARD FILE LOADED]')
+type Pt = { x: number; y: number }
+type BBox = { minX: number; minY: number; maxX: number; maxY: number }
+type ShapeKind = 'rectangle' | 'circle' | 'star' | 'heart'
+type Tool = 'select' | 'pen' | 'shape' | 'text' | 'note' | 'connect'
+
+interface El {
+  id: string
+  type: 'stroke' | 'shape' | 'image' | 'text' | 'task' | 'connector'
   userId?: string
-  drawing: true | false
-  points: { x: number; y: number }[]
+  /** stroke: polyline. shape / image / text / task: [topLeft, bottomRight]. connector: unused (derived from from/to). */
+  points: Pt[]
   lineWidth?: number
-  drawColor?: string
-  shapeKind?: 'rectangle' | 'circle' | 'star' | 'heart'
-  shapeFill?: 'outline' | 'fill'
-  // for resize support
-  transform?: { scaleX: number; scaleY: number; originX: number; originY: number }
-  // for image type
-  imageDataUrl?: string
-  imageWidth?: number
-  imageHeight?: number
+  /** a hex colour, or 'auto' = the theme's ink colour */
+  color?: string
+  shapeKind?: ShapeKind
+  fill?: 'outline' | 'fill'
+  src?: string
+  text?: string
+  fontSize?: number
+  /** background colour; present => sticky note, absent => plain text box */
+  note?: string
+  taskId?: string
+  from?: string
+  to?: string
 }
 
-/**
- * Whiteboard component for drawing and erasing on a canvas.
- * Provides a drawing interface with:
- * - Pen tool for drawing strokes
- * - Eraser tool for removing content
- * - Adjustable brush/eraser size via range slider
- * - Clear canvas button to reset
- * - Visual cursor circle that tracks mouse position and reflects current brush size
- *
- * @component
- * @returns {JSX.Element} A full-screen whiteboard application with toolbar and canvas
- *
- * @note `px` and `py` refer to pixel coordinates (x and y positions) in the canvas coordinate system.
- * They represent the horizontal and vertical position respectively of a point being drawn or erased.
- */
-export const Whiteboard: React.FC = () => {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const [isDrawing, setIsDrawing] = useState(false)
-  const [tool, setTool] = useState<'pen' | 'select' | 'shape' | 'image'>('select')
-  const [actions, setActions] = useState<DrawAction[]>([])
-  const [currentAction, setCurrentAction] = useState<DrawAction | null>(null)
-  const [mouseSize, setMouseSize] = useState(10)
-  const [drawColor, setDrawColor] = useState('#000000')
-  const [panX, setPanX] = useState(0)
-  const [panY, setPanY] = useState(0)
-  const [scale, setScale] = useState(1)
-  const [cursorPos, setCursorPos] = useState({ x: 0, y: 0 })
-  const panRef = useRef({ x: 0, y: 0 })
-  const scaleRef = useRef(1)
-  const cursorTargetRef = useRef({ x: 0, y: 0 })
-  const cursorRef = useRef({ x: 0, y: 0 })
-  const [isPanning, setIsPanning] = useState(false)
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 })
-  const pinchStartDistance = useRef<number | null>(null)
-  const myUndoStack = useRef<DrawAction[]>([]) // strokes I can undo
-  const myRedoStack = useRef<DrawAction[]>([]) // strokes I can redo
-  const [canUndo, setCanUndo] = useState(false)
-  const [canRedo, setCanRedo] = useState(false)
-  // const [showColorPicker, setShowColorPicker] = useState(false)
-  const swatches = [
-    '#0a0a0a',
-    '#ffffff',
-    '#ef4444',
-    '#f97316',
-    '#eab308',
-    '#22c55e',
-    '#06b6d4',
-    '#3b82f6',
-    '#8b5cf6',
-    '#ec4899',
-    '#f43f5e',
-    '#64748b',
-  ]
-  const [otherCursors, setOtherCursors] = useState<{ x: number; y: number; userId: string }[]>([])
-  const userIdRef = useRef<string>(crypto.randomUUID())
-  const isSubscribedRef = useRef(false)
-  const channelRef = useRef<any>(null)
-  const myClearStack = useRef<{ actions: DrawAction[]; undoStack: DrawAction[] }[]>([])
-  const actionsRef = useRef<DrawAction[]>([])
-  const myClearRedoStack = useRef<{ actions: DrawAction[]; undoStack: DrawAction[] }[]>([])
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const selectedIdsRef = useRef<Set<string>>(new Set())
-  const [isDraggingSelection, setIsDraggingSelection] = useState(false)
-  const [isResizingSelection, setIsResizingSelection] = useState<string | null>(null)
-  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(
-    null,
-  )
-  const marqueeStartRef = useRef<{ x: number; y: number } | null>(null)
-  const dragStartRef = useRef<{ x: number; y: number; snapshots: DrawAction[] } | null>(null)
-  const resizeStartRef = useRef<{
-    x: number
-    y: number
-    bbox: BBox
-    snapshots: DrawAction[]
-  } | null>(null)
-  // const [openPanel, setOpenPanel] = useState<'color' | null>(null)
-  const [cursorColor, setCursorColor] = useState('#000000')
-  const otherCursorColors = useRef<Map<string, string>>(new Map())
-  const [hoveredId, setHoveredId] = useState<string | null>(null)
-  const [hoveredHandle, setHoveredHandle] = useState<string | null>(null)
-  const imageCache = useRef<Map<string, HTMLImageElement>>(new Map())
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [isDragOver, setIsDragOver] = useState(false)
+interface Entry {
+  added: El[]
+  removed: El[]
+  before: El[]
+  after: El[]
+  tag?: string
+  t?: number
+}
 
-  //SETTINGS
-  const [showSettings, setShowSettings] = useState(false)
-  const [colorScheme, setColorScheme] = useState<'light' | 'dark' | 'custom'>('light')
-  const [hudSize, setHudSize] = useState<'small' | 'medium' | 'large'>('medium')
-  const [cursorStyle, setCursorStyle] = useState<'circle' | 'dot' | 'crosshair'>('circle')
-  const [showGrid, setShowGrid] = useState(false)
-  const [gridSize, setGridSize] = useState(50)
-  const [snapToGrid, setSnapToGrid] = useState(false)
-  const [customBg, setCustomBg] = useState('#ffffff')
-  // const [customToolbar] = useState('#f9fafb')
-  const [shapeKind, setShapeKind] = useState<'rectangle' | 'circle' | 'star' | 'heart'>('rectangle')
-  const [shapeFillMode, setShapeFillMode] = useState<'outline' | 'fill'>('outline')
-  const [showShapePanel, setShowShapePanel] = useState(false)
-  const shapeHoverTimeout = useRef<number | null>(null)
-  const [hideCursorWhileHudClick, setHideCursorWhileHudClick] = useState(false)
-  // const [hideCursorWhileHudHover, setHideCursorWhileHudHover] = useState(false)
-  const prevBodyCursor = useRef<string>('')
+type Act =
+  | null
+  | { kind: 'pan'; sx: number; sy: number; vx: number; vy: number }
+  | { kind: 'draw' }
+  | { kind: 'drag'; start: Pt; snaps: El[]; moved: boolean }
+  | { kind: 'resize'; handle: string; start: Pt; snaps: El[]; moved: boolean }
+  | { kind: 'marquee'; start: Pt; base: Set<string> }
+  | { kind: 'connect'; from: string; at: Pt }
 
-  const shapeIcons: Record<
-    typeof shapeKind,
-    React.ComponentType<{ size?: number; strokeWidth?: number }>
-  > = {
-    rectangle: Square,
-    circle: Circle,
-    star: Star,
-    heart: Heart,
-  }
+/* ================================================================== */
+/* Constants + pure helpers                                            */
+/* ================================================================== */
 
-  const updatePan = (x: number, y: number) => {
-    panRef.current = { x, y }
-    setPanX(x)
-    setPanY(y)
-  }
+const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif'
+const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
 
-  const openShapePanel = () => {
-    if (shapeHoverTimeout.current) {
-      clearTimeout(shapeHoverTimeout.current)
-      shapeHoverTimeout.current = null
+const PAL = {
+  light: {
+    bg: '#f7f7f5',
+    dot: 'rgba(21,23,28,0.18)',
+    line: 'rgba(21,23,28,0.07)',
+    ink: '#15171c',
+    panel: '#ffffff',
+    border: '#d9dce3',
+    muted: '#6b7280',
+    accent: '#4a62f0',
+    link: '#5b6272',
+  },
+  dark: {
+    bg: '#0d0e11',
+    dot: 'rgba(255,255,255,0.15)',
+    line: 'rgba(255,255,255,0.06)',
+    ink: '#e8e9ee',
+    panel: '#1b1d23',
+    border: '#343843',
+    muted: '#9499a6',
+    accent: '#7d8cff',
+    link: '#a0a5b3',
+  },
+}
+
+const NOTE_COLORS = ['#fde68a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#ddd6fe', '#fed7aa']
+const SWATCHES = [
+  'auto',
+  '#ef4444',
+  '#f97316',
+  '#eab308',
+  '#22c55e',
+  '#06b6d4',
+  '#3b82f6',
+  '#8b5cf6',
+  '#ec4899',
+  '#64748b',
+]
+const HANDLE = 8
+const PAD = 10
+
+const arrowCursor = new Path2D('M0 0 L0 16 L4.5 12 L8 19.5 L10.5 18.4 L7 11.2 L12.5 11 Z')
+const measureCtx = document.createElement('canvas').getContext('2d')!
+const hitCtx = document.createElement('canvas').getContext('2d')!
+
+const uid = () => crypto.randomUUID()
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
+const bboxOf = (a: Pt, b: Pt): BBox => ({
+  minX: Math.min(a.x, b.x),
+  minY: Math.min(a.y, b.y),
+  maxX: Math.max(a.x, b.x),
+  maxY: Math.max(a.y, b.y),
+})
+const unionBox = (boxes: BBox[]): BBox => ({
+  minX: Math.min(...boxes.map((b) => b.minX)),
+  minY: Math.min(...boxes.map((b) => b.minY)),
+  maxX: Math.max(...boxes.map((b) => b.maxX)),
+  maxY: Math.max(...boxes.map((b) => b.maxY)),
+})
+const intersects = (a: BBox, b: BBox) =>
+  a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY
+const inBox = (p: Pt, b: BBox, pad = 0) =>
+  p.x >= b.minX - pad && p.x <= b.maxX + pad && p.y >= b.minY - pad && p.y <= b.maxY + pad
+const isBoxEl = (e: El) => e.type === 'image' || e.type === 'text' || e.type === 'task'
+const resolveColor = (c: string | undefined, ink: string) => (!c || c === 'auto' ? ink : c)
+
+const segDist = (p: Pt, a: Pt, b: Pt) => {
+  const abx = b.x - a.x
+  const aby = b.y - a.y
+  const len2 = abx * abx + aby * aby
+  const t = len2 > 0 ? clamp(((p.x - a.x) * abx + (p.y - a.y) * aby) / len2, 0, 1) : 0
+  return Math.hypot(p.x - (a.x + t * abx), p.y - (a.y + t * aby))
+}
+
+/** Where a line from the centre of `b` towards (tx, ty) leaves the rectangle. */
+const rectEdge = (b: BBox, tx: number, ty: number): Pt => {
+  const cx = (b.minX + b.maxX) / 2
+  const cy = (b.minY + b.maxY) / 2
+  const dx = tx - cx
+  const dy = ty - cy
+  if (!dx && !dy) return { x: cx, y: cy }
+  const hw = (b.maxX - b.minX) / 2 + 4
+  const hh = (b.maxY - b.minY) / 2 + 4
+  const s = Math.min(dx ? hw / Math.abs(dx) : Infinity, dy ? hh / Math.abs(dy) : Infinity)
+  return { x: cx + dx * s, y: cy + dy * s }
+}
+
+const wrapLines = (ctx: CanvasRenderingContext2D, text: string, maxW: number) => {
+  const out: string[] = []
+  for (const para of text.split('\n')) {
+    let line = ''
+    for (const word of para.split(' ')) {
+      const test = line ? `${line} ${word}` : word
+      if (line && ctx.measureText(test).width > maxW) {
+        out.push(line)
+        line = word
+      } else line = test
     }
-    setShowShapePanel(true)
+    out.push(line)
   }
+  return out
+}
 
-  const closeShapePanel = () => {
-    if (shapeHoverTimeout.current) clearTimeout(shapeHoverTimeout.current)
-    shapeHoverTimeout.current = window.setTimeout(() => {
-      setShowShapePanel(false)
-      shapeHoverTimeout.current = null
-    }, 120)
-  }
-
-  // Hide custom cursor while clicking toolbar/popup; re-show on mouseup anywhere.
-  useEffect(() => {
-    const handleMouseUp = () => setHideCursorWhileHudClick(false)
-    window.addEventListener('mouseup', handleMouseUp)
-    return () => window.removeEventListener('mouseup', handleMouseUp)
-  }, [])
-
-  useEffect(() => {
-    if (hideCursorWhileHudClick) {
-      prevBodyCursor.current = document.body.style.cursor
-      document.body.style.cursor = 'none'
-    } else {
-      document.body.style.cursor = prevBodyCursor.current
-    }
-    return () => {
-      document.body.style.cursor = prevBodyCursor.current
-    }
-  }, [hideCursorWhileHudClick])
-
-  const handleCanvasPan = (
-    e: React.MouseEvent<HTMLCanvasElement> | MouseEvent,
-    isMouseDown: boolean,
-  ) => {
-    // e.preventDefault();
-    if (isMouseDown) {
-      // Start pan on right-click
-      const canvas = canvasRef.current
-      if (!canvas) return
-      setIsPanning(true)
-      setPanStart({ x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y })
-    } else {
-      // Update pan position on mouse move
-      if (!isPanning) return
-      updatePan(e.clientX - panStart.x, e.clientY - panStart.y)
-    }
-  }
-
-  const clampScale = (value: number) => Math.max(0.25, Math.min(4, value))
-
-  // Convert world coordinates (stored in Supabase presence) to screen coordinates used by the SVG overlay.
-  //   const worldToScreen = (worldX: number, worldY: number) => {
-  //     const canvas = canvasRef.current
-  //     if (!canvas) return { x: 0, y: 0 }
-  //     const rect = canvas.getBoundingClientRect()
-  //     return {
-  //       x: worldX * scaleRef.current + panRef.current.x + rect.left,
-  //       y: worldY * scaleRef.current + panRef.current.y + rect.top,
-  //     }
-  //   }
-
-  // Zoom keeping the whiteboard content under the focal point stationary.
-  const zoomAtPoint = (factor: number, clientX: number, clientY: number) => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const rect = canvas.getBoundingClientRect()
-    const focusX = clientX - rect.left
-    const focusY = clientY - rect.top
-    const prevScale = scaleRef.current
-    const nextScale = clampScale(prevScale * factor)
-    const worldX = (focusX - panRef.current.x) / prevScale
-    const worldY = (focusY - panRef.current.y) / prevScale
-    const nextPanX = focusX - worldX * nextScale
-    const nextPanY = focusY - worldY * nextScale
-    scaleRef.current = nextScale
-    setScale(nextScale)
-    updatePan(nextPanX, nextPanY)
-    resizeDrawWidth(mouseSize)
-  }
-
-  const stopPan = () => {
-    setIsPanning(false)
-  }
-
-  // store canvas dimensions so we can drive the SVG overlay and
-  // re‑size when the window changes without losing existing drawings
-  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
-  // smooth cursor marker that follows pointer
-  useEffect(() => {
-    let raf: number
-    const tick = () => {
-      const lerp = 1
-      const nextX = cursorRef.current.x + (cursorTargetRef.current.x - cursorRef.current.x) * lerp
-      const nextY = cursorRef.current.y + (cursorTargetRef.current.y - cursorRef.current.y) * lerp
-      cursorRef.current = { x: nextX, y: nextY }
-      setCursorPos(cursorRef.current)
-      raf = requestAnimationFrame(tick)
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [])
-
-  type BBox = { minX: number; minY: number; maxX: number; maxY: number }
-  const getMultiBBox = (acts: DrawAction[]): BBox | null => {
-    if (acts.length === 0) return null
-    const boxes = acts.map(getBBox)
-    return {
-      minX: Math.min(...boxes.map((b) => b.minX)),
-      minY: Math.min(...boxes.map((b) => b.minY)),
-      maxX: Math.max(...boxes.map((b) => b.maxX)),
-      maxY: Math.max(...boxes.map((b) => b.maxY)),
-    }
-  }
-
-  const bboxesIntersect = (a: BBox, b: BBox) =>
-    a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY
-  const getBBox = (action: DrawAction): BBox => {
-    if (action.type === 'image' && action.points.length >= 2) {
-      const [s, e] = action.points
-      return {
-        minX: Math.min(s.x, e.x),
-        minY: Math.min(s.y, e.y),
-        maxX: Math.max(s.x, e.x),
-        maxY: Math.max(s.y, e.y),
+const shapePath = (el: El): Path2D => {
+  const p = new Path2D()
+  if (el.points.length < 2) return p
+  const [s, e] = el.points
+  const w = e.x - s.x
+  const h = e.y - s.y
+  const cx = s.x + w / 2
+  const cy = s.y + h / 2
+  const aw = Math.abs(w)
+  const ah = Math.abs(h)
+  switch (el.shapeKind) {
+    case 'circle':
+      p.ellipse(cx, cy, Math.max(aw / 2, 1), Math.max(ah / 2, 1), 0, 0, Math.PI * 2)
+      break
+    case 'star': {
+      const outer = Math.max(aw, ah) / 2 || 1
+      for (let i = 0; i < 10; i++) {
+        const a = (Math.PI / 5) * i - Math.PI / 2
+        const r = i % 2 === 0 ? outer : outer * 0.5
+        const x = cx + Math.cos(a) * r
+        const y = cy + Math.sin(a) * r
+        i === 0 ? p.moveTo(x, y) : p.lineTo(x, y)
       }
+      p.closePath()
+      break
     }
-    if (action.type === 'shape' && action.points.length >= 2) {
-      const [s, e] = action.points
-      return {
-        minX: Math.min(s.x, e.x),
-        minY: Math.min(s.y, e.y),
-        maxX: Math.max(s.x, e.x),
-        maxY: Math.max(s.y, e.y),
-      }
+    case 'heart': {
+      const sx = aw / 2 || 1
+      const sy = ah / 2 || 1
+      p.moveTo(cx, cy + sy * 0.9)
+      p.bezierCurveTo(cx + sx, cy + sy * 0.7, cx + sx * 0.9, cy - sy * 0.2, cx, cy + sy * 0.25)
+      p.bezierCurveTo(cx - sx * 0.9, cy - sy * 0.2, cx - sx, cy + sy * 0.7, cx, cy + sy * 0.9)
+      p.closePath()
+      break
     }
-    const xs = action.points.map((p) => p.x)
-    const ys = action.points.map((p) => p.y)
-    const r =
-      action.type === 'stroke' && action.points.length === 1 ? (action.lineWidth ?? 2) / 2 : 0
-    return {
-      minX: Math.min(...xs) - r,
-      minY: Math.min(...ys) - r,
-      maxX: Math.max(...xs) + r,
-      maxY: Math.max(...ys) + r,
-    }
+    default:
+      p.rect(Math.min(s.x, e.x), Math.min(s.y, e.y), aw, ah)
   }
+  return p
+}
 
-  const pointInBBox = (x: number, y: number, bbox: BBox, padding = 8) =>
-    x >= bbox.minX - padding &&
-    x <= bbox.maxX + padding &&
-    y >= bbox.minY - padding &&
-    y <= bbox.maxY + padding
+const connPts = (el: El, map: Map<string, El>): [Pt, Pt] | null => {
+  const a = el.from ? map.get(el.from) : undefined
+  const b = el.to ? map.get(el.to) : undefined
+  if (!a || !b) return null
+  const ba = getBBox(a, map)
+  const bb = getBBox(b, map)
+  const ca = { x: (ba.minX + ba.maxX) / 2, y: (ba.minY + ba.maxY) / 2 }
+  const cb = { x: (bb.minX + bb.maxX) / 2, y: (bb.minY + bb.maxY) / 2 }
+  return [rectEdge(ba, cb.x, cb.y), rectEdge(bb, ca.x, ca.y)]
+}
 
-  /** Returns true only when (x,y) is close to an actual drawn line or shape outline.
-   *  Uses canvas isPointInStroke / isPointInPath for pixel-perfect shape hit testing.
-   *  extraPadding is world-space pixels added on top of the stroke's own half-width. */
-  const pointNearAction = (x: number, y: number, action: DrawAction, extraPadding = 8): boolean => {
-    // Images: click anywhere inside the image bounding box
-    if (action.type === 'image') {
-      return pointInBBox(x, y, getBBox(action), extraPadding)
-    }
+function getBBox(el: El, map: Map<string, El>): BBox {
+  if (el.type === 'connector') {
+    const p = connPts(el, map)
+    return p ? bboxOf(p[0], p[1]) : { minX: 0, minY: 0, maxX: 0, maxY: 0 }
+  }
+  if ((isBoxEl(el) || el.type === 'shape') && el.points.length >= 2)
+    return bboxOf(el.points[0], el.points[1])
+  const r = el.type === 'stroke' ? (el.lineWidth ?? 4) / 2 : 0
+  const xs = el.points.map((p) => p.x)
+  const ys = el.points.map((p) => p.y)
+  return {
+    minX: Math.min(...xs) - r,
+    minY: Math.min(...ys) - r,
+    maxX: Math.max(...xs) + r,
+    maxY: Math.max(...ys) + r,
+  }
+}
 
-    const hitRadius = (action.lineWidth ?? 2) / 2 + extraPadding
-
-    // Cheap bbox reject first
-    if (!pointInBBox(x, y, getBBox(action), hitRadius)) return false
-
-    if (action.type === 'stroke') {
-      // Segment-by-segment distance check — fast and accurate for polylines
-      const pts = action.points
-      if (pts.length === 1) {
-        const dx = x - pts[0].x,
-          dy = y - pts[0].y
-        return Math.sqrt(dx * dx + dy * dy) <= hitRadius
-      }
-      for (let i = 0; i < pts.length - 1; i++) {
-        const ax = pts[i].x,
-          ay = pts[i].y
-        const bx = pts[i + 1].x,
-          by = pts[i + 1].y
-        const abx = bx - ax,
-          aby = by - ay
-        const len2 = abx * abx + aby * aby
-        let t = len2 > 0 ? ((x - ax) * abx + (y - ay) * aby) / len2 : 0
-        t = Math.max(0, Math.min(1, t))
-        const dx = x - (ax + t * abx),
-          dy = y - (ay + t * aby)
-        if (Math.sqrt(dx * dx + dy * dy) <= hitRadius) return true
-      }
-      return false
-    }
-
-    if (action.type === 'shape') {
-      if (!action.points || action.points.length < 2) return false
-
-      // Use an offscreen canvas so we can call isPointInStroke / isPointInPath
-      // with the exact same path the renderer uses — perfectly accurate for all shapes.
-      const offscreen = document.createElement('canvas')
-      offscreen.width = 1
-      offscreen.height = 1
-      const ctx = offscreen.getContext('2d')
-      if (!ctx) return false
-
-      // Build the path using the same helper logic as drawShapePath
-      const [start, end] = action.points
-      const width = end.x - start.x
-      const height = end.y - start.y
-      const centerX = start.x + width / 2
-      const centerY = start.y + height / 2
-      const absW = Math.abs(width)
-      const absH = Math.abs(height)
-
-      ctx.beginPath()
-      switch (action.shapeKind) {
-        case 'rectangle': {
-          const rx = Math.min(start.x, end.x)
-          const ry = Math.min(start.y, end.y)
-          ctx.rect(rx, ry, absW, absH)
-          break
-        }
-        case 'circle':
-          ctx.ellipse(
-            centerX,
-            centerY,
-            Math.max(absW / 2, 1),
-            Math.max(absH / 2, 1),
-            0,
-            0,
-            Math.PI * 2,
-          )
-          break
-        case 'star': {
-          const outerR = Math.max(absW, absH) / 2 || 1
-          const innerR = outerR * 0.5
-          for (let i = 0; i < 10; i++) {
-            const angle = (Math.PI / 5) * i - Math.PI / 2
-            const r = i % 2 === 0 ? outerR : innerR
-            const px = centerX + Math.cos(angle) * r
-            const py = centerY + Math.sin(angle) * r
-            i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py)
-          }
-          ctx.closePath()
-          break
-        }
-        case 'heart': {
-          const sx = absW / 2 || 1
-          const sy = absH / 2 || 1
-          ctx.moveTo(centerX, centerY + sy * 0.9)
-          ctx.bezierCurveTo(
-            centerX + sx,
-            centerY + sy * 0.7,
-            centerX + sx * 0.9,
-            centerY - sy * 0.2,
-            centerX,
-            centerY + sy * 0.25,
-          )
-          ctx.bezierCurveTo(
-            centerX - sx * 0.9,
-            centerY - sy * 0.2,
-            centerX - sx,
-            centerY + sy * 0.7,
-            centerX,
-            centerY + sy * 0.9,
-          )
-          ctx.closePath()
-          break
-        }
-      }
-
-      if (action.shapeFill === 'fill') {
-        // Filled: hit anywhere inside the shape
-        return ctx.isPointInPath(x, y)
-      } else {
-        // Outline: hit near the stroke edge; set lineWidth to include our padding
-        ctx.lineWidth = (action.lineWidth ?? 2) + extraPadding * 2
-        return ctx.isPointInStroke(x, y)
-      }
-    }
+const pointNear = (el: El, p: Pt, pad: number, map: Map<string, El>): boolean => {
+  if (isBoxEl(el)) return inBox(p, getBBox(el, map), pad)
+  const hit = (el.lineWidth ?? 4) / 2 + pad
+  if (el.type === 'connector') {
+    const pts = connPts(el, map)
+    return !!pts && segDist(p, pts[0], pts[1]) <= Math.max(hit, 6 + pad)
+  }
+  if (!inBox(p, getBBox(el, map), hit)) return false
+  if (el.type === 'stroke') {
+    const pts = el.points
+    if (pts.length === 1) return Math.hypot(p.x - pts[0].x, p.y - pts[0].y) <= hit
+    for (let i = 0; i < pts.length - 1; i++) if (segDist(p, pts[i], pts[i + 1]) <= hit) return true
     return false
   }
+  if (el.type === 'shape') {
+    const path = shapePath(el)
+    if (el.fill === 'fill') return hitCtx.isPointInPath(path, p.x, p.y)
+    hitCtx.lineWidth = (el.lineWidth ?? 4) + pad * 2
+    return hitCtx.isPointInStroke(path, p.x, p.y)
+  }
+  return false
+}
 
-  const HANDLE_SIZE = 8
-  const getResizeHandles = (bbox: BBox) => [
-    { id: 'nw', x: bbox.minX, y: bbox.minY },
-    { id: 'ne', x: bbox.maxX, y: bbox.minY },
-    { id: 'se', x: bbox.maxX, y: bbox.maxY },
-    { id: 'sw', x: bbox.minX, y: bbox.maxY },
-  ]
+/** Old rows used drawColor / shapeFill / imageDataUrl; map them onto the current schema. */
+const normalize = (raw: any): El => {
+  const { drawColor, shapeFill, imageDataUrl, drawing, ...rest } = raw
+  let color = rest.color ?? drawColor
+  if (color === '#000000' || color === '#0a0a0a') color = 'auto'
+  return { ...rest, color, fill: rest.fill ?? shapeFill, src: rest.src ?? imageDataUrl } as El
+}
 
-  // Load and cache an image element for a given data URL.
-  // Uses RAF to defer the redraw so it never fires re-entrantly inside drawAction.
-  const getOrLoadImage = (dataUrl: string): HTMLImageElement | null => {
-    if (!dataUrl) return null
-    if (imageCache.current.has(dataUrl)) return imageCache.current.get(dataUrl)!
-    // Return null immediately; set a loading sentinel so we don't spawn duplicate loads
-    imageCache.current.set(dataUrl, null as any)
-    const img = new Image()
-    img.onload = () => {
-      imageCache.current.set(dataUrl, img)
-      requestAnimationFrame(() => redrawRef.current())
+/** Auto-height for plain text; sticky notes only grow. */
+const fitText = (el: El): El => {
+  const fs = el.fontSize ?? 18
+  const pad = el.note ? 12 : 6
+  const b = bboxOf(el.points[0], el.points[1])
+  measureCtx.font = `${fs}px ${FONT}`
+  const lines = wrapLines(measureCtx, el.text ?? '', b.maxX - b.minX - pad * 2)
+  const need = Math.max(1, lines.length) * fs * 1.35 + pad * 2
+  const h = el.note ? Math.max(b.maxY - b.minY, need) : need
+  return {
+    ...el,
+    points: [
+      { x: b.minX, y: b.minY },
+      { x: b.maxX, y: b.minY + h },
+    ],
+  }
+}
+
+const strokePolyline = (ctx: CanvasRenderingContext2D, pts: Pt[]) => {
+  ctx.beginPath()
+  if (pts.length === 1) {
+    ctx.arc(pts[0].x, pts[0].y, ctx.lineWidth / 2, 0, Math.PI * 2)
+    ctx.fillStyle = ctx.strokeStyle
+    ctx.fill()
+    return
+  }
+  ctx.moveTo(pts[0].x, pts[0].y)
+  if (pts.length === 2) ctx.lineTo(pts[1].x, pts[1].y)
+  else {
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2
+      const my = (pts[i].y + pts[i + 1].y) / 2
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my)
     }
-    img.onerror = () => {
-      imageCache.current.delete(dataUrl)
+    ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y)
+  }
+  ctx.stroke()
+}
+
+/* ================================================================== */
+/* Small UI pieces                                                     */
+/* ================================================================== */
+
+const ToolBtn: React.FC<{
+  icon: React.ReactNode
+  label: string
+  kbd?: string
+  active?: boolean
+  disabled?: boolean
+  danger?: boolean
+  onClick: () => void
+}> = ({ icon, label, kbd, active, disabled, danger, onClick }) => (
+  <button
+    className={`dv-iconbtn ${danger ? 'danger' : ''}`}
+    data-active={!!active}
+    disabled={disabled}
+    title={kbd ? `${label} (${kbd})` : label}
+    aria-label={label}
+    onClick={onClick}
+  >
+    {icon}
+  </button>
+)
+
+const shapeIcons: Record<
+  ShapeKind,
+  React.ComponentType<{ size?: number; strokeWidth?: number }>
+> = {
+  rectangle: Square,
+  circle: Circle,
+  star: Star,
+  heart: Heart,
+}
+
+/* ================================================================== */
+/* Whiteboard                                                          */
+/* ================================================================== */
+
+export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }> = ({
+  active = true,
+  theme = 'light',
+}) => {
+  const { roomId, me, send, on, status } = useRoom()
+  const taskData = useRoomTasks()
+
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const editorRef = useRef<HTMLTextAreaElement>(null)
+
+  /* ---------- mutable scene (read by the draw loop; React state is only for UI) ---------- */
+  const st = useRef({
+    els: [] as El[],
+    map: new Map<string, El>(),
+    sel: new Set<string>(),
+    view: { x: 0, y: 0, k: 1 },
+    w: 0,
+    h: 0,
+    dpr: 1,
+    hoverId: null as string | null,
+    hoverHandle: null as string | null,
+    preview: null as El | null,
+    marquee: null as BBox | null,
+    act: null as Act,
+    space: false,
+    cursors: new Map<string, { name: string; color: string; x: number; y: number; t: number }>(),
+  }).current
+
+  // ---------- UI state ----------
+  const [tool, setToolState] = useState<Tool>('select')
+  const [color, setColor] = useState('auto')
+  const [lineWidth, setLineWidth] = useState(4)
+  const [shapeKind, setShapeKind] = useState<ShapeKind>('rectangle')
+  const [shapeFill, setShapeFill] = useState<'outline' | 'fill'>('outline')
+  const [noteColor, setNoteColor] = useState(NOTE_COLORS[0])
+  const [selIds, setSelIds] = useState<string[]>([])
+  const [count, setCount] = useState(0)
+  const [zoomPct, setZoomPct] = useState(100)
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [showTasks, setShowTasks] = useState(false)
+  const [showPicker, setShowPicker] = useState(false)
+  const [taskQuery, setTaskQuery] = useState('')
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [cfg, setCfg] = useState({
+    bg: 'theme' as 'theme' | 'custom',
+    customBg: '#ffffff',
+    grid: 'dots' as 'none' | 'dots' | 'lines',
+    gridSize: 24,
+    snap: false,
+  })
+  const [editing, setEditing] = useState<{ id: string; isNew: boolean } | null>(null)
+  const [editText, setEditText] = useState('')
+  const [, force] = useState(0)
+
+  // ---------- refs that mirror state for event handlers ----------
+  const toolRef = useRef(tool)
+  toolRef.current = tool
+  const styleRef = useRef({ color, lineWidth, shapeKind, shapeFill, noteColor })
+  styleRef.current = { color, lineWidth, shapeKind, shapeFill, noteColor }
+  const cfgRef = useRef(cfg)
+  cfgRef.current = cfg
+  const themeRef = useRef(theme)
+  themeRef.current = theme
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const editingRef = useRef<{ id: string; isNew: boolean } | null>(null)
+  const editTextRef = useRef('')
+  const taskRef = useRef(taskData)
+  taskRef.current = taskData
+  const undoStack = useRef<Entry[]>([])
+  const redoStack = useRef<Entry[]>([])
+  const pointers = useRef(new Map<number, Pt>())
+  const pinch = useRef<{ d: number; cx: number; cy: number } | null>(null)
+  const lastCursorSend = useRef(0)
+  const lastLiveSend = useRef(0)
+  const imageCache = useRef(new Map<string, HTMLImageElement | 'loading'>())
+  const cursorStr = useRef('')
+  const api = useRef<any>({})
+
+  /* ================================================================== */
+  /* Drawing                                                             */
+  /* ================================================================== */
+
+  const rafRef = useRef(0)
+  const drawRef = useRef<() => void>(() => {})
+  // const requestDraw = useCallback(() => {
+  //   if (rafRef.current) return
+  //   rafRef.current = requestAnimationFrame(() => {
+  //     rafRef.current = 0
+  //     drawRef.current()
+  //   })
+  // }, [])
+  // const requestDraw = useCallback(() => {
+  //   console.log('[REQUEST DRAW]', {
+  //     frameID: rafRef.current,
+  //     drawAssigned: drawRef.current.toString().slice(0, 100),
+  //     width: st.w,
+  //     height: st.h,
+  //   })
+
+  //   drawRef.current()
+  // }, [])
+  const requestDraw = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current)
     }
-    img.src = dataUrl
+
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0
+      drawRef.current()
+    })
+  }, [])
+  // const requestDraw = useCallback(() => {
+  //   console.log('[REQUEST DRAW CALLED]', {
+  //     pendingFrame: rafRef.current,
+  //     drawAssigned: drawRef.current.toString().includes('WHITEBOARD DRAW CALLED'),
+  //   })
+
+  //   if (rafRef.current) return
+
+  //   rafRef.current = requestAnimationFrame(() => {
+  //     rafRef.current = 0
+  //     console.log('[ANIMATION FRAME FIRED]')
+  //     drawRef.current()
+  //   })
+  // }, [])
+
+  const getImage = (src: string) => {
+    const cached = imageCache.current.get(src)
+    if (cached && cached !== 'loading') return cached
+    if (!cached) {
+      imageCache.current.set(src, 'loading')
+      const img = new Image()
+      img.onload = () => {
+        imageCache.current.set(src, img)
+        requestDraw()
+      }
+      img.onerror = () => imageCache.current.delete(src)
+      img.src = src
+    }
     return null
   }
 
-  // Keep a stable ref to redraw so image onload can call it
-  const redrawRef = useRef<() => void>(() => {})
+  const selBox = (): BBox | null => {
+    const items = [...st.sel]
+      .map((id) => st.map.get(id))
+      .filter((e): e is El => !!e && e.type !== 'connector')
+    if (!items.length) return null
+    const b = unionBox(items.map((e) => getBBox(e, st.map)))
+    return { minX: b.minX - PAD, minY: b.minY - PAD, maxX: b.maxX + PAD, maxY: b.maxY + PAD }
+  }
 
-  // helper that performs full redraw; can be called from resize handler
-  const redraw = () => {
+  const handlesOf = (b: BBox) => [
+    { id: 'nw', x: b.minX, y: b.minY },
+    { id: 'ne', x: b.maxX, y: b.minY },
+    { id: 'se', x: b.maxX, y: b.maxY },
+    { id: 'sw', x: b.minX, y: b.maxY },
+  ]
+
+  const draw = () => {
     const canvas = canvasRef.current
-    if (!canvas) return
-    if (canvasSize.width === 0 || canvasSize.height === 0) return
+    if (!canvas || !st.w || !st.h) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
+    const pal = PAL[themeRef.current]
+    const c = cfgRef.current
+    const { view } = st
+    const k = view.k
+    const editId = editingRef.current?.id
 
-    canvas.width = canvasSize.width
-    canvas.height = canvasSize.height
+    ctx.setTransform(st.dpr, 0, 0, st.dpr, 0, 0)
+    ctx.fillStyle = c.bg === 'custom' ? c.customBg : pal.bg
+    ctx.fillRect(0, 0, st.w, st.h)
+
+    // grid
+    if (c.grid !== 'none') {
+      let step = c.gridSize * k
+      while (step < 10) step *= 2
+      const ox = ((view.x % step) + step) % step
+      const oy = ((view.y % step) + step) % step
+      if (c.grid === 'dots') {
+        ctx.fillStyle = pal.dot
+        for (let x = ox; x < st.w; x += step)
+          for (let y = oy; y < st.h; y += step) ctx.fillRect(x - 0.75, y - 0.75, 1.5, 1.5)
+      } else {
+        ctx.strokeStyle = pal.line
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        for (let x = ox; x < st.w; x += step) {
+          ctx.moveTo(Math.round(x) + 0.5, 0)
+          ctx.lineTo(Math.round(x) + 0.5, st.h)
+        }
+        for (let y = oy; y < st.h; y += step) {
+          ctx.moveTo(0, Math.round(y) + 0.5)
+          ctx.lineTo(st.w, Math.round(y) + 0.5)
+        }
+        ctx.stroke()
+      }
+    }
+
+    ctx.save()
+    ctx.translate(view.x, view.y)
+    ctx.scale(k, k)
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
 
-    // background
-    ctx.fillStyle =
-      colorScheme === 'dark' ? '#1a1a1a' : colorScheme === 'custom' ? customBg : 'white'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    const all = st.preview ? [...st.els, st.preview] : st.els
 
-    // grid
-    if (showGrid) {
+    const outline = (el: El, strokeStyle: string, px: number, dashed = false) => {
       ctx.save()
-      ctx.translate(panX, panY)
-      ctx.scale(scale, scale)
-      ctx.strokeStyle = colorScheme === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.15)'
-      ctx.lineWidth = 1 / scale
-      const startX = -panX / scale
-      const startY = -panY / scale
-      const endX = startX + canvas.width / scale
-      const endY = startY + canvas.height / scale
-      const snappedStartX = Math.floor(startX / gridSize) * gridSize
-      const snappedStartY = Math.floor(startY / gridSize) * gridSize
-      for (let x = snappedStartX; x < endX; x += gridSize) {
+      ctx.strokeStyle = strokeStyle
+      ctx.lineWidth = px / k
+      if (dashed) ctx.setLineDash([6 / k, 4 / k])
+      if (el.type === 'stroke') {
+        ctx.lineWidth = (el.lineWidth ?? 4) + 6 / k
+        strokePolyline(ctx, el.points)
+      } else if (el.type === 'shape') {
+        ctx.lineWidth = (el.lineWidth ?? 4) + 6 / k
+        ctx.stroke(shapePath(el))
+      } else if (el.type === 'connector') {
+        const p = connPts(el, st.map)
+        if (p) {
+          ctx.lineWidth = (el.lineWidth ?? 2) + 6 / k
+          ctx.beginPath()
+          ctx.moveTo(p[0].x, p[0].y)
+          ctx.lineTo(p[1].x, p[1].y)
+          ctx.stroke()
+        }
+      } else {
+        const b = getBBox(el, st.map)
+        const g = 3 / k
         ctx.beginPath()
-        ctx.moveTo(x, startY)
-        ctx.lineTo(x, endY)
-        ctx.stroke()
-      }
-      for (let y = snappedStartY; y < endY; y += gridSize) {
-        ctx.beginPath()
-        ctx.moveTo(startX, y)
-        ctx.lineTo(endX, y)
+        ctx.roundRect(b.minX - g, b.minY - g, b.maxX - b.minX + g * 2, b.maxY - b.minY + g * 2, 8)
         ctx.stroke()
       }
       ctx.restore()
     }
 
-    // draw all actions
-    ctx.save()
-    ctx.translate(panX, panY)
-    ctx.scale(scale, scale)
-    const drawShapePath = (c: CanvasRenderingContext2D, action: DrawAction) => {
-      if (!action.points || action.points.length < 2) return
-      const [start, end] = action.points
-      const width = end.x - start.x
-      const height = end.y - start.y
-      const centerX = start.x + width / 2
-      const centerY = start.y + height / 2
-      const absW = Math.abs(width)
-      const absH = Math.abs(height)
-      c.beginPath()
-      switch (action.shapeKind) {
-        case 'rectangle': {
-          const x = Math.min(start.x, end.x)
-          const y = Math.min(start.y, end.y)
-          c.rect(x, y, absW, absH)
-          break
-        }
-        case 'circle': {
-          c.ellipse(
-            centerX,
-            centerY,
-            Math.max(absW / 2, 1),
-            Math.max(absH / 2, 1),
-            0,
-            0,
-            Math.PI * 2,
-          )
-          break
-        }
-        case 'star': {
-          const outerRadius = Math.max(absW, absH) / 2 || 1
-          const innerRadius = outerRadius * 0.5
-          for (let i = 0; i < 10; i++) {
-            const angle = (Math.PI / 5) * i
-            const r = i % 2 === 0 ? outerRadius : innerRadius
-            const px = centerX + Math.cos(angle - Math.PI / 2) * r
-            const py = centerY + Math.sin(angle - Math.PI / 2) * r
-            i === 0 ? c.moveTo(px, py) : c.lineTo(px, py)
-          }
-          c.closePath()
-          break
-        }
-        case 'heart': {
-          const sx = absW / 2 || 1
-          const sy = absH / 2 || 1
-          c.moveTo(centerX, centerY + sy * 0.9)
-          c.bezierCurveTo(
-            centerX + sx,
-            centerY + sy * 0.7,
-            centerX + sx * 0.9,
-            centerY - sy * 0.2,
-            centerX,
-            centerY + sy * 0.25,
-          )
-          c.bezierCurveTo(
-            centerX - sx * 0.9,
-            centerY - sy * 0.2,
-            centerX - sx,
-            centerY + sy * 0.7,
-            centerX,
-            centerY + sy * 0.9,
-          )
-          c.closePath()
-          break
-        }
-      }
-    }
-    const drawAction = (action: DrawAction) => {
-      if (!action.drawing || action.points.length < 1) return
+    // connectors sit underneath everything else
+    for (const el of all) {
+      if (el.type !== 'connector') continue
+      const p = connPts(el, st.map)
+      if (!p) continue
+      const lw = el.lineWidth ?? 2
+      const col = st.sel.has(el.id)
+        ? pal.accent
+        : el.color
+          ? resolveColor(el.color, pal.ink)
+          : pal.link
       ctx.save()
-      ctx.lineCap = 'round'
-      ctx.lineJoin = 'round'
-      ctx.lineWidth = action.lineWidth || mouseSize
-      ctx.strokeStyle = action.drawColor || drawColor
-      ctx.fillStyle = action.drawColor || drawColor
+      ctx.strokeStyle = col
+      ctx.fillStyle = col
+      ctx.lineWidth = lw
+      ctx.beginPath()
+      ctx.moveTo(p[0].x, p[0].y)
+      ctx.lineTo(p[1].x, p[1].y)
+      ctx.stroke()
+      const ang = Math.atan2(p[1].y - p[0].y, p[1].x - p[0].x)
+      const head = 9 + lw * 1.5
+      ctx.beginPath()
+      ctx.moveTo(p[1].x, p[1].y)
+      ctx.lineTo(p[1].x - head * Math.cos(ang - 0.4), p[1].y - head * Math.sin(ang - 0.4))
+      ctx.lineTo(p[1].x - head * Math.cos(ang + 0.4), p[1].y - head * Math.sin(ang + 0.4))
+      ctx.closePath()
+      ctx.fill()
+      ctx.restore()
+    }
 
-      if (action.type === 'stroke') {
-        ctx.beginPath()
-        if (action.points.length === 1) {
-          // Single point — draw a filled circle (dot)
-          ctx.arc(
-            action.points[0].x,
-            action.points[0].y,
-            (action.lineWidth || mouseSize) / 2,
-            0,
-            Math.PI * 2,
-          )
+    for (const el of all) {
+      if (el.type === 'connector') continue
+      ctx.save()
+      if (el.type === 'stroke' && el.points.length) {
+        ctx.strokeStyle = resolveColor(el.color, pal.ink)
+        ctx.lineWidth = el.lineWidth ?? 4
+        strokePolyline(ctx, el.points)
+      } else if (el.type === 'shape' && el.points.length >= 2) {
+        const col = resolveColor(el.color, pal.ink)
+        ctx.lineWidth = el.lineWidth ?? 4
+        ctx.strokeStyle = col
+        ctx.fillStyle = col
+        const path = shapePath(el)
+        el.fill === 'fill' ? ctx.fill(path) : ctx.stroke(path)
+      } else if (el.type === 'image' && el.src && el.points.length >= 2) {
+        const b = getBBox(el, st.map)
+        const img = getImage(el.src)
+        if (img) ctx.drawImage(img, b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY)
+        else {
+          ctx.fillStyle = pal.border
+          ctx.fillRect(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY)
+        }
+      } else if (el.type === 'text' && el.points.length >= 2) {
+        const b = getBBox(el, st.map)
+        const w = b.maxX - b.minX
+        const h = b.maxY - b.minY
+        const fs = el.fontSize ?? 18
+        const pad = el.note ? 12 : 6
+        if (el.note) {
+          ctx.shadowColor = 'rgba(0,0,0,0.18)'
+          ctx.shadowBlur = 10
+          ctx.shadowOffsetY = 3
+          ctx.fillStyle = el.note
+          ctx.beginPath()
+          ctx.roundRect(b.minX, b.minY, w, h, 6)
           ctx.fill()
-        } else {
-          ctx.moveTo(action.points[0].x, action.points[0].y)
-          for (let i = 1; i < action.points.length; i++) {
-            ctx.lineTo(action.points[i].x, action.points[i].y)
-          }
-          ctx.stroke()
+          ctx.shadowColor = 'transparent'
         }
-      } else if (action.type === 'shape') {
-        drawShapePath(ctx, action)
-        if (action.shapeFill === 'fill') ctx.fill()
-        else ctx.stroke()
-      } else if (action.type === 'image' && action.imageDataUrl && action.points.length >= 2) {
-        const [tl, br] = action.points
-        const w = br.x - tl.x
-        const h = br.y - tl.y
-        const img = getOrLoadImage(action.imageDataUrl)
-        if (img) {
-          ctx.drawImage(img, tl.x, tl.y, w, h)
-        } else {
-          // Placeholder while loading
-          ctx.fillStyle = 'rgba(200,200,200,0.5)'
-          ctx.fillRect(tl.x, tl.y, w, h)
-          ctx.strokeStyle = '#aaa'
-          ctx.lineWidth = 1
-          ctx.strokeRect(tl.x, tl.y, w, h)
+        if (el.id !== editId) {
+          ctx.fillStyle = el.note ? '#27272a' : resolveColor(el.color, pal.ink)
+          ctx.font = `${fs}px ${FONT}`
+          ctx.textBaseline = 'top'
+          wrapLines(ctx, el.text ?? '', w - pad * 2).forEach((line, i) =>
+            ctx.fillText(line, b.minX + pad, b.minY + pad + i * fs * 1.35),
+          )
+        }
+      } else if (el.type === 'task' && el.points.length >= 2) {
+        const b = getBBox(el, st.map)
+        const w = b.maxX - b.minX
+        const h = b.maxY - b.minY
+        const task = el.taskId ? taskRef.current.byId.get(el.taskId) : undefined
+        const urg = task ? taskRef.current.urgencyOpt(task.urgency) : null
+        const stat = task ? taskRef.current.statusOpt(task.status) : null
+        ctx.shadowColor = 'rgba(0,0,0,0.16)'
+        ctx.shadowBlur = 10
+        ctx.shadowOffsetY = 3
+        ctx.fillStyle = pal.panel
+        ctx.beginPath()
+        ctx.roundRect(b.minX, b.minY, w, h, 10)
+        ctx.fill()
+        ctx.shadowColor = 'transparent'
+        ctx.strokeStyle = pal.border
+        ctx.lineWidth = 1 / k
+        ctx.stroke()
+        ctx.save()
+        ctx.beginPath()
+        ctx.roundRect(b.minX, b.minY, w, h, 10)
+        ctx.clip()
+        ctx.fillStyle = urg?.color ?? pal.border
+        ctx.fillRect(b.minX, b.minY, 5, h)
+        ctx.restore()
+        ctx.textBaseline = 'top'
+        ctx.fillStyle = pal.muted
+        ctx.font = `11px ${MONO}`
+        ctx.fillText('task', b.minX + 16, b.minY + 11)
+        ctx.fillStyle = task ? pal.ink : pal.muted
+        ctx.font = `600 14px ${FONT}`
+        const lines = wrapLines(ctx, task ? task.title : 'This task was deleted', w - 32).slice(
+          0,
+          2,
+        )
+        lines.forEach((l, i) => ctx.fillText(l, b.minX + 16, b.minY + 28 + i * 19))
+        if (stat) {
+          ctx.fillStyle = stat.color
+          ctx.beginPath()
+          ctx.arc(b.minX + 20, b.maxY - 17, 4, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = pal.muted
+          ctx.font = `12px ${FONT}`
+          ctx.fillText(`${stat.label}${urg ? ` · ${urg.label}` : ''}`, b.minX + 30, b.maxY - 24)
         }
       }
       ctx.restore()
     }
 
-    for (const action of actions) drawAction(action)
-    if (currentAction) drawAction(currentAction)
-
-    // hover highlight — stroke under cursor when select tool, not dragging
-    if (hoveredId && !marqueeStartRef.current) {
-      const hovered = actions.find((a) => a.id === hoveredId)
-      if (hovered) {
-        // Draw a wide blue halo so it peeks out around the edges of the stroke
+    // connect-tool preview
+    if (st.act?.kind === 'connect') {
+      const from = st.map.get(st.act.from)
+      if (from) {
+        const p0 = rectEdge(getBBox(from, st.map), st.act.at.x, st.act.at.y)
         ctx.save()
-        ctx.strokeStyle = 'rgba(59,130,246,0.85)'
-        ctx.lineCap = 'round'
-        ctx.lineJoin = 'round'
-        const baseWidth = hovered.lineWidth || mouseSize
-        // halo lineWidth is in world units (canvas is already scaled) so it
-        // grows/shrinks with zoom just like the stroke itself does
-        const haloW = baseWidth + 8
-        if (hovered.type === 'stroke') {
-          ctx.lineWidth = haloW
-          ctx.beginPath()
-          if (hovered.points.length === 1) {
-            ctx.arc(hovered.points[0].x, hovered.points[0].y, haloW / 2, 0, Math.PI * 2)
-          } else {
-            ctx.moveTo(hovered.points[0].x, hovered.points[0].y)
-            for (let i = 1; i < hovered.points.length; i++)
-              ctx.lineTo(hovered.points[i].x, hovered.points[i].y)
-          }
-          ctx.stroke()
-          // Re-draw the original stroke on top so halo only shows around edges
-          ctx.strokeStyle = hovered.drawColor || drawColor
-          ctx.fillStyle = hovered.drawColor || drawColor
-          ctx.lineWidth = baseWidth
-          ctx.beginPath()
-          if (hovered.points.length === 1) {
-            ctx.arc(hovered.points[0].x, hovered.points[0].y, baseWidth / 2, 0, Math.PI * 2)
-            ctx.fill()
-          } else {
-            ctx.moveTo(hovered.points[0].x, hovered.points[0].y)
-            for (let i = 1; i < hovered.points.length; i++)
-              ctx.lineTo(hovered.points[i].x, hovered.points[i].y)
-            ctx.stroke()
-          }
-        } else if (hovered.type === 'shape') {
-          ctx.lineWidth = haloW
-          drawShapePath(ctx, hovered)
-          ctx.stroke()
-        } else if (hovered.type === 'image' && hovered.points.length >= 2) {
-          const [tl, br] = hovered.points
-          ctx.lineWidth = 3
-          ctx.setLineDash([5, 3])
-          ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y)
-          ctx.setLineDash([])
-        }
+        ctx.strokeStyle = pal.accent
+        ctx.lineWidth = 2 / k
+        ctx.setLineDash([6 / k, 5 / k])
+        ctx.beginPath()
+        ctx.moveTo(p0.x, p0.y)
+        ctx.lineTo(st.act.at.x, st.act.at.y)
+        ctx.stroke()
         ctx.restore()
       }
     }
 
-    // marquee rect + preview of what would be selected
-    if (marquee) {
-      const marqueeBbox: BBox = {
-        minX: marquee.x,
-        minY: marquee.y,
-        maxX: marquee.x + marquee.w,
-        maxY: marquee.y + marquee.h,
-      }
-      const wouldSelect = actions.filter((a) => a.id && bboxesIntersect(getBBox(a), marqueeBbox))
-      for (const sel of wouldSelect) {
-        ctx.save()
-        ctx.strokeStyle = 'rgba(59,130,246,0.5)'
-        ctx.lineWidth = (sel.lineWidth || mouseSize) + 6
-        ctx.lineCap = 'round'
-        ctx.lineJoin = 'round'
-        if (sel.type === 'stroke') {
-          ctx.beginPath()
-          if (sel.points.length === 1) {
-            ctx.arc(
-              sel.points[0].x,
-              sel.points[0].y,
-              ((sel.lineWidth || mouseSize) + 6) / 2,
-              0,
-              Math.PI * 2,
-            )
-          } else {
-            ctx.moveTo(sel.points[0].x, sel.points[0].y)
-            for (let i = 1; i < sel.points.length; i++) ctx.lineTo(sel.points[i].x, sel.points[i].y)
-          }
-          ctx.stroke()
-        } else if (sel.type === 'shape') {
-          drawShapePath(ctx, sel)
-          ctx.stroke()
-        } else if (sel.type === 'image' && sel.points.length >= 2) {
-          ctx.lineWidth = 3
-          const [tl, br] = sel.points
-          ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y)
-        }
-        ctx.restore()
-      }
+    // hover
+    if (st.hoverId && (!st.act || st.act.kind === 'connect')) {
+      const el = st.map.get(st.hoverId)
+      if (el && !st.sel.has(el.id))
+        outline(
+          el,
+          pal.accent + (toolRef.current === 'connect' ? 'ff' : '88'),
+          toolRef.current === 'connect' ? 2.5 : 1.5,
+        )
+    }
+
+    // marquee
+    if (st.marquee) {
+      const m = st.marquee
       ctx.save()
-      ctx.strokeStyle = '#3b82f6'
-      ctx.lineWidth = 1 / scale
-      ctx.setLineDash([4 / scale, 3 / scale])
-      ctx.fillStyle = 'rgba(59,130,246,0.06)'
-      ctx.fillRect(marquee.x, marquee.y, marquee.w, marquee.h)
-      ctx.strokeRect(marquee.x, marquee.y, marquee.w, marquee.h)
-      ctx.setLineDash([])
+      ctx.fillStyle = pal.accent + '14'
+      ctx.strokeStyle = pal.accent
+      ctx.lineWidth = 1 / k
+      ctx.setLineDash([4 / k, 3 / k])
+      ctx.fillRect(m.minX, m.minY, m.maxX - m.minX, m.maxY - m.minY)
+      ctx.strokeRect(m.minX, m.minY, m.maxX - m.minX, m.maxY - m.minY)
       ctx.restore()
     }
 
-    // selection outlines + bounding box for all selected strokes
-    if (selectedIds.size > 0) {
-      const selectedActions = actions.filter((a) => a.id && selectedIds.has(a.id))
-      const multiBbox = getMultiBBox(selectedActions)
-
-      for (const sel of selectedActions) {
-        ctx.save()
-        ctx.setLineDash([6 / scale, 3 / scale])
-        ctx.strokeStyle = '#3b82f6'
-        ctx.lineCap = 'round'
-        ctx.lineJoin = 'round'
-        if (sel.type === 'stroke') {
-          const sw = sel.lineWidth || mouseSize
-          ctx.lineWidth = sw + 6
-          ctx.beginPath()
-          if (sel.points.length === 1) {
-            ctx.arc(sel.points[0].x, sel.points[0].y, (sw + 6) / 2, 0, Math.PI * 2)
-          } else {
-            ctx.moveTo(sel.points[0].x, sel.points[0].y)
-            for (let i = 1; i < sel.points.length; i++) ctx.lineTo(sel.points[i].x, sel.points[i].y)
-          }
-          ctx.stroke()
-        } else if (sel.type === 'shape') {
-          ctx.lineWidth = (sel.lineWidth || mouseSize) + 6
-          drawShapePath(ctx, sel)
-          ctx.stroke()
-        } else if (sel.type === 'image' && sel.points.length >= 2) {
-          ctx.lineWidth = 2
-          const [tl, br] = sel.points
-          ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y)
-        }
-        ctx.setLineDash([])
-        ctx.restore()
+    // selection
+    if (st.sel.size) {
+      for (const id of st.sel) {
+        const el = st.map.get(id)
+        if (el && el.type !== 'connector') outline(el, pal.accent, 1.5, true)
       }
-
-      if (multiBbox) {
-        const pad = 10
-        const bbox = {
-          minX: multiBbox.minX - pad,
-          minY: multiBbox.minY - pad,
-          maxX: multiBbox.maxX + pad,
-          maxY: multiBbox.maxY + pad,
-        }
+      const box = selBox()
+      if (box && !st.act?.kind.match(/draw|connect/)) {
         ctx.save()
-        ctx.fillStyle = 'rgba(59,130,246,0.04)'
-        ctx.fillRect(bbox.minX, bbox.minY, bbox.maxX - bbox.minX, bbox.maxY - bbox.minY)
-        ctx.strokeStyle = '#3b82f6'
-        ctx.lineWidth = 1.5 / scale
-        ctx.setLineDash([5 / scale, 4 / scale])
-        ctx.strokeRect(bbox.minX, bbox.minY, bbox.maxX - bbox.minX, bbox.maxY - bbox.minY)
-        ctx.setLineDash([])
-        ctx.restore()
-        const hs = HANDLE_SIZE / scale
-        ctx.save()
-        ctx.lineWidth = 1.5 / scale
-        for (const h of getResizeHandles(bbox)) {
-          const isHovered = hoveredHandle === h.id
-          ctx.fillStyle = isHovered ? '#3b82f6' : 'white'
-          ctx.strokeStyle = '#3b82f6'
-          const size = isHovered ? hs * 1.4 : hs
+        ctx.fillStyle = pal.accent + '0d'
+        ctx.strokeStyle = pal.accent
+        ctx.lineWidth = 1 / k
+        ctx.fillRect(box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY)
+        ctx.strokeRect(box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY)
+        const hs = HANDLE / k
+        for (const h of handlesOf(box)) {
+          const size = st.hoverHandle === h.id ? hs * 1.4 : hs
+          ctx.fillStyle = st.hoverHandle === h.id ? pal.accent : '#ffffff'
           ctx.fillRect(h.x - size / 2, h.y - size / 2, size, size)
           ctx.strokeRect(h.x - size / 2, h.y - size / 2, size, size)
         }
         ctx.restore()
       }
     }
-
     ctx.restore()
+
+    // teammates' cursors (screen space)
+    const now = Date.now()
+    st.cursors.forEach((cur) => {
+      if (now - cur.t > 8000) return
+      const sx = cur.x * k + view.x
+      const sy = cur.y * k + view.y
+      ctx.save()
+      ctx.translate(sx, sy)
+      ctx.fillStyle = cur.color
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 1.5
+      ctx.lineJoin = 'round'
+      ctx.stroke(arrowCursor)
+      ctx.fill(arrowCursor)
+      ctx.font = `600 11px ${FONT}`
+      const tw = ctx.measureText(cur.name).width
+      ctx.fillStyle = cur.color
+      ctx.beginPath()
+      ctx.roundRect(14, 14, tw + 12, 20, 6)
+      ctx.fill()
+      ctx.fillStyle = '#fff'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(cur.name, 20, 24.5)
+      ctx.restore()
+    })
+  }
+  drawRef.current = draw
+
+  /* ================================================================== */
+  /* Scene mutation primitives (local state + DB + broadcast)            */
+  /* ================================================================== */
+
+  const setEls = (next: El[]) => {
+    st.els = next
+    st.map = new Map(next.map((e) => [e.id, e]))
+    setCount(next.length)
+    requestDraw()
   }
 
-  // effect drives redraw whenever relevant state changes
-  useEffect(() => {
-    redrawRef.current = redraw
-    redraw()
-  }, [
-    actions,
-    currentAction,
-    panX,
-    panY,
-    canvasSize,
-    scale,
-    showGrid,
-    gridSize,
-    colorScheme,
-    customBg,
-    selectedIds,
-    marquee,
-    hoveredId,
-    hoveredHandle,
-  ])
+  const setSel = (next: Set<string>) => {
+    if (next.size === st.sel.size && [...next].every((id) => st.sel.has(id))) return
+    st.sel = next
+    setSelIds([...next])
+    requestDraw()
+  }
 
-  // resize listener that updates canvasSize from the element’s
-  // client dimensions.  clientWidth/Height reflect the size of the
-  // flex-1 container after the toolbar is laid out and never include a
-  // scrollbar, so we stop the body from scrolling entirely.
-  useEffect(() => {
-    const handleResize = () => {
-      const canvasEl = canvasRef.current
-      if (canvasEl) {
-        canvasEl.width = canvasEl.clientWidth
-        canvasEl.height = canvasEl.clientHeight
-        setCanvasSize({ width: canvasEl.clientWidth, height: canvasEl.clientHeight })
+  const logErr = ({ error }: { error: { message: string } | null }) => {
+    if (error) console.error('[whiteboard]', error.message)
+  }
+
+  const opAdd = (items: El[]) => {
+    const ids = new Set(items.map((i) => i.id))
+    setEls([...st.els.filter((e) => !ids.has(e.id)), ...items])
+    supabase
+      .from('strokes')
+      .insert(items.map((data) => ({ room_id: roomId, data })))
+      .then(logErr)
+    send('wb:add', { items })
+  }
+
+  const opPatch = (items: (Partial<El> & { id: string })[], persist = true) => {
+    const m = new Map(items.map((i) => [i.id, i]))
+    setEls(st.els.map((e) => (m.has(e.id) ? { ...e, ...m.get(e.id)! } : e)))
+    if (persist) {
+      for (const it of items) {
+        const full = st.map.get(it.id)
+        if (full)
+          supabase
+            .from('strokes')
+            .update({ data: full })
+            .eq('room_id', roomId)
+            .eq('data->>id', it.id)
+            .then(logErr)
       }
     }
-    window.addEventListener('resize', handleResize)
-    handleResize() // initial
-    return () => window.removeEventListener('resize', handleResize)
+    send('wb:patch', { items })
+  }
+
+  const opRemove = (ids: string[]) => {
+    const s = new Set(ids)
+    setEls(st.els.filter((e) => !s.has(e.id)))
+    setSel(new Set([...st.sel].filter((id) => !s.has(id))))
+    supabase.from('strokes').delete().eq('room_id', roomId).in('data->>id', ids).then(logErr)
+    send('wb:remove', { ids })
+  }
+
+  const syncHistoryFlags = () => {
+    setCanUndo(undoStack.current.length > 0)
+    setCanRedo(redoStack.current.length > 0)
+  }
+
+  /** Records an undoable step. Entries with the same `tag` within 800ms merge (slider drags etc.). */
+  const commit = (entry: Entry) => {
+    const last = undoStack.current[undoStack.current.length - 1]
+    const now = Date.now()
+    if (entry.tag && last && last.tag === entry.tag && now - (last.t ?? 0) < 800) {
+      last.after = entry.after
+      last.t = now
+    } else undoStack.current.push({ ...entry, t: now })
+    redoStack.current = []
+    syncHistoryFlags()
+  }
+
+  const runEntry = (e: Entry, dir: 'undo' | 'redo') => {
+    const rm = dir === 'undo' ? e.added : e.removed
+    const ad = dir === 'undo' ? e.removed : e.added
+    const pt = dir === 'undo' ? e.before : e.after
+    if (rm.length) opRemove(rm.map((x) => x.id))
+    if (ad.length) opAdd(ad)
+    if (pt.length) opPatch(pt.filter((p) => st.map.has(p.id)))
+  }
+
+  const undo = () => {
+    const e = undoStack.current.pop()
+    if (!e) return
+    redoStack.current.push(e)
+    runEntry(e, 'undo')
+    syncHistoryFlags()
+  }
+
+  const redo = () => {
+    const e = redoStack.current.pop()
+    if (!e) return
+    undoStack.current.push(e)
+    runEntry(e, 'redo')
+    syncHistoryFlags()
+  }
+
+  /** Removes elements plus any connectors attached to them, as one undo step. */
+  const removeWithLinks = (ids: string[]) => {
+    const set = new Set(ids)
+    const doomed = st.els.filter(
+      (e) => set.has(e.id) || (e.type === 'connector' && (set.has(e.from!) || set.has(e.to!))),
+    )
+    if (!doomed.length) return
+    commit({ added: [], removed: doomed, before: [], after: [] })
+    opRemove(doomed.map((e) => e.id))
+  }
+
+  const deleteSelection = () => {
+    if (st.sel.size) removeWithLinks([...st.sel])
+  }
+
+  const duplicateSelection = () => {
+    const picked = [...st.sel]
+      .map((id) => st.map.get(id))
+      .filter((e): e is El => !!e && e.type !== 'connector')
+    if (!picked.length) return
+    const idMap = new Map(picked.map((e) => [e.id, uid()]))
+    const copies = picked.map((e) => ({
+      ...e,
+      id: idMap.get(e.id)!,
+      userId: me.id,
+      points: e.points.map((p) => ({ x: p.x + 28, y: p.y + 28 })),
+    }))
+    const links = st.els
+      .filter((e) => e.type === 'connector' && idMap.has(e.from!) && idMap.has(e.to!))
+      .map((e) => ({ ...e, id: uid(), from: idMap.get(e.from!), to: idMap.get(e.to!) }))
+    const added = [...copies, ...links]
+    commit({ added, removed: [], before: [], after: [] })
+    opAdd(added)
+    setSel(new Set(copies.map((c) => c.id)))
+  }
+
+  const applyStyle = (patch: Partial<El>, tag: string) => {
+    const targets = [...st.sel].map((id) => st.map.get(id)).filter((e): e is El => !!e)
+    const keys = Object.keys(patch) as (keyof El)[]
+    const changed = targets.filter((e) => {
+      if (keys.includes('lineWidth') && !['stroke', 'shape', 'connector'].includes(e.type))
+        return false
+      if (keys.includes('fontSize') && e.type !== 'text') return false
+      if (keys.includes('note') && !(e.type === 'text' && e.note)) return false
+      if (keys.includes('color') && !['stroke', 'shape', 'connector', 'text'].includes(e.type))
+        return false
+      return true
+    })
+    if (!changed.length) return
+    const before = changed.map((e) => ({ ...e }))
+    opPatch(changed.map((e) => ({ id: e.id, ...patch })))
+    commit({
+      added: [],
+      removed: [],
+      before,
+      after: changed.map((e) => ({ ...st.map.get(e.id)! })),
+      tag,
+    })
+  }
+
+  /* ================================================================== */
+  /* View helpers                                                        */
+  /* ================================================================== */
+
+  const setView = (v: Partial<{ x: number; y: number; k: number }>) => {
+    st.view = { ...st.view, ...v }
+    if (v.k !== undefined) setZoomPct(Math.round(st.view.k * 100))
+    if (editingRef.current) force((n) => n + 1)
+    requestDraw()
+  }
+
+  const zoomAt = (factor: number, clientX: number, clientY: number) => {
+    const r = canvasRef.current?.getBoundingClientRect()
+    if (!r) return
+    const fx = clientX - r.left
+    const fy = clientY - r.top
+    const k0 = st.view.k
+    const k1 = clamp(k0 * factor, 0.1, 4)
+    const wx = (fx - st.view.x) / k0
+    const wy = (fy - st.view.y) / k0
+    setView({ k: k1, x: fx - wx * k1, y: fy - wy * k1 })
+  }
+
+  const zoomCenter = (factor: number) => {
+    const r = canvasRef.current?.getBoundingClientRect()
+    if (r) zoomAt(factor, r.left + st.w / 2, r.top + st.h / 2)
+  }
+
+  const fitContent = () => {
+    const items = st.els.filter((e) => e.type !== 'connector')
+    if (!items.length) return setView({ x: 0, y: 0, k: 1 })
+    const b = unionBox(items.map((e) => getBBox(e, st.map)))
+    const bw = b.maxX - b.minX + 160
+    const bh = b.maxY - b.minY + 160
+    const k = clamp(Math.min(st.w / bw, st.h / bh), 0.1, 1.5)
+    setView({
+      k,
+      x: st.w / 2 - ((b.minX + b.maxX) / 2) * k,
+      y: st.h / 2 - ((b.minY + b.maxY) / 2) * k,
+    })
+  }
+
+  const centerOnWorld = (p: Pt) =>
+    setView({ x: st.w / 2 - p.x * st.view.k, y: st.h / 2 - p.y * st.view.k })
+  const viewCenter = (): Pt => ({
+    x: (st.w / 2 - st.view.x) / st.view.k,
+    y: (st.h / 2 - st.view.y) / st.view.k,
+  })
+
+  const toWorld = (e: { clientX: number; clientY: number }): Pt => {
+    const r = canvasRef.current!.getBoundingClientRect()
+    return {
+      x: (e.clientX - r.left - st.view.x) / st.view.k,
+      y: (e.clientY - r.top - st.view.y) / st.view.k,
+    }
+  }
+
+  const snap = (v: number) =>
+    cfgRef.current.snap ? Math.round(v / cfgRef.current.gridSize) * cfgRef.current.gridSize : v
+  const snapPt = (p: Pt): Pt => ({ x: snap(p.x), y: snap(p.y) })
+
+  const setCursor = (c: string) => {
+    if (cursorStr.current === c || !canvasRef.current) return
+    cursorStr.current = c
+    canvasRef.current.style.cursor = c
+  }
+
+  const setTool = (t: Tool) => {
+    finishEdit()
+    setToolState(t)
+    toolRef.current = t
+    if (t !== 'select') setSel(new Set())
+    st.hoverId = null
+    setShowTasks(false)
+    requestDraw()
+  }
+
+  /* ================================================================== */
+  /* Text editing                                                        */
+  /* ================================================================== */
+
+  const beginEdit = (el: El, isNew: boolean) => {
+    editingRef.current = { id: el.id, isNew }
+    editTextRef.current = el.text ?? ''
+    setEditText(el.text ?? '')
+    setEditing({ id: el.id, isNew })
+    requestDraw()
+  }
+
+  const finishEdit = () => {
+    const ed = editingRef.current
+    if (!ed) return
+    editingRef.current = null
+    setEditing(null)
+    const text = editTextRef.current
+    const el = st.preview?.id === ed.id ? st.preview : st.map.get(ed.id)
+    if (st.preview?.id === ed.id) st.preview = null
+    if (!el) return requestDraw()
+    if (ed.isNew) {
+      if (text.trim()) {
+        const fitted = fitText({ ...el, text })
+        commit({ added: [fitted], removed: [], before: [], after: [] })
+        opAdd([fitted])
+        setSel(new Set([fitted.id]))
+      }
+      setToolState('select')
+      toolRef.current = 'select'
+    } else if (!text.trim()) {
+      removeWithLinks([el.id])
+    } else if (text !== el.text) {
+      const next = fitText({ ...el, text })
+      commit({ added: [], removed: [], before: [el], after: [next] })
+      opPatch([{ id: el.id, text: next.text, points: next.points }])
+    }
+    requestDraw()
+  }
+
+  const createText = (p: Pt, isNote: boolean) => {
+    const s = styleRef.current
+    const q = snapPt(p)
+    const el: El = {
+      id: uid(),
+      type: 'text',
+      userId: me.id,
+      points: [q, { x: q.x + (isNote ? 200 : 260), y: q.y + (isNote ? 160 : 36) }],
+      text: '',
+      fontSize: isNote ? 15 : 20,
+      color: s.color,
+      note: isNote ? s.noteColor : undefined,
+    }
+    st.preview = el
+    beginEdit(el, true)
+  }
+
+  useEffect(() => {
+    if (editing) {
+      const t = editorRef.current
+      if (t) {
+        t.focus()
+        t.setSelectionRange(t.value.length, t.value.length)
+      }
+    }
+  }, [editing])
+
+  /* ================================================================== */
+  /* Images + task cards                                                 */
+  /* ================================================================== */
+
+  const uploadImage = async (file: File): Promise<string> => {
+    const ext = (file.name.split('.').pop() || 'png').toLowerCase()
+    const path = `${roomId}/${uid()}.${ext}`
+    const { error } = await supabase.storage
+      .from('board-assets')
+      .upload(path, file, { contentType: file.type, cacheControl: '31536000' })
+    if (!error) return supabase.storage.from('board-assets').getPublicUrl(path).data.publicUrl
+    console.warn('[whiteboard] storage upload failed, embedding image instead:', error.message)
+    toast(
+      'Image storage is not set up, so this image is embedded and may not sync reliably. See the SQL migration.',
+    )
+    return new Promise<string>((res, rej) => {
+      const r = new FileReader()
+      r.onload = () => res(r.result as string)
+      r.onerror = rej
+      r.readAsDataURL(file)
+    })
+  }
+
+  const addImage = async (file: File, at?: Pt) => {
+    if (!file.type.startsWith('image/')) return
+    const local = URL.createObjectURL(file)
+    const dims = await new Promise<{ w: number; h: number }>((res) => {
+      const img = new Image()
+      img.onload = () => res({ w: img.naturalWidth, h: img.naturalHeight })
+      img.onerror = () => res({ w: 400, h: 300 })
+      img.src = local
+    })
+    URL.revokeObjectURL(local)
+    const scale = Math.min(1, 420 / dims.w, 420 / dims.h)
+    const w = dims.w * scale
+    const h = dims.h * scale
+    const c = at ?? viewCenter()
+    let src: string
+    try {
+      src = await uploadImage(file)
+    } catch {
+      return toast('Could not add that image.')
+    }
+    const el: El = {
+      id: uid(),
+      type: 'image',
+      userId: me.id,
+      points: [
+        { x: c.x - w / 2, y: c.y - h / 2 },
+        { x: c.x + w / 2, y: c.y + h / 2 },
+      ],
+      src,
+    }
+    commit({ added: [el], removed: [], before: [], after: [] })
+    opAdd([el])
+    setSel(new Set([el.id]))
+    setTool('select')
+  }
+
+  const addTaskCard = (taskId: string) => {
+    const existing = st.els.find((e) => e.type === 'task' && e.taskId === taskId)
+    if (existing) {
+      const b = getBBox(existing, st.map)
+      centerOnWorld({ x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 })
+      setSel(new Set([existing.id]))
+      return toast('That task is already on the canvas.')
+    }
+    const c = viewCenter()
+    const n = st.els.filter((e) => e.type === 'task').length % 6
+    const el: El = {
+      id: uid(),
+      type: 'task',
+      userId: me.id,
+      taskId,
+      points: [
+        { x: c.x - 130 + n * 24, y: c.y - 46 + n * 24 },
+        { x: c.x + 130 + n * 24, y: c.y + 46 + n * 24 },
+      ],
+    }
+    commit({ added: [el], removed: [], before: [], after: [] })
+    opAdd([el])
+    setSel(new Set([el.id]))
+    setToolState('select')
+    toolRef.current = 'select'
+    setShowTasks(false)
+  }
+
+  /* ================================================================== */
+  /* Hit testing + pointer handling                                      */
+  /* ================================================================== */
+
+  const hitTest = (p: Pt): El | null => {
+    const pad = 6 / st.view.k
+    for (let i = st.els.length - 1; i >= 0; i--) {
+      const e = st.els[i]
+      if (e.type !== 'connector' && pointNear(e, p, pad, st.map)) return e
+    }
+    for (let i = st.els.length - 1; i >= 0; i--) {
+      const e = st.els[i]
+      if (e.type === 'connector' && pointNear(e, p, pad, st.map)) return e
+    }
+    return null
+  }
+
+  const handleAt = (p: Pt): string | null => {
+    const box = selBox()
+    if (!box) return null
+    const tol = 12 / st.view.k
+    return (
+      handlesOf(box).find((h) => Math.abs(p.x - h.x) < tol && Math.abs(p.y - h.y) < tol)?.id ?? null
+    )
+  }
+
+  const brushCursor = () => {
+    const d = clamp(styleRef.current.lineWidth * st.view.k, 6, 96)
+    const s = d + 4
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}"><circle cx="${s / 2}" cy="${s / 2}" r="${d / 2}" fill="none" stroke="white" stroke-width="2.5"/><circle cx="${s / 2}" cy="${s / 2}" r="${d / 2}" fill="none" stroke="black" stroke-width="1"/></svg>`
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${s / 2} ${s / 2}, crosshair`
+  }
+
+  const idleCursor = () => {
+    if (st.space) return 'grab'
+    const t = toolRef.current
+    if (t === 'pen') return brushCursor()
+    if (t === 'text' || t === 'note') return 'text'
+    if (t === 'shape' || t === 'connect') return 'crosshair'
+    return st.hoverHandle
+      ? st.hoverHandle === 'nw' || st.hoverHandle === 'se'
+        ? 'nwse-resize'
+        : 'nesw-resize'
+      : st.hoverId
+        ? 'pointer'
+        : 'default'
+  }
+
+  const cancelAct = () => {
+    st.act = null
+    st.preview = st.preview && editingRef.current?.id === st.preview.id ? st.preview : null
+    st.marquee = null
+    requestDraw()
+  }
+
+  const mkEl = (partial: Partial<El> & Pick<El, 'type' | 'points'>): El => ({
+    id: uid(),
+    userId: me.id,
+    lineWidth: styleRef.current.lineWidth,
+    color: styleRef.current.color,
+    ...partial,
+  })
+
+  const selectDown = (p: Pt, additive: boolean) => {
+    const hb = handleAt(p)
+    if (hb) {
+      const snaps = [...st.sel]
+        .map((id) => st.map.get(id))
+        .filter((e): e is El => !!e && e.type !== 'connector')
+        .map((e) => ({ ...e, points: e.points.map((q) => ({ ...q })) }))
+      st.act = { kind: 'resize', handle: hb, start: p, snaps, moved: false }
+      return
+    }
+    const hit = hitTest(p)
+    const dragSnaps = () =>
+      [...st.sel]
+        .map((id) => st.map.get(id))
+        .filter((e): e is El => !!e && e.type !== 'connector')
+        .map((e) => ({ ...e, points: e.points.map((q) => ({ ...q })) }))
+    if (hit) {
+      if (additive) {
+        const next = new Set(st.sel)
+        next.has(hit.id) ? next.delete(hit.id) : next.add(hit.id)
+        setSel(next)
+      } else if (!st.sel.has(hit.id)) setSel(new Set([hit.id]))
+      st.act = { kind: 'drag', start: p, snaps: dragSnaps(), moved: false }
+      return
+    }
+    const box = selBox()
+    if (box && st.sel.size > 1 && inBox(p, box)) {
+      st.act = { kind: 'drag', start: p, snaps: dragSnaps(), moved: false }
+      return
+    }
+    const base = additive ? new Set(st.sel) : new Set<string>()
+    if (!additive) setSel(new Set())
+    st.act = { kind: 'marquee', start: p, base }
+    st.marquee = { minX: p.x, minY: p.y, maxX: p.x, maxY: p.y }
+  }
+
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (pointers.current.size === 2) {
+      cancelAct()
+      return
+    }
+    finishEdit()
+    if (e.button === 1 || e.button === 2 || st.space) {
+      st.act = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: st.view.x, vy: st.view.y }
+      setCursor('grabbing')
+      return
+    }
+    if (e.button !== 0) return
+    const p = toWorld(e)
+    const t = toolRef.current
+    if (t === 'select') return selectDown(p, e.shiftKey)
+    if (t === 'pen') {
+      st.preview = mkEl({ type: 'stroke', points: [p] })
+      st.act = { kind: 'draw' }
+    } else if (t === 'shape') {
+      const q = snapPt(p)
+      st.preview = mkEl({
+        type: 'shape',
+        points: [q, q],
+        shapeKind: styleRef.current.shapeKind,
+        fill: styleRef.current.shapeFill,
+      })
+      st.act = { kind: 'draw' }
+    } else if (t === 'text' || t === 'note') {
+      createText(p, t === 'note')
+      e.preventDefault()
+    } else if (t === 'connect') {
+      const hit = hitTest(p)
+      if (hit && hit.type !== 'connector') st.act = { kind: 'connect', from: hit.id, at: p }
+    }
+    requestDraw()
+  }
+
+  const pushLive = (items: (Partial<El> & { id: string })[]) => {
+    const now = performance.now()
+    if (now - lastLiveSend.current < 40) return
+    lastLiveSend.current = now
+    send('wb:patch', { items })
+  }
+
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (pointers.current.has(e.pointerId))
+      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+    // two-finger pinch + pan
+    if (pointers.current.size === 2) {
+      const [a, b] = [...pointers.current.values()]
+      const d = Math.hypot(a.x - b.x, a.y - b.y)
+      const cx = (a.x + b.x) / 2
+      const cy = (a.y + b.y) / 2
+      const prev = pinch.current
+      if (prev && prev.d > 0) {
+        zoomAt(d / prev.d, cx, cy)
+        setView({ x: st.view.x + (cx - prev.cx), y: st.view.y + (cy - prev.cy) })
+      }
+      pinch.current = { d, cx, cy }
+      return
+    }
+
+    const p = toWorld(e)
+    const now = performance.now()
+    if (now - lastCursorSend.current > 40) {
+      lastCursorSend.current = now
+      send('wb:cursor', { id: me.id, name: me.name, color: me.color, x: p.x, y: p.y })
+    }
+
+    const act = st.act
+    if (!act) {
+      const t = toolRef.current
+      if (t === 'select' || t === 'connect') {
+        const hb = t === 'select' ? handleAt(p) : null
+        const hit = hb ? null : hitTest(p)
+        const nextId = t === 'connect' && hit?.type === 'connector' ? null : (hit?.id ?? null)
+        if (hb !== st.hoverHandle || nextId !== st.hoverId) {
+          st.hoverHandle = hb
+          st.hoverId = nextId
+          requestDraw()
+        }
+      }
+      setCursor(idleCursor())
+      return
+    }
+
+    switch (act.kind) {
+      case 'pan':
+        setView({ x: act.vx + (e.clientX - act.sx), y: act.vy + (e.clientY - act.sy) })
+        break
+      case 'draw': {
+        const el = st.preview
+        if (!el) break
+        if (el.type === 'shape') {
+          let q = snapPt(p)
+          if (e.shiftKey) {
+            const s = el.points[0]
+            const m = Math.max(Math.abs(q.x - s.x), Math.abs(q.y - s.y))
+            q = { x: s.x + Math.sign(q.x - s.x || 1) * m, y: s.y + Math.sign(q.y - s.y || 1) * m }
+          }
+          st.preview = { ...el, points: [el.points[0], q] }
+        } else if (e.shiftKey || e.altKey) {
+          const s = el.points[0]
+          let q = p
+          if (e.shiftKey) {
+            const dist = Math.hypot(p.x - s.x, p.y - s.y)
+            const ang =
+              Math.round(Math.atan2(p.y - s.y, p.x - s.x) / (Math.PI / 12)) * (Math.PI / 12)
+            q = { x: s.x + dist * Math.cos(ang), y: s.y + dist * Math.sin(ang) }
+          }
+          st.preview = { ...el, points: [s, q] }
+        } else {
+          const last = el.points[el.points.length - 1]
+          if (Math.hypot(p.x - last.x, p.y - last.y) * st.view.k >= 1.5)
+            st.preview = { ...el, points: [...el.points, p] }
+        }
+        requestDraw()
+        break
+      }
+      case 'drag': {
+        let dx = p.x - act.start.x
+        let dy = p.y - act.start.y
+        if (!act.moved && Math.hypot(dx, dy) * st.view.k < 3) break
+        act.moved = true
+        dx = snap(dx)
+        dy = snap(dy)
+        const moved = new Map(
+          act.snaps.map((s) => [s.id, s.points.map((q) => ({ x: q.x + dx, y: q.y + dy }))]),
+        )
+        setEls(st.els.map((el) => (moved.has(el.id) ? { ...el, points: moved.get(el.id)! } : el)))
+        pushLive([...moved].map(([id, points]) => ({ id, points })))
+        setCursor('move')
+        break
+      }
+      case 'resize': {
+        if (!act.snaps.length) break
+        act.moved = true
+        const box = unionBox(act.snaps.map((s) => getBBox(s, st.map)))
+        const ow = box.maxX - box.minX
+        const oh = box.maxY - box.minY
+        if (ow < 1 || oh < 1) break
+        const dx = p.x - act.start.x
+        const dy = p.y - act.start.y
+        const hd = act.handle
+        let nx0 = hd.includes('w') ? box.minX + dx : box.minX
+        let nx1 = hd.includes('e') ? box.maxX + dx : box.maxX
+        let ny0 = hd.includes('n') ? box.minY + dy : box.minY
+        let ny1 = hd.includes('s') ? box.maxY + dy : box.maxY
+        if (act.snaps.length === 1 && act.snaps[0].type === 'image') {
+          const ratio = ow / oh
+          const lockedH = (nx1 - nx0) / ratio
+          if (hd.includes('n')) ny0 = ny1 - lockedH
+          else ny1 = ny0 + lockedH
+        }
+        const nw = nx1 - nx0
+        const nh = ny1 - ny0
+        if (Math.abs(nw) < 8 || Math.abs(nh) < 8) break
+        const m = new Map(
+          act.snaps.map((s) => [
+            s.id,
+            s.points.map((q) => ({
+              x: nx0 + ((q.x - box.minX) / ow) * nw,
+              y: ny0 + ((q.y - box.minY) / oh) * nh,
+            })),
+          ]),
+        )
+        setEls(st.els.map((el) => (m.has(el.id) ? { ...el, points: m.get(el.id)! } : el)))
+        pushLive([...m].map(([id, points]) => ({ id, points })))
+        break
+      }
+      case 'marquee': {
+        const m = bboxOf(act.start, p)
+        st.marquee = m
+        const hits = st.els
+          .filter((el) => el.type !== 'connector' && intersects(getBBox(el, st.map), m))
+          .map((el) => el.id)
+        setSel(new Set([...act.base, ...hits]))
+        requestDraw()
+        break
+      }
+      case 'connect': {
+        act.at = p
+        const hit = hitTest(p)
+        const next = hit && hit.type !== 'connector' && hit.id !== act.from ? hit.id : null
+        if (next !== st.hoverId) st.hoverId = next
+        requestDraw()
+        break
+      }
+    }
+  }
+
+  const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    pointers.current.delete(e.pointerId)
+    if (pointers.current.size < 2) pinch.current = null
+    const act = st.act
+    st.act = null
+    if (!act) return
+    switch (act.kind) {
+      case 'pan':
+        setCursor(idleCursor())
+        break
+      case 'draw': {
+        const el = st.preview
+        st.preview = null
+        if (!el) break
+        const tiny =
+          el.type === 'shape' &&
+          Math.hypot(el.points[1].x - el.points[0].x, el.points[1].y - el.points[0].y) < 4
+        if (!tiny) {
+          commit({ added: [el], removed: [], before: [], after: [] })
+          opAdd([el])
+          if (el.type === 'shape') {
+            setSel(new Set([el.id]))
+            setToolState('select')
+            toolRef.current = 'select'
+          }
+        }
+        break
+      }
+      case 'drag':
+      case 'resize': {
+        if (act.moved) {
+          const ids = act.snaps.map((s) => s.id)
+          const after = ids.map((id) => st.map.get(id)).filter((x): x is El => !!x)
+          commit({ added: [], removed: [], before: act.snaps, after: after.map((a) => ({ ...a })) })
+          opPatch(after.map((a) => ({ id: a.id, points: a.points })))
+        }
+        break
+      }
+      case 'marquee':
+        if (
+          st.marquee &&
+          st.marquee.maxX - st.marquee.minX < 4 / st.view.k &&
+          st.marquee.maxY - st.marquee.minY < 4 / st.view.k
+        )
+          setSel(act.base)
+        st.marquee = null
+        break
+      case 'connect': {
+        const hit = hitTest(toWorld(e))
+        if (hit && hit.type !== 'connector' && hit.id !== act.from) {
+          const dupe = st.els.some(
+            (x) =>
+              x.type === 'connector' &&
+              ((x.from === act.from && x.to === hit.id) ||
+                (x.from === hit.id && x.to === act.from)),
+          )
+          if (!dupe) {
+            const link: El = {
+              id: uid(),
+              type: 'connector',
+              userId: me.id,
+              points: [],
+              from: act.from,
+              to: hit.id,
+              lineWidth: 2,
+            }
+            commit({ added: [link], removed: [], before: [], after: [] })
+            opAdd([link])
+          }
+        }
+        st.hoverId = null
+        break
+      }
+    }
+    requestDraw()
+  }
+
+  const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (toolRef.current !== 'select') return
+    const p = toWorld(e)
+    const hit = hitTest(p)
+    if (!hit) return createText(p, false)
+    if (hit.type === 'text') beginEdit(hit, false)
+    else if (hit.type === 'task' && hit.taskId) {
+      bus.emit('nav', 'board')
+      window.setTimeout(() => bus.emit('board:focus-task', { taskId: hit.taskId }), 60)
+    }
+  }
+
+  /* ================================================================== */
+  /* Effects                                                             */
+  /* ================================================================== */
+
+  // Keep latest handlers reachable from long-lived listeners.
+  api.current = {
+    undo,
+    redo,
+    deleteSelection,
+    duplicateSelection,
+    addImage,
+    addTaskCard,
+    setTool,
+    fitContent,
+    createText,
+    viewCenter,
+  }
+
+  // canvas sizing
+  useEffect(() => {
+    const wrap = wrapRef.current!
+    const canvas = canvasRef.current!
+    const ro = new ResizeObserver(() => {
+      const r = wrap.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+      st.w = r.width
+      st.h = r.height
+      st.dpr = dpr
+      canvas.width = Math.max(1, Math.round(r.width * dpr))
+      canvas.height = Math.max(1, Math.round(r.height * dpr))
+      requestDraw()
+    })
+    ro.observe(wrap)
+    return () => {
+      ro.disconnect()
+      cancelAnimationFrame(rafRef.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const rect = canvas.getBoundingClientRect()
-    const x = (e.clientX - rect.left - panRef.current.x) / scaleRef.current
-    const y = (e.clientY - rect.top - panRef.current.y) / scaleRef.current
+  useEffect(() => {
+    requestDraw()
+  }, [
+    cfg,
+    theme,
+    active,
+    tool,
+    taskData.byId,
+    taskData.statusOpt,
+    taskData.urgencyOpt,
+    requestDraw,
+  ])
 
-    if (tool === 'select') {
-      // Check resize handles on combined bbox
-      if (selectedIdsRef.current.size > 0) {
-        const selectedActions = actionsRef.current.filter(
-          (a) => a.id && selectedIdsRef.current.has(a.id),
-        )
-        const multiBbox = getMultiBBox(selectedActions)
-        if (multiBbox) {
-          const pad = 10
-          const paddedBbox = {
-            minX: multiBbox.minX - pad,
-            minY: multiBbox.minY - pad,
-            maxX: multiBbox.maxX + pad,
-            maxY: multiBbox.maxY + pad,
-          }
-          const screenTolerance = 12 / scaleRef.current
-          for (const h of getResizeHandles(paddedBbox)) {
-            if (Math.abs(x - h.x) < screenTolerance && Math.abs(y - h.y) < screenTolerance) {
-              setIsResizingSelection(h.id)
-              resizeStartRef.current = {
-                x,
-                y,
-                bbox: paddedBbox,
-                snapshots: selectedActions.map((a) => ({
-                  ...a,
-                  points: a.points.map((p) => ({ ...p })),
-                })),
-              }
-              return
-            }
-          }
-          // Drag the whole selection
-          if (pointInBBox(x, y, paddedBbox, 0)) {
-            setIsDraggingSelection(true)
-            dragStartRef.current = {
-              x,
-              y,
-              snapshots: selectedActions.map((a) => ({
-                ...a,
-                points: a.points.map((p) => ({ ...p })),
-              })),
-            }
-            return
-          }
-        }
-      }
-      // Start marquee
-      marqueeStartRef.current = { x, y }
-      setMarquee({ x, y, w: 0, h: 0 })
-      setSelectedIdsAndRef(new Set())
-      setHoveredHandle(null)
-      return
+  // wheel: pan, ctrl/cmd (and trackpad pinch) zoom
+  useEffect(() => {
+    const canvas = canvasRef.current!
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      if (e.ctrlKey || e.metaKey) {
+        const mag = Math.min(Math.abs(e.deltaY) / 200, 0.5) + 1
+        zoomAt(e.deltaY < 0 ? mag : 1 / mag, e.clientX, e.clientY)
+      } else setView({ x: st.view.x - e.deltaX, y: st.view.y - e.deltaY })
     }
+    canvas.addEventListener('wheel', onWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', onWheel)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-    setIsDrawing(true)
-    const base = {
-      id: crypto.randomUUID(),
-      userId: userIdRef.current,
-      drawing: true as const,
-      lineWidth: mouseSize,
-      drawColor,
-    }
-
-    if (tool === 'shape') {
-      setCurrentAction({
-        ...base,
-        type: 'shape',
-        points: [
-          { x, y },
-          { x, y },
-        ],
-        shapeKind,
-        shapeFill: shapeFillMode,
-      })
-    } else {
-      setCurrentAction({ ...base, type: 'stroke', points: [{ x, y }] })
-    }
-  }
-
-  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const rect = canvas.getBoundingClientRect()
-    const x = (e.clientX - rect.left - panRef.current.x) / scaleRef.current
-    const y = (e.clientY - rect.top - panRef.current.y) / scaleRef.current
-
-    if (tool === 'select') {
-      if (isDraggingSelection && dragStartRef.current) {
-        const dx = x - dragStartRef.current.x
-        const dy = y - dragStartRef.current.y
-        const snapshotMap = new Map(dragStartRef.current.snapshots.map((s) => [s.id, s]))
-        setActionsAndRef((prev) =>
-          prev.map((a) => {
-            const snap = a.id ? snapshotMap.get(a.id) : undefined
-            if (!snap) return a
-            return { ...a, points: snap.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) }
-          }),
-        )
-        return
-      }
-      if (isResizingSelection && resizeStartRef.current) {
-        const { snapshots, x: sx, y: sy } = resizeStartRef.current
-        const dx = x - sx
-        const dy = y - sy
-        const multiBbox = getMultiBBox(snapshots)
-        if (!multiBbox) return
-        const origW = multiBbox.maxX - multiBbox.minX
-        const origH = multiBbox.maxY - multiBbox.minY
-        if (origW === 0 || origH === 0) return
-        const handle = isResizingSelection
-
-        // For a single image, lock aspect ratio
-        const isSingleImage = snapshots.length === 1 && snapshots[0].type === 'image'
-        let newMinX = handle.includes('w') ? multiBbox.minX + dx : multiBbox.minX
-        let newMaxX = handle.includes('e') ? multiBbox.maxX + dx : multiBbox.maxX
-        let newMinY = handle.includes('n') ? multiBbox.minY + dy : multiBbox.minY
-        let newMaxY = handle.includes('s') ? multiBbox.maxY + dy : multiBbox.maxY
-
-        if (isSingleImage) {
-          const aspectRatio = origW / origH
-          // Drive from the axis the handle actually controls
-          const drivingW = handle.includes('e') || handle.includes('w')
-          if (drivingW) {
-            const lockedH = (newMaxX - newMinX) / aspectRatio
-            if (handle.includes('n')) newMinY = newMaxY - lockedH
-            else newMaxY = newMinY + lockedH
-          } else {
-            const lockedW = (newMaxY - newMinY) * aspectRatio
-            if (handle.includes('w')) newMinX = newMaxX - lockedW
-            else newMaxX = newMinX + lockedW
-          }
-        }
-
-        const newW = newMaxX - newMinX
-        const newH = newMaxY - newMinY
-        if (Math.abs(newW) < 1 || Math.abs(newH) < 1) return
-        const snapshotMap = new Map(snapshots.map((s) => [s.id, s]))
-        setActionsAndRef((prev) =>
-          prev.map((a) => {
-            const snap = a.id ? snapshotMap.get(a.id) : undefined
-            if (!snap) return a
-            const newPoints = snap.points.map((p) => ({
-              x: newMinX + ((p.x - multiBbox.minX) / origW) * newW,
-              y: newMinY + ((p.y - multiBbox.minY) / origH) * newH,
-            }))
-            return { ...a, points: newPoints }
-          }),
-        )
-        return
-      }
-      // Update marquee
-      if (marqueeStartRef.current) {
-        const mx = marqueeStartRef.current.x
-        const my = marqueeStartRef.current.y
-        setMarquee({
-          x: Math.min(mx, x),
-          y: Math.min(my, y),
-          w: Math.abs(x - mx),
-          h: Math.abs(y - my),
-        })
-      } else {
-        // Check resize handle hover first (fixed 12px screen-space tolerance)
-        let foundHandle: string | null = null
-        if (selectedIdsRef.current.size > 0) {
-          const selectedActions = actionsRef.current.filter(
-            (a) => a.id && selectedIdsRef.current.has(a.id),
-          )
-          const multiBbox = getMultiBBox(selectedActions)
-          if (multiBbox) {
-            const pad = 10
-            const paddedBbox = {
-              minX: multiBbox.minX - pad,
-              minY: multiBbox.minY - pad,
-              maxX: multiBbox.maxX + pad,
-              maxY: multiBbox.maxY + pad,
-            }
-            const screenTolerance = 12 / scaleRef.current
-            for (const h of getResizeHandles(paddedBbox)) {
-              if (Math.abs(x - h.x) < screenTolerance && Math.abs(y - h.y) < screenTolerance) {
-                foundHandle = h.id
-                break
-              }
-            }
-          }
-        }
-        setHoveredHandle(foundHandle)
-        // Hover detection — find topmost stroke/shape near cursor
-        const extraPadding = 8 / scaleRef.current
-        const hit = foundHandle
-          ? null
-          : [...actionsRef.current]
-              .reverse()
-              .find((a) => a.id && pointNearAction(x, y, a, extraPadding))
-        setHoveredId(hit?.id ?? null)
-      }
-      return
-    }
-
-    if (!isDrawing || !currentAction) return
-    const { x: sx, y: sy } = snapPoint(x, y)
-    const startPoint = currentAction.points[0]
-
-    if (currentAction.type === 'shape') {
-      setCurrentAction({ ...currentAction, points: [currentAction.points[0], { x: sx, y: sy }] })
-      return
-    }
-
-    if (e.shiftKey) {
-      const dx = sx - startPoint.x
-      const dy = sy - startPoint.y
-      const distance = Math.sqrt(dx * dx + dy * dy)
-      const angle = Math.atan2(dy, dx)
-      const snapDegrees = [
-        0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180, -157.5, -135, -112.5, -90, -67.5, -45, -22.5,
-      ]
-      const snapRadians = snapDegrees.map((d) => d * (Math.PI / 180))
-      const nearest = snapRadians.reduce((prev, curr) =>
-        Math.abs(curr - angle) < Math.abs(prev - angle) ? curr : prev,
-      )
-      setCurrentAction({
-        ...currentAction,
-        points: [
-          startPoint,
-          {
-            x: startPoint.x + distance * Math.cos(nearest),
-            y: startPoint.y + distance * Math.sin(nearest),
-          },
-        ],
-      })
-    } else if (e.altKey) {
-      setCurrentAction({ ...currentAction, points: [startPoint, { x: sx, y: sy }] })
-    } else {
-      setCurrentAction({ ...currentAction, points: [...currentAction.points, { x: sx, y: sy }] })
-    }
-  }
-
-  // Place an image on the canvas from a File or data URL
-  const addImageToCanvas = (
-    dataUrl: string,
-    naturalW: number,
-    naturalH: number,
-    dropX?: number,
-    dropY?: number,
-  ) => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    // Default placement: centered, max 400px wide
-    const maxW = 400
-    const ratio = naturalH / naturalW
-    const w = Math.min(maxW, naturalW)
-    const h = w * ratio
-    const cx =
-      dropX !== undefined ? dropX : (canvas.width / 2 - panRef.current.x) / scaleRef.current
-    const cy =
-      dropY !== undefined ? dropY : (canvas.height / 2 - panRef.current.y) / scaleRef.current
-    const action: DrawAction = {
-      id: crypto.randomUUID(),
-      userId: userIdRef.current,
-      type: 'image',
-      drawing: true,
-      points: [
-        { x: cx - w / 2, y: cy - h / 2 },
-        { x: cx + w / 2, y: cy + h / 2 },
-      ],
-      imageDataUrl: dataUrl,
-      imageWidth: naturalW,
-      imageHeight: naturalH,
-    }
-    setActionsAndRef((prev) => [...prev, action])
-    myUndoStack.current.push(action)
-    myRedoStack.current = []
-    setCanUndo(true)
-    setCanRedo(false)
-    setSelectedIdsAndRef(new Set([action.id!]))
-    setTool('select')
-    supabase.from('strokes').insert({ room_id: roomId, data: action }).then()
-    // No set_state broadcast needed — other clients receive the image via the strokes INSERT listener
-  }
-
-  const handleImageFile = (file: File, dropWorldX?: number, dropWorldY?: number) => {
-    if (!file.type.startsWith('image/')) return
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      const dataUrl = ev.target?.result as string
-      const img = new Image()
-      img.onload = () => {
-        addImageToCanvas(dataUrl, img.naturalWidth, img.naturalHeight, dropWorldX, dropWorldY)
-      }
-      img.src = dataUrl
-    }
-    reader.readAsDataURL(file)
-  }
-
-  const stopDrawing = async () => {
-    if (isDraggingSelection || isResizingSelection) {
-      setIsDraggingSelection(false)
-      setIsResizingSelection(null)
-      dragStartRef.current = null
-      resizeStartRef.current = null
-      const selectedActions = actionsRef.current.filter((a) => a.id && selectedIds.has(a.id))
-      for (const updated of selectedActions) {
-        // Images already have their data in the DB from the initial insert.
-        // On move/resize, only points change — send the full action (imageDataUrl
-        // is still on the in-memory object from the original upload).
-        await supabase
+  // load + realtime
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      const rows: any[] = []
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase
           .from('strokes')
-          .update({ data: updated })
-          .eq('data->>id', updated.id)
+          .select('data')
           .eq('room_id', roomId)
-      }
-      await broadcastEvent('set_state', { actions: actionsRef.current })
-      return
-    }
+          .order('created_at')
+          .range(from, from + 999)
+        // if (error || !data) break
 
-    // Finish marquee — select all strokes whose bbox intersects
-    if (marqueeStartRef.current) {
-      marqueeStartRef.current = null
-      if (marquee && (marquee.w > 4 || marquee.h > 4)) {
-        const marqueeBbox: BBox = {
-          minX: marquee.x,
-          minY: marquee.y,
-          maxX: marquee.x + marquee.w,
-          maxY: marquee.y + marquee.h,
+        if (error) {
+          console.error('[whiteboard] Failed to load strokes:', error)
+          break
         }
-        const hits = actions.filter((a) => bboxesIntersect(getBBox(a), marqueeBbox))
-        setSelectedIdsAndRef(new Set(hits.map((a) => a.id!).filter(Boolean)))
-      } else {
-        // Small drag = click, hit test top stroke near the click point
-        const canvas = canvasRef.current
-        if (canvas && marquee) {
-          const extraPadding = 8 / scaleRef.current
-          const hit = [...actions]
-            .reverse()
-            .find((a) => pointNearAction(marquee.x, marquee.y, a, extraPadding))
-          setSelectedIdsAndRef(hit?.id ? new Set([hit.id]) : new Set())
-        }
+
+        if (!data) break
+
+        rows.push(...data)
+        if (data.length < 1000) break
       }
-      setMarquee(null)
-      return
+      if (!cancelled) setEls(rows.map((r) => normalize(r.data)))
     }
+    load()
 
-    if (!currentAction) {
-      setIsDrawing(false)
-      return
-    }
-    const action = currentAction
-    setCurrentAction(null)
-    setIsDrawing(false)
-    setActionsAndRef((prev) => [...prev, action])
-    myUndoStack.current.push(action)
-    myRedoStack.current = []
-    myClearRedoStack.current = []
-    setCanUndo(true)
-    setCanRedo(false)
-    supabase.from('strokes').insert({ room_id: roomId, data: action }).then()
-
-    // Auto-select the newly drawn shape and switch to select tool
-    if (action.type === 'shape' && action.id) {
-      setSelectedIdsAndRef(new Set([action.id]))
-      setTool('select')
-    }
-  }
-
-  const snapPoint = (x: number, y: number) => {
-    if (!snapToGrid) return { x, y }
-    return {
-      x: Math.round(x / gridSize) * gridSize,
-      y: Math.round(y / gridSize) * gridSize,
-    }
-  }
-
-  const setActionsAndRef = (updater: DrawAction[] | ((prev: DrawAction[]) => DrawAction[])) => {
-    if (typeof updater === 'function') {
-      setActions((prev) => {
-        const next = updater(prev)
-        actionsRef.current = next
-        return next
-      })
-    } else {
-      actionsRef.current = updater
-      setActions(updater)
-    }
-  }
-
-  const setSelectedIdsAndRef = (ids: Set<string>) => {
-    selectedIdsRef.current = ids
-    setSelectedIds(ids)
-  }
-
-  const undo = async () => {
-    if (myUndoStack.current.length === 0 && myClearStack.current.length > 0) {
-      // ... clear undo, unchanged
-    }
-    if (myUndoStack.current.length === 0) return
-    const stroke = myUndoStack.current.pop()!
-    myRedoStack.current.push(stroke)
-    const existsInActions = actionsRef.current.some((a) => a.id === stroke.id)
-    let newActions: DrawAction[]
-    if (existsInActions) {
-      // undo a draw — remove it
-      newActions = actionsRef.current.filter((a) => a.id !== stroke.id)
-      await supabase.from('strokes').delete().eq('data->>id', stroke.id).eq('room_id', roomId)
-    } else {
-      // undo a delete — re-add it
-      newActions = [...actionsRef.current, stroke]
-      await supabase.from('strokes').insert({ room_id: roomId, data: stroke })
-    }
-    setActionsAndRef(newActions)
-    setCanUndo(myUndoStack.current.length > 0 || myClearStack.current.length > 0)
-    setCanRedo(myRedoStack.current.length > 0 || myClearRedoStack.current.length > 0)
-    await broadcastEvent('set_state', { actions: newActions })
-  }
-  const redo = async () => {
-    if (myRedoStack.current.length === 0 && myClearRedoStack.current.length > 0) {
-      // ... clear redo, unchanged
-    }
-    if (myRedoStack.current.length === 0) return
-    const stroke = myRedoStack.current.pop()!
-    myUndoStack.current.push(stroke)
-    const existsInActions = actionsRef.current.some((a) => a.id === stroke.id)
-    let newActions: DrawAction[]
-    if (existsInActions) {
-      // redo a delete — remove it again
-      newActions = actionsRef.current.filter((a) => a.id !== stroke.id)
-      await supabase.from('strokes').delete().eq('data->>id', stroke.id).eq('room_id', roomId)
-    } else {
-      // redo a draw — re-add it
-      newActions = [...actionsRef.current, stroke]
-      await supabase.from('strokes').insert({ room_id: roomId, data: stroke })
-    }
-    setActionsAndRef(newActions)
-    setCanRedo(myRedoStack.current.length > 0 || myClearRedoStack.current.length > 0)
-    setCanUndo(true)
-    await broadcastEvent('set_state', { actions: newActions })
-  }
-  useEffect(() => {
-    const handleKeyDown = async (e: KeyboardEvent) => {
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.size > 0) {
-        e.preventDefault()
-        const toDelete = actionsRef.current.filter((a) => a.id && selectedIds.has(a.id))
-        const newActions = actionsRef.current.filter((a) => !a.id || !selectedIds.has(a.id))
-        setActionsAndRef(newActions)
-        setSelectedIdsAndRef(new Set())
-        for (const stroke of toDelete) {
-          myUndoStack.current.push(stroke)
-          await supabase.from('strokes').delete().eq('data->>id', stroke.id).eq('room_id', roomId)
-        }
-        myRedoStack.current = []
-        myClearRedoStack.current = []
-        setCanUndo(true)
-        setCanRedo(false)
-        await broadcastEvent('set_state', { actions: newActions })
-        return
-      }
-      if (e.metaKey || e.ctrlKey) {
-        if (e.key === 'z' && !e.shiftKey) {
-          e.preventDefault()
-          undo()
-        } else if (e.key === 'z' && e.shiftKey) {
-          e.preventDefault()
-          redo()
-        }
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedIds])
-
-  const clearCanvas = () => {
-    myClearStack.current.push({
-      actions: [...actionsRef.current],
-      undoStack: [...myUndoStack.current],
-    })
-    myUndoStack.current = []
-    myRedoStack.current = []
-    myClearRedoStack.current = []
-    setActionsAndRef([])
-    supabase.from('strokes').delete().eq('room_id', roomId).then()
-    broadcastEvent('clear', { clearedBy: userIdRef.current }) // send your userId
-    setCanUndo(true)
-    setCanRedo(false)
-  }
-  const resizeDrawWidth = (number: number) => {
-    if (!canvasRef.current) return
-    if (!mouseSize) return
-    if (number < 1) number = 1
-    if (number > 50) number = 50
-    setMouseSize(number)
-    const circle = document.getElementById('mouseSizeCircle')
-    const ctx = canvasRef.current.getContext('2d')
-    if (circle) {
-      circle.setAttribute('r', ((number / 2) * scale).toString())
-      ctx!.lineWidth = number
-    }
-  }
-  const setDrawColorAndMore = (color: string) => {
-    setDrawColor(color)
-    const circle = document.getElementById('mouseSizeCircle')
-    if (circle) {
-      circle.setAttribute('stroke', color)
-    }
-  }
-
-  const handlePinchZoomIn = (factor: number, centerX: number, centerY: number) => {
-    zoomAtPoint(factor, centerX, centerY)
-    resizeDrawWidth(mouseSize)
-  }
-
-  const handlePinchZoomOut = (factor: number, centerX: number, centerY: number) => {
-    zoomAtPoint(1 / factor, centerX, centerY)
-    resizeDrawWidth(mouseSize)
-  }
-
-  const getPinchInfo = (touches: TouchList) => {
-    const a = touches.item(0)
-    const b = touches.item(1)
-    if (!a || !b) return { distance: 0, centerX: 0, centerY: 0 }
-    const dx = a.clientX - b.clientX
-    const dy = a.clientY - b.clientY
-    return {
-      distance: Math.hypot(dx, dy),
-      centerX: (a.clientX + b.clientX) / 2,
-      centerY: (a.clientY + b.clientY) / 2,
-    }
-  }
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const handleTouchMove = (e: TouchEvent) => {
-      e.preventDefault()
-      if (e.touches.length === 2) {
-        const { distance: currentDistance, centerX, centerY } = getPinchInfo(e.touches)
-        const initialDistance = pinchStartDistance.current
-        if (!initialDistance) {
-          pinchStartDistance.current = currentDistance
-          return
-        }
-        const changeRatio = currentDistance / initialDistance
-        if (changeRatio > 1.01) {
-          handlePinchZoomIn(changeRatio, centerX, centerY)
-        } else if (changeRatio < 0.99) {
-          handlePinchZoomOut(1 / changeRatio, centerX, centerY)
-        }
-        pinchStartDistance.current = currentDistance
-      }
-    }
-    const handleTouchStart = (e: TouchEvent) => {
-      e.preventDefault()
-      if (e.touches.length === 2) {
-        const { distance } = getPinchInfo(e.touches)
-        pinchStartDistance.current = distance
-      }
-    }
-    const handleWheelPan = (e: WheelEvent) => {
-      e.preventDefault()
-      // Trackpad pinch emits wheel with ctrlKey; treat as zoom instead of pan
-      if (e.ctrlKey) {
-        const magnitude = Math.min(Math.abs(e.deltaY) / 200, 0.5) + 1
-        const factor = e.deltaY < 0 ? magnitude : 1 / magnitude
-        zoomAtPoint(factor, e.clientX, e.clientY)
-        return
-      }
-      updatePan(panRef.current.x - e.deltaX, panRef.current.y - e.deltaY)
-    }
-    canvas.addEventListener('touchmove', handleTouchMove, { passive: false })
-    canvas.addEventListener('touchstart', handleTouchStart, { passive: false })
-    canvas.addEventListener('wheel', handleWheelPan, { passive: false })
+    const offs = [
+      on('wb:add', ({ items }: { items: any[] }) => {
+        const incoming = items.map(normalize)
+        const ids = new Set(incoming.map((i) => i.id))
+        setEls([...st.els.filter((e) => !ids.has(e.id)), ...incoming])
+      }),
+      on('wb:patch', ({ items }: { items: any[] }) => {
+        const m = new Map(items.map((i) => [i.id, i]))
+        setEls(st.els.map((e) => (m.has(e.id) ? { ...e, ...m.get(e.id) } : e)))
+      }),
+      on('wb:remove', ({ ids }: { ids: string[] }) => {
+        const s = new Set(ids)
+        setEls(st.els.filter((e) => !s.has(e.id)))
+        setSel(new Set([...st.sel].filter((id) => !s.has(id))))
+      }),
+      on('wb:clear', () => {
+        setEls([])
+        setSel(new Set())
+      }),
+      on('wb:cursor', (c: { id: string; name: string; color: string; x: number; y: number }) => {
+        st.cursors.set(c.id, { name: c.name, color: c.color, x: c.x, y: c.y, t: Date.now() })
+        requestDraw()
+      }),
+    ]
     return () => {
-      canvas.removeEventListener('touchmove', handleTouchMove)
-      canvas.removeEventListener('touchstart', handleTouchStart)
-      canvas.removeEventListener('wheel', handleWheelPan)
+      cancelled = true
+      offs.forEach((off) => off())
     }
-  }, [handlePinchZoomIn, handlePinchZoomOut])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, on])
 
-  const handleTouchEnd = () => {
-    pinchStartDistance.current = null
-  }
-
-  function clamp(arg0: number, arg1: number, arg2: number): number {
-    if (arg0 < arg1) return arg1
-    if (arg0 > arg2) return arg2
-    return arg0
-  }
-  const roomId = 'room_1' // later make this dynamic per session
-
+  // resync after a dropped connection
+  const prevStatus = useRef(status)
   useEffect(() => {
-    // Load existing strokes
-    const loadStrokes = async () => {
-      const { data } = await supabase
+    if (prevStatus.current === 'offline' && status === 'live') {
+      supabase
         .from('strokes')
         .select('data')
         .eq('room_id', roomId)
         .order('created_at')
-      if (data) {
-        const loaded = data.map((row) => row.data as DrawAction)
-        setActionsAndRef(loaded)
-        const myStrokes = loaded.filter((a) => a.userId === userIdRef.current)
-        myUndoStack.current = myStrokes
-        setCanUndo(myStrokes.length > 0)
-      }
+        .then(({ data }) => data && setEls(data.map((r) => normalize(r.data))))
     }
+    prevStatus.current = status
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status])
 
-    loadStrokes()
-
-    // Subscribe to new strokes from other users
-    const channel = supabase
-      .channel(`room:${roomId}`, {
-        config: { presence: { key: userIdRef.current } },
-      })
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'strokes', filter: `room_id=eq.${roomId}` },
-        (payload) => {
-          const incoming = payload.new.data as DrawAction
-          setActionsAndRef((prev) => {
-            if (prev.find((a) => a.id === incoming.id)) return prev
-            return [...prev, incoming]
-          })
-        },
-      )
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'events', filter: `room_id=eq.${roomId}` },
-        (payload) => {
-          const { type, data } = payload.new
-          if (type === 'clear') {
-            if (data?.clearedBy === userIdRef.current) return // ignore your own clear
-            setActionsAndRef([])
-            myUndoStack.current = []
-            myRedoStack.current = []
-            setCanUndo(false)
-            setCanRedo(false)
-          } else if (type === 'set_state') {
-            if (data?.actions) {
-              // Merge incoming actions: preserve local imageDataUrl for images
-              // since set_state strips them to keep payload size small
-              setActionsAndRef((prev) => {
-                const localById = new Map(prev.map((a) => [a.id, a]))
-                return data.actions.map((incoming: any) => {
-                  if (incoming.type === 'image' && !incoming.imageDataUrl) {
-                    const local = localById.get(incoming.id)
-                    if (local?.imageDataUrl)
-                      return { ...incoming, imageDataUrl: local.imageDataUrl }
-                  }
-                  return incoming
-                })
-              })
-            }
-          }
-        },
-      )
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState<{ x: number; y: number; userId: string }>()
-        const others = Object.values(state)
-          .flat()
-          .filter((c) => c.userId !== userIdRef.current)
-        setOtherCursors(others)
-      })
-      .on('presence', { event: 'join' }, ({ newPresences }) => {
-        const typed = (
-          newPresences as unknown as { x: number; y: number; userId: string }[]
-        ).filter((c) => c.userId !== userIdRef.current)
-        setOtherCursors((prev) => {
-          const filtered = prev.filter((c) => !typed.find((p) => p.userId === c.userId))
-          return [...filtered, ...typed]
-        })
-      })
-      .on('presence', { event: 'leave' }, ({ leftPresences }) => {
-        const typed = leftPresences as unknown as { userId: string }[]
-        setOtherCursors((prev) => prev.filter((c) => !typed.find((p) => p.userId === c.userId)))
-      })
-      .subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          isSubscribedRef.current = true
-          await channel.track({ x: 0, y: 0, userId: userIdRef.current })
-        }
-      })
-
-    channelRef.current = channel
-
+  // cross-view events + Electron menu
+  useEffect(() => {
+    const offAdd = bus.on('canvas:add-task', ({ taskId }: { taskId: string }) =>
+      api.current.addTaskCard(taskId),
+    )
+    const offHist = bus.on(
+      'history',
+      (dir: 'undo' | 'redo') => activeRef.current && api.current[dir](),
+    )
     return () => {
-      isSubscribedRef.current = false
-      supabase.removeChannel(channel)
+      offAdd()
+      offHist()
     }
   }, [])
+
+  // keyboard
   useEffect(() => {
-    otherCursors.forEach((cursor) => {
-      const canvas = canvasRef.current
-      if (!canvas) return
-      const rect = canvas.getBoundingClientRect()
-      const screenX = cursor.x * scaleRef.current + panRef.current.x + rect.left
-      const screenY = cursor.y * scaleRef.current + panRef.current.y + rect.top
-      const sampled = sampleCanvasColor(screenX, screenY)
-      otherCursorColors.current.set(cursor.userId, getContrastColor(sampled))
-    })
-  }, [otherCursors, panX, panY, scale])
-  //   useEffect(() => {}, []) // make sure this is empty array
-  const broadcastEvent = async (type: string, data?: any) => {
-    // Strip imageDataUrl from set_state payloads — images can be several MB
-    // and will exceed the events table row limit. Images sync via the strokes
-    // INSERT listener instead, so receivers already have them.
-    let payload = data
-    if (type === 'set_state' && data?.actions) {
-      payload = {
-        ...data,
-        actions: data.actions.map((a: any) =>
-          a.type === 'image' ? { ...a, imageDataUrl: undefined } : a,
-        ),
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!activeRef.current) return
+      const typing = isTyping(e)
+      const mod = e.metaKey || e.ctrlKey
+      if (e.key === 'Escape') {
+        if (editingRef.current) return
+        setSel(new Set())
+        setShowSettings(false)
+        setShowTasks(false)
+        if (st.act?.kind === 'connect') st.act = null
+        api.current.setTool('select')
+        return
       }
-    }
-    await supabase.from('events').insert({ room_id: roomId, type, data: payload })
-  }
-
-  const hudScale = hudSize === 'small' ? 0.85 : hudSize === 'large' ? 1.15 : 1
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds) {
-        const stroke = actionsRef.current.find((a) => selectedIds.has(a.id!))
-        if (stroke) {
-          const newActions = actionsRef.current.filter((a) => !selectedIds.has(a.id!))
-          setActionsAndRef(newActions)
-          setSelectedIdsAndRef(new Set())
-          myUndoStack.current.push(stroke)
-          setCanUndo(true)
-          supabase.from('strokes').delete().eq('data->>id', selectedIds).eq('room_id', roomId)
-          broadcastEvent('set_state', { actions: newActions })
+      if (typing) return
+      if (e.key === ' ') {
+        e.preventDefault()
+        if (!st.space) {
+          st.space = true
+          setCursor('grab')
         }
+        return
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (st.sel.size) {
+          e.preventDefault()
+          api.current.deleteSelection()
+        }
+        return
+      }
+      if (mod) {
+        const key = e.key.toLowerCase()
+        if (key === 'z') {
+          e.preventDefault()
+          e.shiftKey ? api.current.redo() : api.current.undo()
+        } else if (key === 'y') {
+          e.preventDefault()
+          api.current.redo()
+        } else if (key === 'd') {
+          e.preventDefault()
+          api.current.duplicateSelection()
+        } else if (key === 'a') {
+          e.preventDefault()
+          setSel(new Set(st.els.filter((x) => x.type !== 'connector').map((x) => x.id)))
+        }
+        return
+      }
+      if (e.altKey) return
+      const tools: Record<string, Tool> = {
+        v: 'select',
+        p: 'pen',
+        s: 'shape',
+        t: 'text',
+        n: 'note',
+        c: 'connect',
+      }
+      const k = e.key.toLowerCase()
+      if (tools[k]) api.current.setTool(tools[k])
+      else if (k === 'i') fileInputRef.current?.click()
+      else if (k === 'k') setShowTasks((v) => !v)
+      else if (k === 'f') api.current.fitContent()
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === ' ' && st.space) {
+        st.space = false
+        setCursor(idleCursor())
       }
     }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedIds])
-  const getContrastColor = (hex: string): string => {
-    const num = parseInt(hex.replace('#', ''), 16)
-    const r = (num >> 16) & 255
-    const g = (num >> 8) & 255
-    const b = num & 255
-    // Perceived luminance
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-    return luminance > 0.5 ? '#000000' : '#ffffff'
+    const onPaste = (e: ClipboardEvent) => {
+      if (!activeRef.current || isTyping(e)) return
+      const items = [...(e.clipboardData?.items ?? [])]
+      const img = items.find((i) => i.type.startsWith('image/'))
+      const file = img?.getAsFile()
+      if (file) {
+        e.preventDefault()
+        api.current.addImage(file)
+        return
+      }
+      const text = e.clipboardData?.getData('text/plain')
+      if (text?.trim()) {
+        e.preventDefault()
+        const c = api.current.viewCenter()
+        const el: El = {
+          id: uid(),
+          type: 'text',
+          userId: me.id,
+          points: [c, { x: c.x + 320, y: c.y + 40 }],
+          text: text.slice(0, 4000),
+          fontSize: 18,
+          color: styleRef.current.color,
+        }
+        const fitted = fitText(el)
+        commit({ added: [fitted], removed: [], before: [], after: [] })
+        opAdd([fitted])
+        setSel(new Set([fitted.id]))
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('paste', onPaste)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('paste', onPaste)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => setCursor(idleCursor()), [tool, lineWidth, zoomPct]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ================================================================== */
+  /* Render                                                              */
+  /* ================================================================== */
+
+  const clearCanvas = () => {
+    if (!st.els.length) return
+    if (!window.confirm('Clear the whole canvas for everyone in this room?')) return
+    commit({ added: [], removed: [...st.els], before: [], after: [] })
+    setEls([])
+    setSel(new Set())
+    supabase.from('strokes').delete().eq('room_id', roomId).then(logErr)
+    send('wb:clear', {})
   }
 
-  const sampleCanvasColor = (screenX: number, screenY: number): string => {
-    const canvas = canvasRef.current
-    if (!canvas) return '#ffffff'
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return '#ffffff'
-    const rect = canvas.getBoundingClientRect()
-    const x = Math.round(screenX - rect.left)
-    const y = Math.round(screenY - rect.top)
-    if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return '#ffffff'
-    const [r, g, b] = ctx.getImageData(x, y, 1, 1).data
-    return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`
-  }
-  // Helper to darken a hex color for swatch outlines
-  const darkenColor = (hex: string, amount = 40): string => {
-    const num = parseInt(hex.replace('#', ''), 16)
-    const r = Math.max(0, (num >> 16) - amount)
-    const g = Math.max(0, ((num >> 8) & 0xff) - amount)
-    const b = Math.max(0, (num & 0xff) - amount)
-    return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`
+  const selEls = selIds.map((id) => st.map.get(id)).filter((e): e is El => !!e)
+  const hasStroke = selEls.some((e) => ['stroke', 'shape', 'connector'].includes(e.type))
+  const hasText = selEls.some((e) => e.type === 'text')
+  const hasNote = selEls.some((e) => e.type === 'text' && e.note)
+  const showWidth = tool === 'pen' || tool === 'shape' || hasStroke
+  const showFont = tool === 'text' || hasText
+  const showNotes = tool === 'note' || hasNote
+  const showProps =
+    tool === 'pen' ||
+    tool === 'shape' ||
+    tool === 'text' ||
+    tool === 'note' ||
+    selEls.some((e) => e.type !== 'task' && e.type !== 'image')
+  const ink = PAL[theme].ink
+  const pickerColor = resolveColor(color, ink)
+
+  const edEl = editing
+    ? st.preview?.id === editing.id
+      ? st.preview
+      : st.map.get(editing.id)
+    : null
+  const edBox = edEl ? getBBox(edEl, st.map) : null
+
+  const filteredTasks = taskData.list.filter((t) =>
+    t.title.toLowerCase().includes(taskQuery.trim().toLowerCase()),
+  )
+  const ShapeIcon = shapeIcons[shapeKind]
+
+  const chooseColor = (c: string) => {
+    setColor(c)
+    if (st.sel.size) applyStyle({ color: c }, 'color')
   }
 
   return (
     <div
-      className="flex h-screen overflow-hidden"
-      style={{ cursor: 'none' }}
+      ref={wrapRef}
+      className="absolute inset-0 select-none overflow-hidden"
       onDragOver={(e) => {
         e.preventDefault()
         setIsDragOver(true)
@@ -1639,578 +1925,494 @@ export const Whiteboard: React.FC = () => {
         e.preventDefault()
         setIsDragOver(false)
         const file = e.dataTransfer.files[0]
-        if (!file) return
-        const canvas = canvasRef.current
-        if (!canvas) return
-        const rect = canvas.getBoundingClientRect()
-        const worldX = (e.clientX - rect.left - panRef.current.x) / scaleRef.current
-        const worldY = (e.clientY - rect.top - panRef.current.y) / scaleRef.current
-        handleImageFile(file, worldX, worldY)
+        if (file) addImage(file, toWorld(e))
       }}
     >
-      {/* Hidden file input for image upload */}
       <input
         ref={fileInputRef}
         type="file"
         accept="image/*"
         className="hidden"
         onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file) handleImageFile(file)
+          const f = e.target.files?.[0]
+          if (f) addImage(f)
           e.target.value = ''
         }}
       />
-      {/* Drag-over overlay */}
+
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 h-full w-full"
+        style={{ touchAction: 'none' }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onPointerLeave={() => {
+          if (!st.act && (st.hoverId || st.hoverHandle)) {
+            st.hoverId = null
+            st.hoverHandle = null
+            requestDraw()
+          }
+        }}
+        onDoubleClick={onDoubleClick}
+        onContextMenu={(e) => e.preventDefault()}
+      />
+
+      {/* inline text editor */}
+      {edEl && edBox && (
+        <textarea
+          ref={editorRef}
+          value={editText}
+          spellCheck={false}
+          placeholder={edEl.note ? 'Type a note' : 'Type'}
+          onChange={(e) => {
+            setEditText(e.target.value)
+            editTextRef.current = e.target.value
+          }}
+          onBlur={() => finishEdit()}
+          onKeyDown={(e) => {
+            e.stopPropagation()
+            if (e.key === 'Escape' || (e.key === 'Enter' && (e.metaKey || e.ctrlKey))) {
+              e.preventDefault()
+              finishEdit()
+            }
+          }}
+          className="absolute m-0 resize-none border-0 bg-transparent outline-none"
+          style={{
+            left: edBox.minX * st.view.k + st.view.x,
+            top: edBox.minY * st.view.k + st.view.y,
+            width: (edBox.maxX - edBox.minX) * st.view.k,
+            height: Math.max(edBox.maxY - edBox.minY, 36) * st.view.k,
+            padding: (edEl.note ? 12 : 6) * st.view.k,
+            fontSize: (edEl.fontSize ?? 18) * st.view.k,
+            lineHeight: 1.35,
+            fontFamily: FONT,
+            color: edEl.note ? '#27272a' : resolveColor(edEl.color, ink),
+            boxShadow: edEl.note ? undefined : `0 0 0 1.5px ${PAL[theme].accent}`,
+            borderRadius: 6,
+            zIndex: 15,
+          }}
+        />
+      )}
+
       {isDragOver && (
-        <div className="fixed inset-0 z-50 pointer-events-none flex items-center justify-center bg-blue-500/10 border-4 border-dashed border-blue-400">
-          <div className="bg-white rounded-2xl shadow-xl px-8 py-6 flex flex-col items-center gap-2">
-            <ImageIcon size={32} className="text-blue-400" />
-            <span className="text-sm font-medium text-blue-600">Drop image here</span>
+        <div
+          className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed"
+          style={{ borderColor: 'var(--dv-accent)', background: 'var(--dv-accent-soft)' }}
+        >
+          <div className="dv-floating flex items-center gap-2 px-5 py-3 text-sm font-medium">
+            <ImageIcon size={18} />
+            Drop to add image
           </div>
         </div>
       )}
-      {/* Full-screen canvas */}
-      <canvas
-        ref={canvasRef}
-        style={{
-          // ← replace the whole style={{ ... }} block here
-          position: 'absolute',
-          inset: 0,
-          width: '100%',
-          height: '100%',
-          touchAction: 'none',
-          cursor: hoveredHandle
-            ? hoveredHandle === 'nw' || hoveredHandle === 'se'
-              ? 'nw-resize'
-              : 'ne-resize'
-            : hoveredId && tool === 'select'
-              ? 'pointer'
-              : 'none',
-        }}
-        onMouseDown={(e) => {
-          if (e.button === 2) handleCanvasPan(e, true)
-          else if (e.button === 0) startDrawing(e)
-        }}
-        onMouseMove={(e) => {
-          cursorTargetRef.current = { x: e.clientX, y: e.clientY }
-          const sampled = sampleCanvasColor(e.clientX, e.clientY)
-          setCursorColor(getContrastColor(sampled))
-          if (channelRef.current && isSubscribedRef.current) {
-            const rect = canvasRef.current?.getBoundingClientRect()
-            if (rect) {
-              const worldX = (e.clientX - rect.left - panRef.current.x) / scaleRef.current
-              const worldY = (e.clientY - rect.top - panRef.current.y) / scaleRef.current
-              channelRef.current.track({ x: worldX, y: worldY, userId: userIdRef.current })
-            }
-          }
-          if (isPanning) handleCanvasPan(e, false)
-          else if (e.buttons === 1) draw(e)
-          else if (e.buttons === 0 && tool === 'select') draw(e)
-        }}
-        onMouseUp={isPanning ? stopPan : stopDrawing}
-        onMouseLeave={
-          isPanning
-            ? stopPan
-            : () => {
-                stopDrawing()
-                setHoveredId(null)
-                setHoveredHandle(null)
-              }
-        }
-        onTouchEnd={handleTouchEnd}
-        onContextMenu={(e) => {
-          e.preventDefault()
-          return false
-        }}
-      />
 
-      {/* SVG overlay — other cursors only */}
-      <svg
-        width="100%"
-        height="100%"
-        className="absolute inset-0 pointer-events-none"
-        style={{ zIndex: 10 }}
-      >
-        {otherCursors
-          .filter((c) => c.x !== -1)
-          .map((cursor: any) => {
-            const rect = canvasRef.current?.getBoundingClientRect()
-            const screenX = cursor.x * scaleRef.current + panRef.current.x + (rect?.left ?? 0)
-            const screenY = cursor.y * scaleRef.current + panRef.current.y + (rect?.top ?? 0)
-            // Pick a vivid, stable color from the userId
-            const hue =
-              Math.abs(
-                cursor.userId
-                  .split('')
-                  .reduce((acc: number, c: string) => acc + c.charCodeAt(0), 0),
-              ) % 360
-            const cursorFill = `hsl(${hue}, 80%, 50%)`
-            const shortId = cursor.userId.slice(0, 4)
-            return (
-              <g key={cursor.userId} style={{ pointerEvents: 'none' }}>
-                {/* Drop shadow for contrast on any background */}
-                <path
-                  d="M 0 0 L 0 16 L 4 12 L 8 20 L 10 19 L 6 11 L 11 11 Z"
-                  transform={`translate(${screenX + 1}, ${screenY + 1})`}
-                  fill="rgba(0,0,0,0.35)"
+      {count === 0 && !editing && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div
+            className="max-w-sm text-center text-[13px] leading-relaxed"
+            style={{ color: 'var(--dv-muted)' }}
+          >
+            <p className="mb-1 text-[15px] font-semibold" style={{ color: 'var(--dv-text)' }}>
+              Empty canvas
+            </p>
+            Double-click to write, drag in images or paste a screenshot. Press{' '}
+            <span className="dv-kbd">K</span> to pull in a task from the board, then link things
+            with the arrow tool (<span className="dv-kbd">C</span>).
+          </div>
+        </div>
+      )}
+
+      {/* properties */}
+      {showProps && (
+        <div className="dv-floating absolute left-4 top-1/2 z-20 flex w-[196px] -translate-y-1/2 flex-col gap-3.5 p-3.5">
+          {showWidth && (
+            <div className="flex flex-col gap-1.5">
+              <span className="dv-label">Line width</span>
+              <div className="flex items-center gap-2">
+                <Minus
+                  size={12}
+                  className="cursor-pointer"
+                  style={{ color: 'var(--dv-muted)' }}
+                  onClick={() => {
+                    const v = clamp(lineWidth - 1, 1, 50)
+                    setLineWidth(v)
+                    applyStyle({ lineWidth: v }, 'lw')
+                  }}
                 />
-                {/* Cursor arrow shape */}
-                <path
-                  d="M 0 0 L 0 16 L 4 12 L 8 20 L 10 19 L 6 11 L 11 11 Z"
-                  transform={`translate(${screenX}, ${screenY})`}
-                  fill={cursorFill}
-                  stroke="white"
-                  strokeWidth="1.5"
-                  strokeLinejoin="round"
+                <input
+                  type="range"
+                  min={1}
+                  max={50}
+                  value={lineWidth}
+                  className="flex-1"
+                  style={{ accentColor: 'var(--dv-accent)' }}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value)
+                    setLineWidth(v)
+                    applyStyle({ lineWidth: v }, 'lw')
+                  }}
                 />
-                {/* Name label */}
-                <rect
-                  x={screenX + 13}
-                  y={screenY + 2}
-                  width={shortId.length * 7 + 8}
-                  height={16}
-                  rx={4}
-                  fill={cursorFill}
+                <Plus
+                  size={12}
+                  className="cursor-pointer"
+                  style={{ color: 'var(--dv-muted)' }}
+                  onClick={() => {
+                    const v = clamp(lineWidth + 1, 1, 50)
+                    setLineWidth(v)
+                    applyStyle({ lineWidth: v }, 'lw')
+                  }}
                 />
-                <text
-                  x={screenX + 17}
-                  y={screenY + 13}
-                  fontSize="10"
-                  fontFamily="monospace"
-                  fontWeight="600"
-                  fill="white"
+                <span
+                  className="w-5 text-right text-xs tabular-nums"
+                  style={{ color: 'var(--dv-muted)' }}
                 >
-                  {shortId}
-                </text>
-              </g>
-            )
-          })}
-      </svg>
-
-      {/* Custom cursor — only on canvas, hidden when over any popup/footer */}
-      {!hideCursorWhileHudClick && !(hoveredId && tool === 'select' && !hoveredHandle) && (
-        <div
-          className="pointer-events-none fixed"
-          style={{
-            left: cursorPos.x,
-            top: cursorPos.y,
-            zIndex: 1000,
-            transform: 'translate(-50%, -50%)',
-          }}
-        >
-          {tool === 'select' ? (
-            hoveredHandle ? (
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 20 20"
-                style={{
-                  transform:
-                    hoveredHandle === 'nw' || hoveredHandle === 'se'
-                      ? 'rotate(0deg)'
-                      : 'rotate(90deg)',
-                  filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))',
+                  {lineWidth}
+                </span>
+              </div>
+            </div>
+          )}
+          {showFont && (
+            <div className="flex flex-col gap-1.5">
+              <span className="dv-label">Text size</span>
+              <input
+                type="range"
+                min={12}
+                max={72}
+                defaultValue={20}
+                style={{ accentColor: 'var(--dv-accent)' }}
+                onChange={(e) => {
+                  const fs = parseInt(e.target.value)
+                  applyStyle({ fontSize: fs }, 'fs')
+                  for (const el of st.els.filter((x) => st.sel.has(x.id) && x.type === 'text'))
+                    opPatch([{ id: el.id, points: fitText(st.map.get(el.id)!).points }])
                 }}
+              />
+            </div>
+          )}
+          {showNotes && (
+            <div className="flex flex-col gap-1.5">
+              <span className="dv-label">Note color</span>
+              <div className="flex flex-wrap gap-1.5">
+                {NOTE_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    aria-label={`Note color ${c}`}
+                    className="h-5 w-5 rounded-md"
+                    style={{
+                      background: c,
+                      outline:
+                        noteColor === c
+                          ? '2px solid var(--dv-accent)'
+                          : '1px solid rgba(0,0,0,.18)',
+                      outlineOffset: noteColor === c ? 1 : 0,
+                    }}
+                    onClick={() => {
+                      setNoteColor(c)
+                      applyStyle({ note: c }, 'note')
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          {tool !== 'note' && (
+            <div className="flex flex-col gap-1.5">
+              <span className="dv-label">Color</span>
+              <div className="grid grid-cols-5 gap-1.5">
+                {SWATCHES.map((c) => (
+                  <button
+                    key={c}
+                    aria-label={c === 'auto' ? 'Theme ink' : `Color ${c}`}
+                    title={c === 'auto' ? 'Theme ink (adapts to light and dark)' : c}
+                    className="h-6 w-6 rounded-md"
+                    style={{
+                      background:
+                        c === 'auto' ? 'linear-gradient(135deg, #15171c 50%, #f4f5f7 50%)' : c,
+                      outline:
+                        color === c
+                          ? '2px solid var(--dv-accent)'
+                          : '1px solid rgba(128,128,128,.4)',
+                      outlineOffset: color === c ? 1 : 0,
+                    }}
+                    onClick={() => chooseColor(c)}
+                  />
+                ))}
+              </div>
+              <button
+                className="dv-btn mt-1 justify-center"
+                onClick={() => setShowPicker((v) => !v)}
               >
-                {/* Double-headed diagonal arrow */}
-                <line
-                  x1="3"
-                  y1="3"
-                  x2="17"
-                  y2="17"
-                  stroke={cursorColor === '#ffffff' ? 'white' : '#1e3a5f'}
-                  strokeWidth="2"
-                  strokeLinecap="round"
+                {showPicker ? 'Hide picker' : 'Custom color'}
+              </button>
+              {showPicker && (
+                <HexColorPicker
+                  color={pickerColor}
+                  onChange={chooseColor}
+                  style={{ width: '100%', height: 110 }}
                 />
-                <polyline
-                  points="3,9 3,3 9,3"
-                  fill="none"
-                  stroke={cursorColor === '#ffffff' ? 'white' : '#1e3a5f'}
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <polyline
-                  points="17,11 17,17 11,17"
-                  fill="none"
-                  stroke={cursorColor === '#ffffff' ? 'white' : '#1e3a5f'}
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            ) : (
-              <MousePointer2
-                size={22}
-                color={cursorColor}
-                style={{ fill: cursorColor === '#ffffff' ? 'black' : 'white' }}
-              />
-            )
-          ) : cursorStyle === 'dot' ? (
-            <div
-              className="w-1.5 h-1.5 rounded-full bg-black"
-              style={{ borderColor: cursorColor, borderWidth: 1 }}
-            />
-          ) : cursorStyle === 'crosshair' ? (
-            <svg width="20" height="20" viewBox="0 0 20 20">
-              <line x1="10" y1="0" x2="10" y2="20" stroke={cursorColor} strokeWidth="1" />
-              <line
-                x1="0"
-                y1="10"
-                x2="20"
-                y2="10"
-                stroke={colorScheme === 'dark' ? 'white' : 'black'}
-                strokeWidth="1"
-              />
-            </svg>
-          ) : (
-            <div
-              className="rounded-full border"
-              style={{
-                width: Math.max(6, mouseSize * scale),
-                height: Math.max(6, mouseSize * scale),
-                borderColor: cursorColor,
-                borderWidth: 1.5,
-              }}
-            />
+              )}
+            </div>
           )}
         </div>
       )}
 
-      {/* Size + Color panels — fixed to left side, only when pen tool */}
-      {tool === 'pen' && (
-        <div
-          className="fixed left-4 top-1/2 -translate-y-1/2 flex flex-col gap-3"
-          style={{ zIndex: 30, cursor: 'default' }}
-        >
-          {/* Size panel */}
-          <div
-            className="bg-white rounded-2xl shadow-lg border border-gray-100 p-3 flex flex-col gap-2"
-            style={{ minWidth: '160px' }}
-          >
-            <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Size</span>
-            <div className="flex items-center gap-2">
-              <Minus
-                size={12}
-                className="text-gray-400 hover:text-gray-800 cursor-pointer flex-shrink-0"
-                onClick={() => resizeDrawWidth(clamp(mouseSize - 1, 1, 50))}
-              />
+      {/* toolbar */}
+      <div className="absolute bottom-5 left-1/2 z-20 -translate-x-1/2">
+        <div className="dv-floating relative flex items-center gap-0.5 p-1.5">
+          <ToolBtn
+            icon={<MousePointer2 size={16} />}
+            label="Select"
+            kbd="V"
+            active={tool === 'select'}
+            onClick={() => setTool('select')}
+          />
+          <ToolBtn
+            icon={<Pen size={16} />}
+            label="Pen"
+            kbd="P"
+            active={tool === 'pen'}
+            onClick={() => setTool('pen')}
+          />
+          <ToolBtn
+            icon={<ShapeIcon size={16} />}
+            label="Shape"
+            kbd="S"
+            active={tool === 'shape'}
+            onClick={() => setTool('shape')}
+          />
+          <ToolBtn
+            icon={<Type size={16} />}
+            label="Text"
+            kbd="T"
+            active={tool === 'text'}
+            onClick={() => setTool('text')}
+          />
+          <ToolBtn
+            icon={<StickyNote size={16} />}
+            label="Sticky note"
+            kbd="N"
+            active={tool === 'note'}
+            onClick={() => setTool('note')}
+          />
+          <ToolBtn
+            icon={<ArrowUpRight size={16} />}
+            label="Link two items"
+            kbd="C"
+            active={tool === 'connect'}
+            onClick={() => setTool('connect')}
+          />
+          <ToolBtn
+            icon={<ImageIcon size={16} />}
+            label="Add image"
+            kbd="I"
+            onClick={() => fileInputRef.current?.click()}
+          />
+          <ToolBtn
+            icon={<ListTodo size={16} />}
+            label="Add a task from the board"
+            kbd="K"
+            active={showTasks}
+            onClick={() => setShowTasks((v) => !v)}
+          />
+          <div className="dv-sep" />
+          <ToolBtn
+            icon={<Undo2 size={16} />}
+            label="Undo"
+            kbd="Ctrl Z"
+            disabled={!canUndo}
+            onClick={undo}
+          />
+          <ToolBtn
+            icon={<Redo2 size={16} />}
+            label="Redo"
+            kbd="Ctrl Shift Z"
+            disabled={!canRedo}
+            onClick={redo}
+          />
+          <div className="dv-sep" />
+          <ToolBtn icon={<Trash2 size={16} />} label="Clear canvas" danger onClick={clearCanvas} />
+
+          {tool === 'shape' && (
+            <div className="dv-floating absolute bottom-full left-1/2 mb-2 flex -translate-x-1/2 flex-col gap-2 p-2.5">
+              <div className="flex gap-1">
+                {(Object.keys(shapeIcons) as ShapeKind[]).map((kind) => {
+                  const Icon = shapeIcons[kind]
+                  return (
+                    <ToolBtn
+                      key={kind}
+                      icon={<Icon size={16} />}
+                      label={kind[0].toUpperCase() + kind.slice(1)}
+                      active={shapeKind === kind}
+                      onClick={() => setShapeKind(kind)}
+                    />
+                  )
+                })}
+              </div>
+              <div className="dv-seg">
+                {(['outline', 'fill'] as const).map((m) => (
+                  <button
+                    key={m}
+                    data-active={shapeFill === m}
+                    className="flex-1 justify-center capitalize"
+                    onClick={() => setShapeFill(m)}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {showTasks && (
+            <div className="dv-floating absolute bottom-full left-1/2 mb-2 flex w-[300px] -translate-x-1/2 flex-col gap-2 p-2.5">
               <input
-                type="range"
-                min="1"
-                max="50"
-                value={mouseSize}
-                onChange={(e) => resizeDrawWidth(parseInt(e.target.value))}
-                className="flex-1 accent-gray-800"
+                autoFocus
+                className="dv-input"
+                placeholder="Find a task"
+                value={taskQuery}
+                onChange={(e) => setTaskQuery(e.target.value)}
+                onKeyDown={(e) =>
+                  e.key === 'Enter' && filteredTasks[0] && addTaskCard(filteredTasks[0].id)
+                }
               />
-              <Plus
-                size={12}
-                className="text-gray-400 hover:text-gray-800 cursor-pointer flex-shrink-0"
-                onClick={() => resizeDrawWidth(clamp(mouseSize + 1, 1, 50))}
-              />
-              <span className="text-xs text-gray-400 w-5 tabular-nums text-right">{mouseSize}</span>
-            </div>
-          </div>
-
-          {/* Color panel */}
-          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-3 flex flex-col gap-2">
-            <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Color</span>
-            <HexColorPicker
-              color={drawColor}
-              onChange={setDrawColorAndMore}
-              style={{ width: '100%', height: '110px' }}
-            />
-            <div className="grid grid-cols-6 gap-1 mt-1">
-              {swatches.map((color) => (
-                <button
-                  key={color}
-                  onClick={() => setDrawColorAndMore(color)}
-                  className="w-5 h-5 rounded-sm cursor-pointer transition-transform hover:scale-110"
-                  style={{
-                    backgroundColor: color,
-                    outline:
-                      drawColor === color
-                        ? `2px solid ${darkenColor(color, 60)}`
-                        : `1px solid ${darkenColor(color, 30)}`,
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Floating footer toolbar — centered */}
-      <div className="fixed bottom-5 left-1/2 -translate-x-1/2" style={{ zIndex: 20 }}>
-        <div
-          className="flex items-center gap-1 px-3 py-2 rounded-2xl shadow-xl border select-none"
-          style={{
-            transform: `scale(${hudScale})`,
-            transformOrigin: 'bottom center',
-            backgroundColor: colorScheme === 'dark' ? '#1e1e1e' : 'white',
-            borderColor: colorScheme === 'dark' ? '#333' : '#e5e7eb',
-            color: colorScheme === 'dark' ? 'white' : undefined,
-            cursor: 'default',
-          }}
-          onMouseDown={() => setHideCursorWhileHudClick(true)}
-        >
-          {/* Tools */}
-          <div className="flex items-center gap-1 pr-2 border-r border-gray-200">
-            <button
-              onClick={() => setTool('select')}
-              title="Select"
-              className={`p-2 rounded-xl transition-all duration-150 ${tool === 'select' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}
-            >
-              <MousePointer2 size={16} strokeWidth={2} />
-            </button>
-            <button
-              onClick={() => {
-                setTool('pen')
-                setSelectedIdsAndRef(new Set())
-              }}
-              title="Pen"
-              className={`p-2 rounded-xl transition-all duration-150 ${tool === 'pen' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}
-            >
-              <Pen size={16} strokeWidth={2} />
-            </button>
-
-            {/* Image upload button */}
-            <button
-              onClick={() => {
-                setSelectedIdsAndRef(new Set())
-                fileInputRef.current?.click()
-              }}
-              title="Upload Image"
-              className={`p-2 rounded-xl transition-all duration-150 ${tool === 'image' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}
-            >
-              <ImageIcon size={16} strokeWidth={2} />
-            </button>
-
-            {/* Shape button with hover panel */}
-            <div className="relative" onMouseEnter={openShapePanel} onMouseLeave={closeShapePanel}>
-              <button
-                onClick={() => {
-                  setTool('shape')
-                  setSelectedIdsAndRef(new Set())
-                }}
-                title="Shapes"
-                className={`p-2 rounded-xl transition-all duration-150 ${tool === 'shape' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}
-              >
-                {React.createElement(shapeIcons[shapeKind], { size: 16, strokeWidth: 2 })}
-              </button>
-              {showShapePanel && (
-                <div
-                  className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-white rounded-2xl shadow-xl border border-gray-100 p-3 flex flex-col gap-2 min-w-[160px]"
-                  style={{ zIndex: 50 }}
-                  onMouseEnter={openShapePanel}
-                  onMouseLeave={closeShapePanel}
-                >
-                  <div className="grid grid-cols-2 gap-2">
-                    {(['rectangle', 'circle', 'star', 'heart'] as const).map((shape) => {
-                      const Icon = shapeIcons[shape]
-                      return (
-                        <button
-                          key={shape}
-                          onClick={() => {
-                            setShapeKind(shape)
-                            setTool('shape')
-                            setSelectedIdsAndRef(new Set())
-                          }}
-                          className={`flex flex-col items-center gap-1 p-2 rounded-xl text-xs capitalize transition-all ${shapeKind === shape ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
-                        >
-                          <Icon size={16} strokeWidth={2} />
-                          {shape}
-                        </button>
-                      )
-                    })}
-                  </div>
-                  <div className="flex gap-2 border-t border-gray-100 pt-2">
-                    <button
-                      onClick={() => setShapeFillMode('outline')}
-                      className={`flex-1 py-1.5 rounded-lg text-xs transition-all ${shapeFillMode === 'outline' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
-                    >
-                      Outline
+              <div className="dv-scroll flex max-h-64 flex-col overflow-y-auto">
+                {filteredTasks.length === 0 && (
+                  <p className="px-2 py-4 text-center text-xs" style={{ color: 'var(--dv-muted)' }}>
+                    {taskData.list.length === 0
+                      ? 'No tasks yet. Add some on the board.'
+                      : 'No matches'}
+                  </p>
+                )}
+                {filteredTasks.map((t) => {
+                  const s = taskData.statusOpt(t.status)
+                  return (
+                    <button key={t.id} className="dv-menu-item" onClick={() => addTaskCard(t.id)}>
+                      <span className="dv-dot" style={{ background: s.color }} />
+                      <span className="flex-1 truncate">{t.title}</span>
                     </button>
-                    <button
-                      onClick={() => setShapeFillMode('fill')}
-                      className={`flex-1 py-1.5 rounded-lg text-xs transition-all ${shapeFillMode === 'fill' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
-                    >
-                      Fill
-                    </button>
-                  </div>
-                </div>
-              )}
+                  )
+                })}
+              </div>
             </div>
-          </div>
-
-          {/* Undo / Redo */}
-          <div className="flex items-center gap-1 px-2 border-r border-gray-200">
-            <button
-              onClick={undo}
-              disabled={!canUndo}
-              title="Undo (⌘Z)"
-              className="p-2 rounded-xl text-gray-500 hover:bg-gray-100 hover:text-gray-800 disabled:opacity-25 disabled:cursor-not-allowed transition-all"
-            >
-              <Undo2 size={16} strokeWidth={2} />
-            </button>
-            <button
-              onClick={redo}
-              disabled={!canRedo}
-              title="Redo (⌘⇧Z)"
-              className="p-2 rounded-xl text-gray-500 hover:bg-gray-100 hover:text-gray-800 disabled:opacity-25 disabled:cursor-not-allowed transition-all"
-            >
-              <Redo2 size={16} strokeWidth={2} />
-            </button>
-          </div>
-
-          {/* Clear */}
-          <div className="pl-2">
-            <button
-              onClick={clearCanvas}
-              title="Clear canvas"
-              className="p-2 rounded-xl text-gray-400 hover:bg-red-50 hover:text-red-500 transition-all"
-            >
-              <Trash2 size={16} strokeWidth={2} />
-            </button>
-          </div>
+          )}
         </div>
       </div>
 
-      {/* Settings button — fixed bottom right, independent */}
-      <button
-        onClick={() => setShowSettings(true)}
-        title="Settings"
-        className="fixed bottom-5 right-5 w-10 h-10 rounded-2xl shadow-xl border flex items-center justify-center transition-all hover:scale-105 cursor-pointer"
-        style={{
-          zIndex: 20,
-          backgroundColor: colorScheme === 'dark' ? '#1e1e1e' : 'white',
-          borderColor: colorScheme === 'dark' ? '#333' : '#e5e7eb',
-          color: colorScheme === 'dark' ? 'white' : '#6b7280',
-        }}
-      >
-        <Settings size={16} strokeWidth={2} />
-      </button>
+      {/* zoom */}
+      <div className="absolute bottom-5 left-5 z-20">
+        <div className="dv-floating flex items-center gap-0.5 p-1.5">
+          <ToolBtn
+            icon={<Minus size={15} />}
+            label="Zoom out"
+            onClick={() => zoomCenter(1 / 1.25)}
+          />
+          <button
+            className="dv-btn !border-0 !bg-transparent tabular-nums"
+            style={{ width: 54, justifyContent: 'center' }}
+            title="Reset zoom"
+            onClick={() => {
+              const k0 = st.view.k
+              zoomCenter(1 / k0)
+            }}
+          >
+            {zoomPct}%
+          </button>
+          <ToolBtn icon={<Plus size={15} />} label="Zoom in" onClick={() => zoomCenter(1.25)} />
+          <div className="dv-sep" />
+          <ToolBtn
+            icon={<Maximize size={15} />}
+            label="Fit to content"
+            kbd="F"
+            onClick={fitContent}
+          />
+        </div>
+      </div>
 
-      {/* Settings modal */}
-      {showSettings && (
-        <>
-          <div className="fixed inset-0 bg-black/40 z-50" onClick={() => setShowSettings(false)} />
-          <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
-            <div
-              className="bg-white rounded-2xl shadow-2xl w-96 p-6 pointer-events-auto flex flex-col gap-5"
-              style={{ cursor: 'default' }}
-            >
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-gray-800">Settings</h2>
-                <button
-                  onClick={() => setShowSettings(false)}
-                  className="p-1 rounded-lg hover:bg-gray-100 text-gray-400"
-                >
-                  <X size={16} />
-                </button>
-              </div>
+      {/* settings */}
+      <div className="absolute bottom-5 right-5 z-20">
+        <ToolBtn
+          icon={<Settings size={16} />}
+          label="Canvas settings"
+          active={showSettings}
+          onClick={() => setShowSettings((v) => !v)}
+        />
+        {showSettings && (
+          <>
+            <div className="fixed inset-0 z-40" onPointerDown={() => setShowSettings(false)} />
+            <div className="dv-floating absolute bottom-full right-0 z-50 mb-2 flex w-72 flex-col gap-4 p-4">
               <div className="flex flex-col gap-2">
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                  Color Scheme
-                </label>
-                <div className="flex gap-2">
-                  {(['light', 'dark', 'custom'] as const).map((scheme) => (
+                <span className="dv-label">Background</span>
+                <div className="dv-seg">
+                  {(['theme', 'custom'] as const).map((m) => (
                     <button
-                      key={scheme}
-                      onClick={() => setColorScheme(scheme)}
-                      className={`flex-1 py-1.5 rounded-lg text-xs capitalize transition-all ${colorScheme === scheme ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                      key={m}
+                      data-active={cfg.bg === m}
+                      className="flex-1 justify-center capitalize"
+                      onClick={() => setCfg({ ...cfg, bg: m })}
                     >
-                      {scheme}
+                      {m === 'theme' ? 'Match theme' : 'Custom'}
                     </button>
                   ))}
                 </div>
-                {colorScheme === 'custom' && (
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-xs text-gray-500">Background</span>
-                    <input
-                      type="color"
-                      value={customBg}
-                      onChange={(e) => setCustomBg(e.target.value)}
-                      className="w-8 h-8 rounded cursor-pointer border-0"
-                    />
-                  </div>
+                {cfg.bg === 'custom' && (
+                  <input
+                    type="color"
+                    value={cfg.customBg}
+                    onChange={(e) => setCfg({ ...cfg, customBg: e.target.value })}
+                    className="h-8 w-full cursor-pointer rounded border-0 bg-transparent"
+                  />
                 )}
               </div>
               <div className="flex flex-col gap-2">
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                  HUD Size
-                </label>
-                <div className="flex gap-2">
-                  {(['small', 'medium', 'large'] as const).map((size) => (
+                <span className="dv-label">Grid</span>
+                <div className="dv-seg">
+                  {(['none', 'dots', 'lines'] as const).map((g) => (
                     <button
-                      key={size}
-                      onClick={() => setHudSize(size)}
-                      className={`flex-1 py-1.5 rounded-lg text-xs capitalize transition-all ${hudSize === size ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                      key={g}
+                      data-active={cfg.grid === g}
+                      className="flex-1 justify-center capitalize"
+                      onClick={() => setCfg({ ...cfg, grid: g })}
                     >
-                      {size}
+                      {g}
                     </button>
                   ))}
                 </div>
-              </div>
-              <div className="flex flex-col gap-2">
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                  Cursor Style
-                </label>
-                <div className="flex gap-2">
-                  {(['circle', 'dot', 'crosshair'] as const).map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => setCursorStyle(s)}
-                      className={`flex-1 py-1.5 rounded-lg text-xs capitalize transition-all ${cursorStyle === s ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex flex-col gap-2">
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                  Grid
-                </label>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-600">Show grid</span>
-                  <button
-                    onClick={() => setShowGrid(!showGrid)}
-                    className={`w-10 h-5 rounded-full transition-all ${showGrid ? 'bg-gray-900' : 'bg-gray-200'}`}
-                  >
-                    <div
-                      className={`w-4 h-4 bg-white rounded-full shadow transition-all mx-0.5 ${showGrid ? 'translate-x-5' : 'translate-x-0'}`}
-                    />
-                  </button>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-600">Snap to grid</span>
-                  <button
-                    onClick={() => setSnapToGrid(!snapToGrid)}
-                    className={`w-10 h-5 rounded-full transition-all ${snapToGrid ? 'bg-gray-900' : 'bg-gray-200'}`}
-                  >
-                    <div
-                      className={`w-4 h-4 bg-white rounded-full shadow transition-all mx-0.5 ${snapToGrid ? 'translate-x-5' : 'translate-x-0'}`}
-                    />
-                  </button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-600">Grid size</span>
+                <div
+                  className="flex items-center gap-2 text-xs"
+                  style={{ color: 'var(--dv-muted)' }}
+                >
+                  Spacing
                   <input
                     type="range"
-                    min="10"
-                    max="200"
-                    value={gridSize}
-                    onChange={(e) => setGridSize(parseInt(e.target.value))}
-                    className="flex-1 accent-gray-800"
+                    min={10}
+                    max={120}
+                    value={cfg.gridSize}
+                    className="flex-1"
+                    style={{ accentColor: 'var(--dv-accent)' }}
+                    onChange={(e) => setCfg({ ...cfg, gridSize: parseInt(e.target.value) })}
                   />
-                  <span className="text-xs text-gray-400 w-8 text-right">{gridSize}px</span>
+                  <span className="w-9 text-right tabular-nums">{cfg.gridSize}px</span>
                 </div>
+                <label className="flex cursor-pointer items-center justify-between text-[13px]">
+                  Snap to grid
+                  <input
+                    type="checkbox"
+                    checked={cfg.snap}
+                    style={{ accentColor: 'var(--dv-accent)' }}
+                    onChange={(e) => setCfg({ ...cfg, snap: e.target.checked })}
+                  />
+                </label>
               </div>
+              <p className="text-[11px] leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
+                Space + drag or right-drag to pan. Ctrl/Cmd + scroll to zoom. Shift constrains lines
+                and shapes. Ctrl/Cmd + D duplicates.
+              </p>
             </div>
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </div>
     </div>
   )
 }
