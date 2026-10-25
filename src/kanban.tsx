@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Pencil, PenTool, Plus, Search, Trash2, X } from 'lucide-react'
+import { Crosshair, ImagePlus, Pencil, PenTool, Plus, Search, Trash2, X } from 'lucide-react'
 import { supabase } from './lib/supabase'
-import { useRoom } from './lib/room.tsx'
-import { bus, isTyping, toast } from './lib/bus.ts'
+import { useRoom } from './lib/room'
+import { bus, getLinkCounts, isTyping, toast } from './lib/bus'
+import { uploadTaskImage } from './lib/upload.ts'
 import {
   DEFAULT_STATUS,
   DEFAULT_URGENCY,
@@ -13,7 +14,7 @@ import {
   rowToOption,
   slugify,
   splitCustom,
-} from './lib/options.ts'
+} from './lib/options'
 
 type DbCategory = { id: string; name: string; position: number | null }
 type DbTask = {
@@ -22,6 +23,7 @@ type DbTask = {
   description: string | null
   status: string
   urgency?: string | null
+  images?: unknown
   category_id: string
   position: number | null
 }
@@ -32,6 +34,7 @@ interface Task {
   description: string
   status: string
   urgency: string
+  images: string[]
   categoryId: string
   position: number
 }
@@ -49,6 +52,7 @@ const mapTask = (t: DbTask): Task => ({
   description: t.description || '',
   status: t.status,
   urgency: t.urgency ?? 'medium',
+  images: Array.isArray(t.images) ? (t.images as string[]) : [],
   categoryId: t.category_id,
   position: t.position ?? 0,
 })
@@ -60,7 +64,12 @@ const buildBoard = (categories: DbCategory[], tasks: DbTask[]): Category[] => {
     .map(mapTask)
     .sort((a, b) => a.position - b.position)
     .forEach((t) => buckets.get(t.categoryId)?.push(t))
-  return cats.map((c) => ({ id: c.id, name: c.name, position: c.position ?? 0, tasks: buckets.get(c.id) ?? [] }))
+  return cats.map((c) => ({
+    id: c.id,
+    name: c.name,
+    position: c.position ?? 0,
+    tasks: buckets.get(c.id) ?? [],
+  }))
 }
 
 interface MenuState {
@@ -87,7 +96,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const [newListName, setNewListName] = useState('')
   const [renamingCat, setRenamingCat] = useState<{ id: string; name: string } | null>(null)
   const [newTaskInputs, setNewTaskInputs] = useState<Record<string, string>>({})
-  const [editingTask, setEditingTask] = useState<{ id: string; title: string; description: string } | null>(null)
+  const [editingTask, setEditingTask] = useState<{
+    id: string
+    title: string
+    description: string
+  } | null>(null)
 
   const [customStatus, setCustomStatus] = useState<TaskOption[]>([])
   const [customUrgency, setCustomUrgency] = useState<TaskOption[]>([])
@@ -99,6 +112,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const [dropAt, setDropAt] = useState<{ cat: string; index: number } | null>(null)
   const dropAtRef = useRef<{ cat: string; index: number } | null>(null)
   const [flashId, setFlashId] = useState<string | null>(null)
+  const [links, setLinks] = useState<Map<string, number>>(getLinkCounts)
+  const [lightbox, setLightbox] = useState<{ images: string[]; index: number } | null>(null)
+  const [fileOverId, setFileOverId] = useState<string | null>(null)
+  const [uploadingId, setUploadingId] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const uploadTarget = useRef<string | null>(null)
 
   const statusOptions = useMemo(() => [...DEFAULT_STATUS, ...customStatus], [customStatus])
   const urgencyOptions = useMemo(() => [...DEFAULT_URGENCY, ...customUrgency], [customUrgency])
@@ -117,9 +136,21 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     async (silent = false) => {
       if (!silent) setLoading(true)
       const [c, t, o] = await Promise.all([
-        supabase.from('categories').select('*').eq('room_id', roomId).order('position', { ascending: true }),
-        supabase.from('tasks').select('*').eq('room_id', roomId).order('position', { ascending: true }),
-        supabase.from('task_options').select('*').eq('room_id', roomId).order('created_at', { ascending: true }),
+        supabase
+          .from('categories')
+          .select('*')
+          .eq('room_id', roomId)
+          .order('position', { ascending: true }),
+        supabase
+          .from('tasks')
+          .select('*')
+          .eq('room_id', roomId)
+          .order('position', { ascending: true }),
+        supabase
+          .from('task_options')
+          .select('*')
+          .eq('room_id', roomId)
+          .order('created_at', { ascending: true }),
       ])
       if (c.error || t.error) {
         setError(c.error?.message || t.error?.message || 'Unable to load the board')
@@ -164,11 +195,29 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       setQuery('')
       setFlashId(taskId)
       window.setTimeout(() => {
-        document.getElementById(`task-${taskId}`)?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
+        document
+          .getElementById(`task-${taskId}`)
+          ?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
       }, 60)
       window.setTimeout(() => setFlashId(null), 2200)
     })
   }, [])
+
+  // Canvas link counts, so cards can show "3 linked" and jump into focus mode.
+  useEffect(() => bus.on('canvas:links', (m: Map<string, number>) => setLinks(new Map(m))), [])
+
+  useEffect(() => {
+    if (!lightbox) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightbox(null)
+      else if (e.key === 'ArrowRight')
+        setLightbox((l) => l && { ...l, index: (l.index + 1) % l.images.length })
+      else if (e.key === 'ArrowLeft')
+        setLightbox((l) => l && { ...l, index: (l.index - 1 + l.images.length) % l.images.length })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [lightbox])
 
   // "/" focuses search.
   useEffect(() => {
@@ -192,10 +241,17 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     const name = newListName.trim()
     if (!name) return
     const position = Math.max(0, ...categories.map((c) => c.position)) + 1
-    const { data, error: err } = await supabase.from('categories').insert({ name, position, room_id: roomId }).select().single()
+    const { data, error: err } = await supabase
+      .from('categories')
+      .insert({ name, position, room_id: roomId })
+      .select()
+      .single()
     if (err) return fail(err.message)
     if (data) {
-      setCategories((prev) => [...prev, { id: data.id, name: data.name, position: data.position ?? position, tasks: [] }])
+      setCategories((prev) => [
+        ...prev,
+        { id: data.id, name: data.name, position: data.position ?? position, tasks: [] },
+      ])
       setNewListName('')
       setAddingList(false)
       sync()
@@ -217,7 +273,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   }
 
   const deleteCategory = async (cat: Category) => {
-    if (cat.tasks.length > 0 && !window.confirm(`Delete "${cat.name}" and its ${cat.tasks.length} task(s)?`)) return
+    if (
+      cat.tasks.length > 0 &&
+      !window.confirm(`Delete "${cat.name}" and its ${cat.tasks.length} task(s)?`)
+    )
+      return
     setCategories((prev) => prev.filter((c) => c.id !== cat.id))
     const r1 = await supabase.from('tasks').delete().eq('category_id', cat.id)
     if (r1.error) {
@@ -242,20 +302,35 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     setNewTaskInputs((prev) => ({ ...prev, [categoryId]: '' }))
     const { data, error: err } = await supabase
       .from('tasks')
-      .insert({ title, status: 'not_started', urgency: 'medium', category_id: categoryId, position, room_id: roomId })
+      .insert({
+        title,
+        status: 'not_started',
+        urgency: 'medium',
+        category_id: categoryId,
+        position,
+        room_id: roomId,
+      })
       .select()
       .single()
     if (err) return fail(err.message)
     if (data) {
       const mapped = mapTask(data)
-      setCategories((prev) => prev.map((c) => (c.id === categoryId ? { ...c, tasks: [...c.tasks, mapped] } : c)))
+      setCategories((prev) =>
+        prev.map((c) => (c.id === categoryId ? { ...c, tasks: [...c.tasks, mapped] } : c)),
+      )
       sync()
     }
   }
 
-  const patchTask = async (taskId: string, patch: Partial<Pick<Task, 'status' | 'urgency' | 'title' | 'description'>>) => {
+  const patchTask = async (
+    taskId: string,
+    patch: Partial<Pick<Task, 'status' | 'urgency' | 'title' | 'description' | 'images'>>,
+  ) => {
     setCategories((prev) =>
-      prev.map((c) => ({ ...c, tasks: c.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)) })),
+      prev.map((c) => ({
+        ...c,
+        tasks: c.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)),
+      })),
     )
     const dbPatch: Record<string, unknown> = { ...patch }
     if ('description' in patch) dbPatch.description = patch.description?.trim() || null
@@ -274,12 +349,47 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   }
 
   const deleteTask = async (taskId: string) => {
-    setCategories((prev) => prev.map((c) => ({ ...c, tasks: c.tasks.filter((t) => t.id !== taskId) })))
+    setCategories((prev) =>
+      prev.map((c) => ({ ...c, tasks: c.tasks.filter((t) => t.id !== taskId) })),
+    )
     const { error: err } = await supabase.from('tasks').delete().eq('id', taskId)
     if (err) {
       fail(err.message)
       loadBoard(true)
     } else sync()
+  }
+
+  const findTask = (taskId: string) =>
+    categoriesRef.current.flatMap((c) => c.tasks).find((t) => t.id === taskId)
+
+  const addImages = async (taskId: string, files: File[]) => {
+    const imgs = files.filter((f) => f.type.startsWith('image/'))
+    if (!imgs.length) return
+    setUploadingId(taskId)
+    try {
+      const urls = await Promise.all(imgs.map((f) => uploadTaskImage(f, roomId)))
+      const current = findTask(taskId)
+      if (current) await patchTask(taskId, { images: [...current.images, ...urls] })
+    } catch (e: any) {
+      fail(e?.message || 'Upload failed')
+    } finally {
+      setUploadingId(null)
+    }
+  }
+
+  const removeImage = (taskId: string, url: string) => {
+    const current = findTask(taskId)
+    if (current) patchTask(taskId, { images: current.images.filter((u) => u !== url) })
+  }
+
+  const pickFiles = (taskId: string) => {
+    uploadTarget.current = taskId
+    fileInputRef.current?.click()
+  }
+
+  const focusOnCanvas = (taskId: string) => {
+    bus.emit('nav', 'canvas')
+    window.setTimeout(() => bus.emit('canvas:focus-task', { taskId }), 60)
   }
 
   const sendToCanvas = (taskId: string) => {
@@ -290,7 +400,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   // ---------- status / urgency menu ----------
 
-  const openMenu = (e: React.MouseEvent<HTMLElement>, kind: TaskOptionType, taskId: string, categoryId: string) => {
+  const openMenu = (
+    e: React.MouseEvent<HTMLElement>,
+    kind: TaskOptionType,
+    taskId: string,
+    categoryId: string,
+  ) => {
     e.stopPropagation()
     const r = e.currentTarget.getBoundingClientRect()
     setOptForm(null)
@@ -353,7 +468,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
     const cur = dropAtRef.current
-    if (!cur || cur.cat !== cat.id || cur.index !== cat.tasks.length) setDrop({ cat: cat.id, index: cat.tasks.length })
+    if (!cur || cur.cat !== cat.id || cur.index !== cat.tasks.length)
+      setDrop({ cat: cat.id, index: cat.tasks.length })
   }
 
   const endDrag = () => {
@@ -397,7 +513,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         const o = before.get(t.id)
         return !o || o.position !== t.position || o.categoryId !== t.categoryId
       })
-      .map((t) => supabase.from('tasks').update({ position: t.position, category_id: t.categoryId }).eq('id', t.id))
+      .map((t) =>
+        supabase
+          .from('tasks')
+          .update({ position: t.position, category_id: t.categoryId })
+          .eq('id', t.id),
+      )
 
     Promise.all(writes).then((results) => {
       const failed = results.find((r) => r.error)
@@ -411,7 +532,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   // ---------- derived ----------
 
   const q = query.trim().toLowerCase()
-  const matches = (t: Task) => !q || t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)
+  const matches = (t: Task) =>
+    !q || t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)
   const totals = useMemo(() => {
     const all = categories.flatMap((c) => c.tasks)
     return { all: all.length, done: all.filter((t) => t.status === 'completed').length }
@@ -430,15 +552,29 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   }
 
   const menuOptions = menu ? (menu.kind === 'status' ? statusOptions : urgencyOptions) : []
-  const menuTask = menu ? categories.flatMap((c) => c.tasks).find((t) => t.id === menu.taskId) : null
-  const menuCurrent = menuTask ? (menu!.kind === 'status' ? menuTask.status : menuTask.urgency) : null
+  const menuTask = menu
+    ? categories.flatMap((c) => c.tasks).find((t) => t.id === menu.taskId)
+    : null
+  const menuCurrent = menuTask
+    ? menu!.kind === 'status'
+      ? menuTask.status
+      : menuTask.urgency
+    : null
 
   return (
-    <div className="flex h-full min-h-0 flex-col" onDrop={onDrop} onDragOver={(e) => dragRef.current && e.preventDefault()}>
+    <div
+      className="flex h-full min-h-0 flex-col"
+      onDrop={onDrop}
+      onDragOver={(e) => e.preventDefault()}
+    >
       {/* Toolbar */}
       <div className="flex shrink-0 items-center gap-3 px-6 pb-3 pt-4">
         <div className="relative w-72">
-          <Search size={14} className="pointer-events-none absolute left-2.5 top-2.5" style={{ color: 'var(--dv-muted)' }} />
+          <Search
+            size={14}
+            className="pointer-events-none absolute left-2.5 top-2.5"
+            style={{ color: 'var(--dv-muted)' }}
+          />
           <input
             ref={searchRef}
             className="dv-input"
@@ -454,7 +590,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             }}
           />
           {query ? (
-            <button className="absolute right-1.5 top-1.5 dv-iconbtn !h-6 !w-6" onClick={() => setQuery('')} title="Clear filter">
+            <button
+              className="absolute right-1.5 top-1.5 dv-iconbtn !h-6 !w-6"
+              onClick={() => setQuery('')}
+              title="Clear filter"
+            >
               <X size={13} />
             </button>
           ) : (
@@ -467,7 +607,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         {error && (
           <button
             className="ml-auto flex items-center gap-1.5 rounded-md px-2 py-1 text-xs"
-            style={{ background: 'color-mix(in srgb, var(--dv-danger) 14%, transparent)', color: 'var(--dv-danger)' }}
+            style={{
+              background: 'color-mix(in srgb, var(--dv-danger) 14%, transparent)',
+              color: 'var(--dv-danger)',
+            }}
             onClick={() => setError(null)}
             title="Dismiss"
           >
@@ -487,7 +630,14 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             <section
               key={cat.id}
               className="dv-col"
-              style={isDropCol ? { borderColor: 'var(--dv-accent-soft)', background: 'color-mix(in srgb, var(--dv-accent) 6%, var(--dv-panel-2))' } : undefined}
+              style={
+                isDropCol
+                  ? {
+                      borderColor: 'var(--dv-accent-soft)',
+                      background: 'color-mix(in srgb, var(--dv-accent) 6%, var(--dv-panel-2))',
+                    }
+                  : undefined
+              }
               onDragOver={(e) => onColumnDragOver(e, cat)}
             >
               <header className="group flex items-center gap-2 px-3 pb-2 pt-3">
@@ -515,7 +665,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                 <span className="text-xs tabular-nums" style={{ color: 'var(--dv-muted)' }}>
                   {q ? `${visible.length}/${cat.tasks.length}` : cat.tasks.length}
                 </span>
-                <button className="dv-iconbtn danger !h-6 !w-6 opacity-0 group-hover:opacity-100" onClick={() => deleteCategory(cat)} title="Delete list">
+                <button
+                  className="dv-iconbtn danger !h-6 !w-6 opacity-0 group-hover:opacity-100"
+                  onClick={() => deleteCategory(cat)}
+                  title="Delete list"
+                >
                   <Trash2 size={13} />
                 </button>
               </header>
@@ -531,13 +685,41 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                       key={task.id}
                       id={`task-${task.id}`}
                       className="pb-2"
-                      onDragOver={(e) => onCardDragOver(e, cat.id, index)}
+                      onDragOver={(e) => {
+                        if (e.dataTransfer.types.includes('Files')) {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          e.dataTransfer.dropEffect = 'copy'
+                          setFileOverId(task.id)
+                          return
+                        }
+                        onCardDragOver(e, cat.id, index)
+                      }}
+                      onDragLeave={() => setFileOverId((prev) => (prev === task.id ? null : prev))}
+                      onDrop={(e) => {
+                        if (e.dataTransfer.files.length) {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setFileOverId(null)
+                          addImages(task.id, [...e.dataTransfer.files])
+                        }
+                      }}
                     >
-                      {dropAt?.cat === cat.id && dropAt.index === index && <div className="dv-drop-line" />}
+                      {dropAt?.cat === cat.id && dropAt.index === index && (
+                        <div className="dv-drop-line" />
+                      )}
                       <article
                         draggable={!isEditing && !q}
                         data-dragging={dragId === task.id}
                         className={`dv-card ${flashId === task.id ? 'dv-flash' : ''}`}
+                        style={
+                          fileOverId === task.id
+                            ? {
+                                borderColor: 'var(--dv-accent)',
+                                boxShadow: '0 0 0 3px var(--dv-accent-soft)',
+                              }
+                            : undefined
+                        }
                         onDragStart={(e) => {
                           e.dataTransfer.effectAllowed = 'move'
                           e.dataTransfer.setData('text/plain', task.id)
@@ -545,9 +727,20 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                           setDragId(task.id)
                         }}
                         onDragEnd={endDrag}
-                        onDoubleClick={() => !isEditing && setEditingTask({ id: task.id, title: task.title, description: task.description })}
+                        onDoubleClick={() =>
+                          !isEditing &&
+                          setEditingTask({
+                            id: task.id,
+                            title: task.title,
+                            description: task.description,
+                          })
+                        }
                       >
-                        <span className="dv-card-bar" style={{ background: urgency.color }} title={`Urgency: ${urgency.label}`} />
+                        <span
+                          className="dv-card-bar"
+                          style={{ background: urgency.color }}
+                          title={`Urgency: ${urgency.label}`}
+                        />
                         {isEditing ? (
                           <div className="flex flex-col gap-2">
                             <input
@@ -555,7 +748,9 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               className="dv-input"
                               value={editingTask.title}
                               placeholder="Task title"
-                              onChange={(e) => setEditingTask({ ...editingTask, title: e.target.value })}
+                              onChange={(e) =>
+                                setEditingTask({ ...editingTask, title: e.target.value })
+                              }
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter') saveEdit()
                                 if (e.key === 'Escape') setEditingTask(null)
@@ -565,13 +760,54 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               className="dv-input"
                               rows={3}
                               value={editingTask.description}
-                              placeholder="Notes, links, context…"
-                              onChange={(e) => setEditingTask({ ...editingTask, description: e.target.value })}
+                              placeholder="Notes, links, context… (paste images here)"
+                              onPaste={(e) => {
+                                const files = [...e.clipboardData.files].filter((f) =>
+                                  f.type.startsWith('image/'),
+                                )
+                                if (files.length) {
+                                  e.preventDefault()
+                                  addImages(task.id, files)
+                                }
+                              }}
+                              onChange={(e) =>
+                                setEditingTask({ ...editingTask, description: e.target.value })
+                              }
                               onKeyDown={(e) => {
                                 if (e.key === 'Escape') setEditingTask(null)
                                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveEdit()
                               }}
                             />
+                            <div className="flex flex-wrap gap-1.5">
+                              {task.images.map((src) => (
+                                <div
+                                  key={src}
+                                  className="relative h-14 w-16 overflow-hidden rounded-md border"
+                                  style={{ borderColor: 'var(--dv-border)' }}
+                                >
+                                  <img
+                                    src={src}
+                                    alt=""
+                                    draggable={false}
+                                    className="h-full w-full object-cover"
+                                  />
+                                  <button
+                                    className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/65 text-white"
+                                    title="Remove image"
+                                    onClick={() => removeImage(task.id, src)}
+                                  >
+                                    <X size={10} />
+                                  </button>
+                                </div>
+                              ))}
+                              <button
+                                className="dv-btn !h-14 w-16 justify-center"
+                                title="Attach image"
+                                onClick={() => pickFiles(task.id)}
+                              >
+                                <ImagePlus size={16} />
+                              </button>
+                            </div>
                             <div className="flex justify-end gap-2">
                               <button className="dv-btn" onClick={() => setEditingTask(null)}>
                                 Cancel
@@ -585,46 +821,150 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                           <>
                             <h3
                               className="text-[13.5px] font-medium leading-snug"
-                              style={{ color: done ? 'var(--dv-muted)' : undefined, textDecoration: done ? 'line-through' : undefined }}
+                              style={{
+                                color: done ? 'var(--dv-muted)' : undefined,
+                                textDecoration: done ? 'line-through' : undefined,
+                              }}
                             >
                               {task.title}
                             </h3>
                             {task.description && (
-                              <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
+                              <p
+                                className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs leading-relaxed"
+                                style={{ color: 'var(--dv-muted)' }}
+                              >
                                 {task.description}
                               </p>
                             )}
+                            {task.images.length > 0 && (
+                              <div
+                                className="mt-2 grid gap-1.5"
+                                style={{
+                                  gridTemplateColumns: `repeat(${Math.min(3, task.images.length)}, 1fr)`,
+                                }}
+                              >
+                                {task.images.slice(0, 3).map((src, i) => (
+                                  <button
+                                    key={src}
+                                    className="relative overflow-hidden rounded-md border"
+                                    style={{
+                                      borderColor: 'var(--dv-border)',
+                                      aspectRatio: task.images.length === 1 ? '16 / 9' : '4 / 3',
+                                    }}
+                                    title="View image"
+                                    onClick={() => setLightbox({ images: task.images, index: i })}
+                                  >
+                                    <img
+                                      src={src}
+                                      alt=""
+                                      draggable={false}
+                                      loading="lazy"
+                                      className="h-full w-full object-cover"
+                                    />
+                                    {i === 2 && task.images.length > 3 && (
+                                      <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-xs font-semibold text-white">
+                                        +{task.images.length - 3}
+                                      </span>
+                                    )}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            {uploadingId === task.id && (
+                              <p
+                                className="mt-1.5 text-[11px]"
+                                style={{ color: 'var(--dv-muted)' }}
+                              >
+                                Uploading…
+                              </p>
+                            )}
                             <div className="mt-2.5 flex items-center gap-1.5">
-                              <button className="dv-chip" style={badgeStyle(status.color)} title="Change status" onClick={(e) => openMenu(e, 'status', task.id, cat.id)}>
+                              <button
+                                className="dv-chip"
+                                style={badgeStyle(status.color)}
+                                title="Change status"
+                                onClick={(e) => openMenu(e, 'status', task.id, cat.id)}
+                              >
                                 <span className="dv-dot" style={{ background: status.color }} />
                                 {status.label}
                               </button>
-                              <button className="dv-chip" style={badgeStyle(urgency.color)} title="Change urgency" onClick={(e) => openMenu(e, 'urgency', task.id, cat.id)}>
+                              <button
+                                className="dv-chip"
+                                style={badgeStyle(urgency.color)}
+                                title="Change urgency"
+                                onClick={(e) => openMenu(e, 'urgency', task.id, cat.id)}
+                              >
                                 {urgency.label}
                               </button>
                               <div className="dv-actions ml-auto flex items-center">
-                                <button className="dv-iconbtn !h-6 !w-6" title="Send to canvas" onClick={() => sendToCanvas(task.id)}>
-                                  <PenTool size={13} />
+                                <button
+                                  className="dv-iconbtn !h-6 !w-6"
+                                  title="Attach image"
+                                  onClick={() => pickFiles(task.id)}
+                                >
+                                  <ImagePlus size={13} />
+                                </button>
+                                <button
+                                  className="dv-iconbtn !h-6 !w-6"
+                                  title={links.has(task.id) ? 'Focus on canvas' : 'Send to canvas'}
+                                  onClick={() =>
+                                    links.has(task.id)
+                                      ? focusOnCanvas(task.id)
+                                      : sendToCanvas(task.id)
+                                  }
+                                >
+                                  {links.has(task.id) ? (
+                                    <Crosshair size={13} />
+                                  ) : (
+                                    <PenTool size={13} />
+                                  )}
                                 </button>
                                 <button
                                   className="dv-iconbtn !h-6 !w-6"
                                   title="Edit"
-                                  onClick={() => setEditingTask({ id: task.id, title: task.title, description: task.description })}
+                                  onClick={() =>
+                                    setEditingTask({
+                                      id: task.id,
+                                      title: task.title,
+                                      description: task.description,
+                                    })
+                                  }
                                 >
                                   <Pencil size={13} />
                                 </button>
-                                <button className="dv-iconbtn danger !h-6 !w-6" title="Delete" onClick={() => deleteTask(task.id)}>
+                                <button
+                                  className="dv-iconbtn danger !h-6 !w-6"
+                                  title="Delete"
+                                  onClick={() => deleteTask(task.id)}
+                                >
                                   <Trash2 size={13} />
                                 </button>
                               </div>
                             </div>
+                            {links.has(task.id) && (
+                              <button
+                                className="mt-2 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] font-medium"
+                                style={{
+                                  background: 'var(--dv-accent-soft)',
+                                  color: 'var(--dv-accent)',
+                                }}
+                                title="Zoom the canvas to this task and everything linked to it"
+                                onClick={() => focusOnCanvas(task.id)}
+                              >
+                                <PenTool size={12} />
+                                On canvas · {links.get(task.id)} linked
+                                <span className="ml-auto">Focus →</span>
+                              </button>
+                            )}
                           </>
                         )}
                       </article>
                     </div>
                   )
                 })}
-                {dropAt?.cat === cat.id && dropAt.index >= visible.length && <div className="dv-drop-line" />}
+                {dropAt?.cat === cat.id && dropAt.index >= visible.length && (
+                  <div className="dv-drop-line" />
+                )}
                 {visible.length === 0 && (
                   <p className="px-1 py-4 text-center text-xs" style={{ color: 'var(--dv-muted)' }}>
                     {q ? 'No matching tasks' : 'Nothing here yet'}
@@ -641,7 +981,13 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                     onChange={(e) => setNewTaskInputs((p) => ({ ...p, [cat.id]: e.target.value }))}
                     onKeyDown={(e) => e.key === 'Enter' && addTask(cat.id)}
                   />
-                  <button className="dv-iconbtn shrink-0" style={{ background: 'var(--dv-panel)', border: '1px solid var(--dv-border)' }} disabled={!input.trim()} onClick={() => addTask(cat.id)} title="Add task">
+                  <button
+                    className="dv-iconbtn shrink-0"
+                    style={{ background: 'var(--dv-panel)', border: '1px solid var(--dv-border)' }}
+                    disabled={!input.trim()}
+                    onClick={() => addTask(cat.id)}
+                    title="Add task"
+                  >
                     <Plus size={15} />
                   </button>
                 </div>
@@ -669,7 +1015,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                 }}
               />
               <div className="flex gap-2">
-                <button className="dv-btn primary" disabled={!newListName.trim()} onClick={addCategory}>
+                <button
+                  className="dv-btn primary"
+                  disabled={!newListName.trim()}
+                  onClick={addCategory}
+                >
                   Add list
                 </button>
                 <button
@@ -686,7 +1036,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           ) : (
             <button
               className="flex h-11 w-full items-center gap-2 rounded-[14px] border border-dashed px-4 text-[13px] font-medium"
-              style={{ borderColor: 'var(--dv-border)', color: 'var(--dv-muted)', background: 'transparent' }}
+              style={{
+                borderColor: 'var(--dv-border)',
+                color: 'var(--dv-muted)',
+                background: 'transparent',
+              }}
               onClick={() => setAddingList(true)}
             >
               <Plus size={15} />
@@ -696,19 +1050,76 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         </div>
       </div>
 
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          const id = uploadTarget.current
+          if (id && e.target.files) addImages(id, [...e.target.files])
+          e.target.value = ''
+        }}
+      />
+
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-black/80"
+          onClick={() => setLightbox(null)}
+        >
+          <img
+            src={lightbox.images[lightbox.index]}
+            alt=""
+            className="max-h-[88vh] max-w-[88vw] rounded-lg shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+          {lightbox.images.length > 1 && (
+            <span className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-md bg-black/60 px-2 py-1 text-xs text-white">
+              {lightbox.index + 1} / {lightbox.images.length} · use arrow keys
+            </span>
+          )}
+          <button
+            className="absolute right-5 top-5 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white"
+            onClick={() => setLightbox(null)}
+            title="Close (Esc)"
+          >
+            <X size={18} />
+          </button>
+        </div>
+      )}
+
       {/* Status / urgency menu (fixed so column scrolling can't clip it) */}
       {menu && (
         <>
-          <div className="fixed inset-0 z-40" onPointerDown={() => { setMenu(null); setOptForm(null) }} />
+          <div
+            className="fixed inset-0 z-40"
+            onPointerDown={() => {
+              setMenu(null)
+              setOptForm(null)
+            }}
+          />
           <div className="dv-menu fixed z-50 w-56" style={{ left: menu.x, top: menu.y }}>
-            <div className="px-2 pb-1 pt-1.5 text-xs font-semibold" style={{ color: 'var(--dv-muted)' }}>
+            <div
+              className="px-2 pb-1 pt-1.5 text-xs font-semibold"
+              style={{ color: 'var(--dv-muted)' }}
+            >
               {menu.kind === 'status' ? 'Set status' : 'Set urgency'}
             </div>
             {menuOptions.map((o) => (
-              <button key={o.value} className="dv-menu-item" data-selected={menuCurrent === o.value} onClick={() => pick(o.value)}>
+              <button
+                key={o.value}
+                className="dv-menu-item"
+                data-selected={menuCurrent === o.value}
+                onClick={() => pick(o.value)}
+              >
                 <span className="dv-dot" style={{ background: o.color }} />
                 <span className="flex-1">{o.label}</span>
-                {menuCurrent === o.value && <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>Current</span>}
+                {menuCurrent === o.value && (
+                  <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+                    Current
+                  </span>
+                )}
               </button>
             ))}
             <div className="my-1 h-px" style={{ background: 'var(--dv-border)' }} />
@@ -722,7 +1133,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   onChange={(e) => setOptForm({ ...optForm, label: e.target.value })}
                   onKeyDown={(e) => e.key === 'Enter' && createOption()}
                 />
-                <label className="flex items-center justify-between text-xs" style={{ color: 'var(--dv-muted)' }}>
+                <label
+                  className="flex items-center justify-between text-xs"
+                  style={{ color: 'var(--dv-muted)' }}
+                >
                   Color
                   <input
                     type="color"
@@ -732,14 +1146,24 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   />
                 </label>
                 <div className="flex justify-end gap-2">
-                  <button className="dv-btn" onClick={() => setOptForm(null)}>Back</button>
-                  <button className="dv-btn primary" disabled={!optForm.label.trim()} onClick={createOption}>
+                  <button className="dv-btn" onClick={() => setOptForm(null)}>
+                    Back
+                  </button>
+                  <button
+                    className="dv-btn primary"
+                    disabled={!optForm.label.trim()}
+                    onClick={createOption}
+                  >
                     Create
                   </button>
                 </div>
               </div>
             ) : (
-              <button className="dv-menu-item" style={{ color: 'var(--dv-accent)' }} onClick={() => setOptForm({ label: '', color: '#3b82f6' })}>
+              <button
+                className="dv-menu-item"
+                style={{ color: 'var(--dv-accent)' }}
+                onClick={() => setOptForm({ label: '', color: '#3b82f6' })}
+              >
                 <Plus size={13} />
                 New {menu.kind}
               </button>

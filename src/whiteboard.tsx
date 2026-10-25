@@ -2,8 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowUpRight,
   Circle,
+  Crosshair,
   Heart,
   ImageIcon,
+  Kanban,
   ListTodo,
   Maximize,
   Minus,
@@ -18,17 +20,19 @@ import {
   Trash2,
   Type,
   Undo2,
+  X,
+  type LucideIcon,
 } from 'lucide-react'
 import { HexColorPicker } from 'react-colorful'
 import { supabase } from './lib/supabase'
-import { useRoom } from './lib/room.tsx'
-import { bus, isTyping, toast } from './lib/bus.ts'
-import { useRoomTasks } from './lib/tasks.ts'
+import { useRoom } from './lib/room'
+import { bus, isTyping, setLinkCounts, toast } from './lib/bus'
+import { useRoomTasks } from './lib/tasks'
 
 /* ================================================================== */
 /* Types                                                               */
 /* ================================================================== */
-console.log('[WHITEBOARD FILE LOADED]')
+
 type Pt = { x: number; y: number }
 type BBox = { minX: number; minY: number; maxX: number; maxY: number }
 type ShapeKind = 'rectangle' | 'circle' | 'star' | 'heart'
@@ -53,6 +57,8 @@ interface El {
   taskId?: string
   from?: string
   to?: string
+  /** id of the task card that was in focus when this was created (keeps it part of that task's context) */
+  tag?: string
 }
 
 interface Entry {
@@ -348,10 +354,7 @@ const ToolBtn: React.FC<{
   </button>
 )
 
-const shapeIcons: Record<
-  ShapeKind,
-  React.ComponentType<{ size?: number; strokeWidth?: number }>
-> = {
+const shapeIcons: Record<ShapeKind, LucideIcon> = {
   rectangle: Square,
   circle: Circle,
   star: Star,
@@ -389,6 +392,10 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     marquee: null as BBox | null,
     act: null as Act,
     space: false,
+    focusId: null as string | null,
+    focusSet: null as Set<string> | null,
+    prevView: null as { x: number; y: number; k: number } | null,
+    linkSig: '',
     cursors: new Map<string, { name: string; color: string; x: number; y: number; t: number }>(),
   }).current
 
@@ -409,6 +416,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   const [showPicker, setShowPicker] = useState(false)
   const [taskQuery, setTaskQuery] = useState('')
   const [isDragOver, setIsDragOver] = useState(false)
+  const [focus, setFocus] = useState<string | null>(null)
   const [cfg, setCfg] = useState({
     bg: 'theme' as 'theme' | 'custom',
     customBg: '#ffffff',
@@ -451,23 +459,6 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
 
   const rafRef = useRef(0)
   const drawRef = useRef<() => void>(() => {})
-  // const requestDraw = useCallback(() => {
-  //   if (rafRef.current) return
-  //   rafRef.current = requestAnimationFrame(() => {
-  //     rafRef.current = 0
-  //     drawRef.current()
-  //   })
-  // }, [])
-  // const requestDraw = useCallback(() => {
-  //   console.log('[REQUEST DRAW]', {
-  //     frameID: rafRef.current,
-  //     drawAssigned: drawRef.current.toString().slice(0, 100),
-  //     width: st.w,
-  //     height: st.h,
-  //   })
-
-  //   drawRef.current()
-  // }, [])
   const requestDraw = useCallback(() => {
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current)
@@ -478,20 +469,6 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       drawRef.current()
     })
   }, [])
-  // const requestDraw = useCallback(() => {
-  //   console.log('[REQUEST DRAW CALLED]', {
-  //     pendingFrame: rafRef.current,
-  //     drawAssigned: drawRef.current.toString().includes('WHITEBOARD DRAW CALLED'),
-  //   })
-
-  //   if (rafRef.current) return
-
-  //   rafRef.current = requestAnimationFrame(() => {
-  //     rafRef.current = 0
-  //     console.log('[ANIMATION FRAME FIRED]')
-  //     drawRef.current()
-  //   })
-  // }, [])
 
   const getImage = (src: string) => {
     const cached = imageCache.current.get(src)
@@ -535,6 +512,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     const { view } = st
     const k = view.k
     const editId = editingRef.current?.id
+    const dim = (id: string) => !!st.focusSet && st.map.has(id) && !st.focusSet.has(id)
 
     ctx.setTransform(st.dpr, 0, 0, st.dpr, 0, 0)
     ctx.fillStyle = c.bg === 'custom' ? c.customBg : pal.bg
@@ -616,6 +594,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           ? resolveColor(el.color, pal.ink)
           : pal.link
       ctx.save()
+      if (dim(el.id)) ctx.globalAlpha = 0.12
       ctx.strokeStyle = col
       ctx.fillStyle = col
       ctx.lineWidth = lw
@@ -637,6 +616,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     for (const el of all) {
       if (el.type === 'connector') continue
       ctx.save()
+      if (dim(el.id)) ctx.globalAlpha = 0.12
       if (el.type === 'stroke' && el.points.length) {
         ctx.strokeStyle = resolveColor(el.color, pal.ink)
         ctx.lineWidth = el.lineWidth ?? 4
@@ -828,11 +808,98 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   /* Scene mutation primitives (local state + DB + broadcast)            */
   /* ================================================================== */
 
+  /** The focused task card, everything within two connector hops, and anything created while it was focused. */
+  const computeFocusSet = (): Set<string> | null => {
+    const f = st.focusId
+    if (!f || !st.map.has(f)) return null
+    const adj = new Map<string, string[]>()
+    const link = (a: string, b: string) => adj.set(a, [...(adj.get(a) ?? []), b])
+    for (const e of st.els) {
+      if (e.type === 'connector' && e.from && e.to) {
+        link(e.from, e.to)
+        link(e.to, e.from)
+      }
+    }
+    const set = new Set([f])
+    let frontier = [f]
+    for (let depth = 0; depth < 2; depth++) {
+      const next: string[] = []
+      for (const id of frontier) {
+        for (const n of adj.get(id) ?? []) {
+          if (!set.has(n)) {
+            set.add(n)
+            next.push(n)
+          }
+        }
+      }
+      frontier = next
+    }
+    for (const e of st.els) if (e.tag === f) set.add(e.id)
+    for (const e of st.els)
+      if (e.type === 'connector' && set.has(e.from!) && set.has(e.to!)) set.add(e.id)
+    return set
+  }
+
+  /** Tells the board how many canvas items each task card is linked to (only when something changed). */
+  const publishLinks = () => {
+    const cards = new Map<string, string>()
+    for (const e of st.els) if (e.type === 'task' && e.taskId) cards.set(e.id, e.taskId)
+    if (!cards.size && !st.linkSig) return
+    const linked = new Map<string, Set<string>>()
+    cards.forEach((_t, id) => linked.set(id, new Set()))
+    for (const e of st.els) {
+      if (e.type === 'connector') {
+        if (e.from && e.to && linked.has(e.from)) linked.get(e.from)!.add(e.to)
+        if (e.from && e.to && linked.has(e.to)) linked.get(e.to)!.add(e.from)
+      } else if (e.tag && e.tag !== e.id && linked.has(e.tag)) linked.get(e.tag)!.add(e.id)
+    }
+    const counts = new Map<string, number>()
+    linked.forEach((set, id) => {
+      const taskId = cards.get(id)!
+      counts.set(taskId, (counts.get(taskId) ?? 0) + set.size)
+    })
+    const sig = [...counts].sort().join('|')
+    if (sig === st.linkSig) return
+    st.linkSig = sig
+    setLinkCounts(counts)
+  }
+
   const setEls = (next: El[]) => {
     st.els = next
     st.map = new Map(next.map((e) => [e.id, e]))
+    if (st.focusId && !st.map.has(st.focusId)) {
+      // the focused card was deleted
+      st.focusId = null
+      st.prevView = null
+      setFocus(null)
+    }
+    st.focusSet = computeFocusSet()
     setCount(next.length)
+    publishLinks()
     requestDraw()
+  }
+
+  /** While a task is focused, new items join its context: objects get a visible link, drawings are just tagged. */
+  const withFocus = (items: El[]): El[] => {
+    const f = st.focusId
+    if (!f || !st.map.has(f)) return items
+    const out: El[] = []
+    for (const e of items) {
+      out.push({ ...e, tag: f })
+      if ((e.type === 'text' || e.type === 'image' || e.type === 'task') && e.id !== f) {
+        out.push({
+          id: uid(),
+          type: 'connector',
+          userId: me.id,
+          points: [],
+          from: f,
+          to: e.id,
+          lineWidth: 2,
+          tag: f,
+        })
+      }
+    }
+    return out
   }
 
   const setSel = (next: Set<string>) => {
@@ -1033,6 +1100,80 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     y: (st.h / 2 - st.view.y) / st.view.k,
   })
 
+  const animToken = useRef(0)
+  const animateTo = (t: { x: number; y: number; k: number }) => {
+    const token = ++animToken.current
+    const from = { ...st.view }
+    const t0 = performance.now()
+    const step = (now: number) => {
+      if (token !== animToken.current) return
+      const p = Math.min(1, (now - t0) / 240)
+      const e = 1 - Math.pow(1 - p, 3)
+      setView({
+        x: from.x + (t.x - from.x) * e,
+        y: from.y + (t.y - from.y) * e,
+        k: from.k + (t.k - from.k) * e,
+      })
+      if (p < 1) requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
+  }
+
+  const viewForItems = (items: El[], maxK = 1.25) => {
+    const b = unionBox(items.map((e) => getBBox(e, st.map)))
+    const k = clamp(
+      Math.min(st.w / (b.maxX - b.minX + 220), st.h / (b.maxY - b.minY + 260)),
+      0.1,
+      maxK,
+    )
+    return {
+      k,
+      x: st.w / 2 - ((b.minX + b.maxX) / 2) * k,
+      y: st.h / 2 - ((b.minY + b.maxY) / 2) * k,
+    }
+  }
+
+  /** Zoom to a task card and everything linked to it; the rest of the canvas fades back. */
+  const enterFocus = (cardId: string) => {
+    const card = st.map.get(cardId)
+    if (!card || card.type !== 'task') return
+    finishEdit()
+    if (!st.focusId) st.prevView = { ...st.view }
+    st.focusId = cardId
+    st.focusSet = computeFocusSet()
+    setFocus(cardId)
+    setSel(new Set())
+    setToolState('select')
+    toolRef.current = 'select'
+    const items = st.els.filter((e) => e.type !== 'connector' && st.focusSet?.has(e.id))
+    animateTo(viewForItems(items))
+    requestDraw()
+  }
+
+  const exitFocus = () => {
+    if (!st.focusId) return
+    st.focusId = null
+    st.focusSet = null
+    setFocus(null)
+    if (st.prevView) animateTo(st.prevView)
+    st.prevView = null
+    requestDraw()
+  }
+
+  const focusTask = (taskId: string) => {
+    let card = st.els.find((e) => e.type === 'task' && e.taskId === taskId)
+    if (!card) {
+      addTaskCard(taskId)
+      card = st.els.find((e) => e.type === 'task' && e.taskId === taskId)
+    }
+    if (card) enterFocus(card.id)
+  }
+
+  const openOnBoard = (taskId?: string) => {
+    bus.emit('nav', 'board')
+    if (taskId) window.setTimeout(() => bus.emit('board:focus-task', { taskId }), 60)
+  }
+
   const toWorld = (e: { clientX: number; clientY: number }): Pt => {
     const r = canvasRef.current!.getBoundingClientRect()
     return {
@@ -1085,8 +1226,9 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     if (ed.isNew) {
       if (text.trim()) {
         const fitted = fitText({ ...el, text })
-        commit({ added: [fitted], removed: [], before: [], after: [] })
-        opAdd([fitted])
+        const added = withFocus([fitted])
+        commit({ added, removed: [], before: [], after: [] })
+        opAdd(added)
         setSel(new Set([fitted.id]))
       }
       setToolState('select')
@@ -1181,8 +1323,9 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       ],
       src,
     }
-    commit({ added: [el], removed: [], before: [], after: [] })
-    opAdd([el])
+    const added = withFocus([el])
+    commit({ added, removed: [], before: [], after: [] })
+    opAdd(added)
     setSel(new Set([el.id]))
     setTool('select')
   }
@@ -1207,8 +1350,9 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         { x: c.x + 130 + n * 24, y: c.y + 46 + n * 24 },
       ],
     }
-    commit({ added: [el], removed: [], before: [], after: [] })
-    opAdd([el])
+    const added = withFocus([el])
+    commit({ added, removed: [], before: [], after: [] })
+    opAdd(added)
     setSel(new Set([el.id]))
     setToolState('select')
     toolRef.current = 'select'
@@ -1221,13 +1365,14 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
 
   const hitTest = (p: Pt): El | null => {
     const pad = 6 / st.view.k
+    const out = (e: El) => !!st.focusSet && !st.focusSet.has(e.id)
     for (let i = st.els.length - 1; i >= 0; i--) {
       const e = st.els[i]
-      if (e.type !== 'connector' && pointNear(e, p, pad, st.map)) return e
+      if (e.type !== 'connector' && !out(e) && pointNear(e, p, pad, st.map)) return e
     }
     for (let i = st.els.length - 1; i >= 0; i--) {
       const e = st.els[i]
-      if (e.type === 'connector' && pointNear(e, p, pad, st.map)) return e
+      if (e.type === 'connector' && !out(e) && pointNear(e, p, pad, st.map)) return e
     }
     return null
   }
@@ -1315,6 +1460,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   }
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    animToken.current++
     e.currentTarget.setPointerCapture(e.pointerId)
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
     if (pointers.current.size === 2) {
@@ -1491,7 +1637,12 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         const m = bboxOf(act.start, p)
         st.marquee = m
         const hits = st.els
-          .filter((el) => el.type !== 'connector' && intersects(getBBox(el, st.map), m))
+          .filter(
+            (el) =>
+              el.type !== 'connector' &&
+              (!st.focusSet || st.focusSet.has(el.id)) &&
+              intersects(getBBox(el, st.map), m),
+          )
           .map((el) => el.id)
         setSel(new Set([...act.base, ...hits]))
         requestDraw()
@@ -1526,8 +1677,9 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           el.type === 'shape' &&
           Math.hypot(el.points[1].x - el.points[0].x, el.points[1].y - el.points[0].y) < 4
         if (!tiny) {
-          commit({ added: [el], removed: [], before: [], after: [] })
-          opAdd([el])
+          const added = withFocus([el])
+          commit({ added, removed: [], before: [], after: [] })
+          opAdd(added)
           if (el.type === 'shape') {
             setSel(new Set([el.id]))
             setToolState('select')
@@ -1591,10 +1743,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     const hit = hitTest(p)
     if (!hit) return createText(p, false)
     if (hit.type === 'text') beginEdit(hit, false)
-    else if (hit.type === 'task' && hit.taskId) {
-      bus.emit('nav', 'board')
-      window.setTimeout(() => bus.emit('board:focus-task', { taskId: hit.taskId }), 60)
-    }
+    else if (hit.type === 'task') enterFocus(hit.id)
   }
 
   /* ================================================================== */
@@ -1613,6 +1762,9 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     fitContent,
     createText,
     viewCenter,
+    enterFocus,
+    exitFocus,
+    focusTask,
   }
 
   // canvas sizing
@@ -1655,6 +1807,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     const canvas = canvasRef.current!
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
+      animToken.current++
       if (e.ctrlKey || e.metaKey) {
         const mag = Math.min(Math.abs(e.deltaY) / 200, 0.5) + 1
         zoomAt(e.deltaY < 0 ? mag : 1 / mag, e.clientX, e.clientY)
@@ -1668,6 +1821,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   // load + realtime
   useEffect(() => {
     let cancelled = false
+    st.linkSig = ''
+    setLinkCounts(new Map())
     const load = async () => {
       const rows: any[] = []
       for (let from = 0; ; from += 1000) {
@@ -1677,15 +1832,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           .eq('room_id', roomId)
           .order('created_at')
           .range(from, from + 999)
-        // if (error || !data) break
-
-        if (error) {
-          console.error('[whiteboard] Failed to load strokes:', error)
-          break
-        }
-
-        if (!data) break
-
+        if (error || !data) break
         rows.push(...data)
         if (data.length < 1000) break
       }
@@ -1748,9 +1895,13 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       'history',
       (dir: 'undo' | 'redo') => activeRef.current && api.current[dir](),
     )
+    const offFocus = bus.on('canvas:focus-task', ({ taskId }: { taskId: string }) =>
+      api.current.focusTask(taskId),
+    )
     return () => {
       offAdd()
       offHist()
+      offFocus()
     }
   }, [])
 
@@ -1762,6 +1913,10 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       const mod = e.metaKey || e.ctrlKey
       if (e.key === 'Escape') {
         if (editingRef.current) return
+        if (st.focusId && !st.sel.size && toolRef.current === 'select' && !st.act) {
+          api.current.exitFocus()
+          return
+        }
         setSel(new Set())
         setShowSettings(false)
         setShowTasks(false)
@@ -1785,6 +1940,14 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         }
         return
       }
+      if (e.key === 'Enter' && st.sel.size === 1) {
+        const only = st.map.get([...st.sel][0])
+        if (only?.type === 'task') {
+          e.preventDefault()
+          api.current.enterFocus(only.id)
+          return
+        }
+      }
       if (mod) {
         const key = e.key.toLowerCase()
         if (key === 'z') {
@@ -1798,7 +1961,13 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           api.current.duplicateSelection()
         } else if (key === 'a') {
           e.preventDefault()
-          setSel(new Set(st.els.filter((x) => x.type !== 'connector').map((x) => x.id)))
+          setSel(
+            new Set(
+              st.els
+                .filter((x) => x.type !== 'connector' && (!st.focusSet || st.focusSet.has(x.id)))
+                .map((x) => x.id),
+            ),
+          )
         }
         return
       }
@@ -1847,8 +2016,9 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           color: styleRef.current.color,
         }
         const fitted = fitText(el)
-        commit({ added: [fitted], removed: [], before: [], after: [] })
-        opAdd([fitted])
+        const added = withFocus([fitted])
+        commit({ added, removed: [], before: [], after: [] })
+        opAdd(added)
         setSel(new Set([fitted.id]))
       }
     }
@@ -1906,6 +2076,13 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     t.title.toLowerCase().includes(taskQuery.trim().toLowerCase()),
   )
   const ShapeIcon = shapeIcons[shapeKind]
+  const singleTask =
+    selEls.length === 1 && selEls[0].type === 'task' && selEls[0].id !== focus ? selEls[0] : null
+  const focusCard = focus ? st.map.get(focus) : undefined
+  const focusTaskInfo = focusCard?.taskId ? taskData.byId.get(focusCard.taskId) : undefined
+  const focusLinked = st.focusSet
+    ? [...st.focusSet].filter((id) => id !== focus && st.map.get(id)?.type !== 'connector').length
+    : 0
 
   const chooseColor = (c: string) => {
     setColor(c)
@@ -2021,6 +2198,63 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             <span className="dv-kbd">K</span> to pull in a task from the board, then link things
             with the arrow tool (<span className="dv-kbd">C</span>).
           </div>
+        </div>
+      )}
+
+      {/* focus mode banner */}
+      {focus && (
+        <div className="absolute left-1/2 top-4 z-20 -translate-x-1/2">
+          <div className="dv-floating flex items-center gap-3 py-1.5 pl-4 pr-1.5">
+            <Crosshair size={15} style={{ color: 'var(--dv-accent)' }} />
+            <div className="flex min-w-0 flex-col leading-tight">
+              <span className="max-w-[300px] truncate text-[13px] font-semibold">
+                {focusTaskInfo?.title ?? 'Task'}
+              </span>
+              <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+                Focus mode · {focusLinked} item{focusLinked === 1 ? '' : 's'} in context · new items
+                link here automatically
+              </span>
+            </div>
+            <button
+              className="dv-btn"
+              onClick={() => openOnBoard(focusCard?.taskId)}
+              title="Show this task on the board"
+            >
+              <Kanban size={14} />
+              Board
+            </button>
+            <button
+              className="dv-btn primary"
+              onClick={exitFocus}
+              title="Back to the full canvas (Esc)"
+            >
+              <X size={14} />
+              Show all
+            </button>
+          </div>
+        </div>
+      )}
+
+      {singleTask && (
+        <div className="dv-floating absolute left-4 top-1/2 z-20 flex w-[196px] -translate-y-1/2 flex-col gap-2 p-3.5">
+          <span className="dv-label">Task card</span>
+          <button
+            className="dv-btn primary justify-center"
+            onClick={() => enterFocus(singleTask.id)}
+          >
+            <Crosshair size={14} />
+            Focus on this task
+            <span
+              className="dv-kbd"
+              style={{ background: 'transparent', color: 'inherit', borderColor: 'currentColor' }}
+            >
+              Enter
+            </span>
+          </button>
+          <button className="dv-btn justify-center" onClick={() => openOnBoard(singleTask.taskId)}>
+            <Kanban size={14} />
+            Open on board
+          </button>
         </div>
       )}
 

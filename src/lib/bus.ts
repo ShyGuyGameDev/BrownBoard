@@ -29,3 +29,15 @@ export const isTyping = (e: Event) => {
   const tag = el.tagName
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
 }
+
+/**
+ * How many canvas items are linked to each task (by connector or by being created while that task
+ * was in focus). The canvas publishes this; the board shows it on task cards.
+ * A task id being present means "this task has a card on the canvas".
+ */
+let linkCounts = new Map<string, number>()
+export const getLinkCounts = () => linkCounts
+export const setLinkCounts = (counts: Map<string, number>) => {
+  linkCounts = counts
+  bus.emit('canvas:links', counts)
+}
