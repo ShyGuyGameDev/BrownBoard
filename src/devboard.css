@@ -685,7 +685,7 @@ textarea.dv-input {
 .dv-room-owner {
   position: absolute;
   top: 10px;
-  right: 10px;
+  left: 10px;
   display: inline-flex;
   align-items: center;
   height: 20px;
@@ -695,6 +695,29 @@ textarea.dv-input {
   color: #15171c;
   font-size: var(--dv-text-xs);
   font-weight: var(--dv-weight-semibold);
+}
+.dv-room-settings {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--dv-radius-md);
+  background: rgba(255, 255, 255, 0.92);
+  color: #15171c;
+  cursor: pointer;
+  transition:
+    background var(--dv-dur-fast),
+    transform var(--dv-dur-fast);
+}
+.dv-room-settings:hover {
+  background: #fff;
+  transform: scale(1.05);
 }
 .dv-room-body {
   display: flex;
@@ -747,6 +770,58 @@ textarea.dv-input {
   font-size: var(--dv-text-xs);
   line-height: 1.45;
 }
+/* Toggle switch: a real checkbox (keyboard + screen reader friendly) drawn as a pill. */
+.dv-switch {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+}
+.dv-switch input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.dv-switch input:disabled {
+  cursor: not-allowed;
+}
+.dv-switch span {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--dv-radius-full);
+  background: var(--dv-border);
+  transition: background var(--dv-dur-fast);
+}
+.dv-switch span::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--dv-radius-full);
+  background: #fff;
+  box-shadow: var(--dv-shadow-sm);
+  transition: transform var(--dv-dur-fast) var(--dv-ease);
+}
+.dv-switch input:checked + span {
+  background: var(--dv-accent);
+}
+.dv-switch input:checked + span::after {
+  transform: translateX(14px);
+}
+.dv-switch input:focus-visible + span {
+  outline: 2px solid var(--dv-accent);
+  outline-offset: 2px;
+}
+.dv-switch input:disabled + span {
+  opacity: 0.5;
+}
+
 .dv-iconbtn.sm {
   width: 26px;
   height: 26px;

@@ -28,6 +28,8 @@ interface RoomContextValue {
   isOwner: boolean
   /** Update the name shown locally (after a rename here or by the owner elsewhere). */
   setRoomName: (name: string) => void
+  allowGuests: boolean
+  setAllowGuests: (allow: boolean) => void
   me: Peer
   peers: Peer[]
   status: RoomStatus
@@ -89,6 +91,7 @@ interface RoomProviderProps {
   displayName: string
   userId: string
   isOwner: boolean
+  allowGuests: boolean
   children: React.ReactNode
 }
 
@@ -98,9 +101,11 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   displayName,
   userId,
   isOwner,
+  allowGuests: initialAllowGuests,
   children,
 }) => {
   const [roomName, setRoomName] = useState(initialRoomName)
+  const [allowGuests, setAllowGuests] = useState(initialAllowGuests)
   // Presence is per tab (so two tabs don't fight over one cursor); colour follows the person.
   const idRef = useRef(crypto.randomUUID())
   const me = useMemo<Peer>(
@@ -184,8 +189,20 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   }, [])
 
   const value = useMemo(
-    () => ({ roomId, roomName, isOwner, setRoomName, me, peers, status, send, on }),
-    [roomId, roomName, isOwner, me, peers, status, send, on],
+    () => ({
+      roomId,
+      roomName,
+      isOwner,
+      setRoomName,
+      allowGuests,
+      setAllowGuests,
+      me,
+      peers,
+      status,
+      send,
+      on,
+    }),
+    [roomId, roomName, isOwner, allowGuests, me, peers, status, send, on],
   )
 
   return <RoomContext.Provider value={value}>{children}</RoomContext.Provider>

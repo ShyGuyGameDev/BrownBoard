@@ -16,6 +16,7 @@ import {
   Moon,
   Plus,
   Search,
+  Settings,
   Sun,
   UserRound,
   X,
@@ -30,8 +31,14 @@ import {
   joinRoom,
   myRooms,
   peekFlash,
+  actAndNotify,
+  changeRoomPassword,
+  deleteRoom,
+  renameRoom,
   roomPassword,
+  setGuestAccess,
 } from './lib/rooms'
+import { type RoomSettingsActions, RoomSettingsForm } from './room-settings'
 import { colorFor, goHome, goToRoom } from './lib/room'
 import { useTheme } from './lib/theme'
 
@@ -902,7 +909,12 @@ const CardPassword: React.FC<{ roomId: string; isOwner: boolean }> = ({ roomId, 
   )
 }
 
-const RoomCard: React.FC<{ room: RoomSummary }> = ({ room }) => (
+const RoomCard: React.FC<{
+  room: RoomSummary
+  /** Bumped after a password change so the card forgets the old one. */
+  passwordRev: number
+  onSettings: () => void
+}> = ({ room, passwordRev, onSettings }) => (
   <article className="dv-room-card">
     {/* Stretched button: the whole card opens the room; the password buttons sit above it. */}
     <button
@@ -918,7 +930,20 @@ const RoomCard: React.FC<{ room: RoomSummary }> = ({ room }) => (
       <span className="dv-room-initial" aria-hidden>
         {room.roomName.slice(0, 1).toUpperCase()}
       </span>
-      {room.isOwner && <span className="dv-room-owner">Owner</span>}
+      {room.isOwner && (
+        <>
+          <span className="dv-room-owner">Owner</span>
+          <button
+            type="button"
+            className="dv-room-settings"
+            aria-label={`Settings for ${room.roomName}`}
+            title="Rename, change password or delete"
+            onClick={onSettings}
+          >
+            <Settings size={15} />
+          </button>
+        </>
+      )}
     </div>
     <div className="dv-room-body">
       <h3 className="dv-room-name" title={room.roomName}>
@@ -930,8 +955,9 @@ const RoomCard: React.FC<{ room: RoomSummary }> = ({ room }) => (
         <time dateTime={room.lastEditedAt} title={fullDate(room.lastEditedAt)}>
           {relative(room.lastEditedAt)}
         </time>
+        {!room.allowGuests && <span title="Guests can't join this room"> · Accounts only</span>}
       </p>
-      <CardPassword roomId={room.roomId} isOwner={room.isOwner} />
+      <CardPassword key={passwordRev} roomId={room.roomId} isOwner={room.isOwner} />
     </div>
   </article>
 )
@@ -987,6 +1013,54 @@ export const RoomsHome: React.FC = () => {
   const [error, setError] = useState<string | null>(null)
   const [panel, setPanel] = useState<'join' | 'create' | null>(null)
   const [query, setQuery] = useState('')
+  const [settingsId, setSettingsId] = useState<string | null>(null)
+  const [passwordRevs, setPasswordRevs] = useState<Record<string, number>>({})
+  const [notice, setNotice] = useState<string | null>(null)
+  const settingsRoom = rooms?.find((r) => r.roomId === settingsId) ?? null
+
+  // From here we're not in the room, so each action briefly joins its channel to tell members.
+  const settingsActions = (room: RoomSummary): RoomSettingsActions => ({
+    rename: async (newName) => {
+      const saved = await actAndNotify(
+        room.roomId,
+        () => renameRoom(room.roomId, newName),
+        'room:renamed',
+        (n) => ({ name: n }),
+      )
+      setRooms(
+        (rs) =>
+          rs?.map((r) =>
+            r.roomId === room.roomId
+              ? { ...r, roomName: saved, lastEditedAt: new Date().toISOString() }
+              : r,
+          ) ?? rs,
+      )
+      return saved
+    },
+    setGuestAccess: async (allow) => {
+      await actAndNotify(
+        room.roomId,
+        () => setGuestAccess(room.roomId, allow),
+        'room:guests',
+        () => ({
+          allow,
+        }),
+      )
+      setRooms(
+        (rs) => rs?.map((r) => (r.roomId === room.roomId ? { ...r, allowGuests: allow } : r)) ?? rs,
+      )
+    },
+    changePassword: async (password) => {
+      await changeRoomPassword(room.roomId, password)
+      setPasswordRevs((revs) => ({ ...revs, [room.roomId]: (revs[room.roomId] ?? 0) + 1 }))
+    },
+    remove: async () => {
+      await actAndNotify(room.roomId, () => deleteRoom(room.roomId), 'room:deleted')
+      setSettingsId(null)
+      setRooms((rs) => rs?.filter((r) => r.roomId !== room.roomId) ?? rs)
+      setNotice(`“${room.roomName}” was deleted.`)
+    },
+  })
   const [flash] = useState(peekFlash)
   useEffect(() => clearFlash(), [])
 
@@ -1027,6 +1101,7 @@ export const RoomsHome: React.FC = () => {
 
       <main className="dv-home-main">
         {flash && <Alert tone="info">{flash}</Alert>}
+        {notice && <Alert tone="info">{notice}</Alert>}
         {needsEmail && <AddEmailBanner />}
 
         <div className="dv-home-head">
@@ -1067,7 +1142,17 @@ export const RoomsHome: React.FC = () => {
           <div className="dv-room-grid">
             {shown === null
               ? [0, 1, 2].map((i) => <RoomCardSkeleton key={i} />)
-              : shown.map((r) => <RoomCard key={r.roomId} room={r} />)}
+              : shown.map((r) => (
+                  <RoomCard
+                    key={r.roomId}
+                    room={r}
+                    passwordRev={passwordRevs[r.roomId] ?? 0}
+                    onSettings={() => {
+                      setNotice(null)
+                      setSettingsId(r.roomId)
+                    }}
+                  />
+                ))}
           </div>
         )}
 
@@ -1095,6 +1180,21 @@ export const RoomsHome: React.FC = () => {
           onClose={() => setPanel(null)}
         >
           <RoomForm key={panel} only={panel} onEntered={(room) => goToRoom(room.roomId)} />
+        </Modal>
+      )}
+
+      {settingsRoom && (
+        <Modal title="Room settings" onClose={() => setSettingsId(null)}>
+          <p className="dv-sub -mt-2">
+            <strong>{settingsRoom.roomName}</strong>. Only you can change these, because you created
+            this room.
+          </p>
+          <RoomSettingsForm
+            key={settingsRoom.roomId}
+            roomName={settingsRoom.roomName}
+            allowGuests={settingsRoom.allowGuests}
+            actions={settingsActions(settingsRoom)}
+          />
         </Modal>
       )}
     </div>

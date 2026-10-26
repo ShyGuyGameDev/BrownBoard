@@ -30,9 +30,11 @@ import {
   renameRoom,
   roomInviteInfo,
   setFlash,
+  setGuestAccess,
 } from './lib/rooms.ts'
 import { useTheme } from './lib/theme.ts'
 import { JoinRoomScreen, NewPasswordScreen, Onboarding, RoomsHome } from './onboarding.tsx'
+import { type RoomSettingsActions, RoomSettingsForm } from './room-settings.tsx'
 
 type Page = 'board' | 'canvas'
 
@@ -107,54 +109,30 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 /* Room settings (owner only)                                          */
 /* ------------------------------------------------------------------ */
 
-const errorText = (e: unknown) =>
-  e instanceof Error ? e.message : 'Something went wrong. Try again.'
-
 const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { roomId, roomName, setRoomName, send } = useRoom()
-  const [name, setName] = useState(roomName)
-  const [password, setPassword] = useState('')
-  const [confirmName, setConfirmName] = useState('')
-  const [busy, setBusy] = useState<'name' | 'password' | 'delete' | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const { roomId, roomName, setRoomName, allowGuests, setAllowGuests, send } = useRoom()
 
-  const run = async (kind: 'name' | 'password' | 'delete', fn: () => Promise<void>) => {
-    setBusy(kind)
-    setError(null)
-    try {
-      await fn()
-    } catch (e) {
-      setError(errorText(e))
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const saveName = () =>
-    run('name', async () => {
+  // Inside the room we already have its live channel, so just broadcast on it.
+  const actions: RoomSettingsActions = {
+    rename: async (name) => {
       const saved = await renameRoom(roomId, name)
       setRoomName(saved)
-      setName(saved)
       send('room:renamed', { name: saved })
-      toast('Room renamed.')
-    })
-
-  const savePassword = () =>
-    run('password', async () => {
-      await changeRoomPassword(roomId, password)
-      setPassword('')
-      toast('Room password changed.')
-    })
-
-  const remove = () =>
-    run('delete', async () => {
+      return saved
+    },
+    changePassword: (password) => changeRoomPassword(roomId, password),
+    setGuestAccess: async (allow) => {
+      await setGuestAccess(roomId, allow)
+      setAllowGuests(allow)
+      send('room:guests', { allow })
+    },
+    remove: async () => {
       await deleteRoom(roomId)
       send('room:deleted', {})
       setFlash(`“${roomName}” was deleted.`)
       goHome()
-    })
-
-  const nameChanged = name.trim() !== roomName && name.trim().length >= 2
+    },
+  }
 
   return (
     <>
@@ -166,93 +144,7 @@ const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => 
             Only you can change these, because you created this room.
           </p>
         </div>
-
-        <form
-          className="flex flex-col gap-2"
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (nameChanged) saveName()
-          }}
-        >
-          <span className="dv-label">Name</span>
-          <div className="flex gap-2">
-            <input
-              className="dv-input"
-              value={name}
-              maxLength={48}
-              onChange={(e) => setName(e.target.value)}
-            />
-            <button className="dv-btn shrink-0" disabled={!nameChanged || busy !== null}>
-              {busy === 'name' ? <span className="dv-spinner" /> : 'Save'}
-            </button>
-          </div>
-        </form>
-
-        <form
-          className="flex flex-col gap-2 border-t pt-3"
-          style={{ borderColor: 'var(--dv-border)' }}
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (password.length >= 4) savePassword()
-          }}
-        >
-          <span className="dv-label">New password</span>
-          <div className="flex gap-2">
-            <input
-              className="dv-input"
-              type="password"
-              autoComplete="new-password"
-              placeholder="At least 4 characters"
-              maxLength={72}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            <button className="dv-btn shrink-0" disabled={password.length < 4 || busy !== null}>
-              {busy === 'password' ? <span className="dv-spinner" /> : 'Change'}
-            </button>
-          </div>
-          <p className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
-            Only affects people joining from now on. Everyone already in the room stays in.
-          </p>
-        </form>
-
-        <form
-          className="flex flex-col gap-2 border-t pt-3"
-          style={{ borderColor: 'var(--dv-border)' }}
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (confirmName.trim() === roomName) remove()
-          }}
-        >
-          <span className="dv-label" style={{ color: 'var(--dv-danger)' }}>
-            Delete room
-          </span>
-          <p className="text-[11px] leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
-            Permanently deletes the board, canvas and images for everyone. Type{' '}
-            <strong>{roomName}</strong> to confirm.
-          </p>
-          <div className="flex gap-2">
-            <input
-              className="dv-input"
-              value={confirmName}
-              placeholder={roomName}
-              autoComplete="off"
-              onChange={(e) => setConfirmName(e.target.value)}
-            />
-            <button
-              className="dv-btn danger shrink-0"
-              disabled={confirmName.trim() !== roomName || busy !== null}
-            >
-              {busy === 'delete' ? <span className="dv-spinner" /> : 'Delete'}
-            </button>
-          </div>
-        </form>
-
-        {error && (
-          <p className="text-xs" role="alert" style={{ color: 'var(--dv-danger)' }}>
-            {error}
-          </p>
-        )}
+        <RoomSettingsForm roomName={roomName} allowGuests={allowGuests} actions={actions} />
       </div>
     </>
   )
@@ -263,7 +155,8 @@ const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => 
 /* ------------------------------------------------------------------ */
 
 const Shell: React.FC = () => {
-  const { roomId, roomName, isOwner, setRoomName, peers, status, me, on } = useRoom()
+  const { roomId, roomName, isOwner, setRoomName, setAllowGuests, peers, status, me, on } =
+    useRoom()
   const { isGuest, signOut } = useAuth()
   const [page, setPage] = useState<Page>(
     () => (localStorage.getItem('devboard.page') as Page) || 'board',
@@ -279,11 +172,22 @@ const Shell: React.FC = () => {
       setFlash(`“${roomName}” was deleted by its owner.`)
       goHome()
     })
+    // Guests are removed on the server when access is turned off; send them out of the room too.
+    const offGuests = on('room:guests', ({ allow }: { allow: boolean }) => {
+      setAllowGuests(allow)
+      if (!allow && isGuest) {
+        setFlash(
+          `The owner of “${roomName}” turned off guest access. Sign in to keep working in it.`,
+        )
+        signOut().then(goHome)
+      }
+    })
     return () => {
       offRename()
       offDelete()
+      offGuests()
     }
-  }, [on, setRoomName, roomName])
+  }, [on, setRoomName, setAllowGuests, roomName, isGuest, signOut])
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
 
@@ -553,6 +457,7 @@ const RoomGate: React.FC<{ roomId: string; userId: string }> = ({ roomId, userId
       displayName={gate.room.displayName}
       userId={userId}
       isOwner={gate.room.isOwner}
+      allowGuests={gate.room.allowGuests}
     >
       <Shell />
     </RoomProvider>

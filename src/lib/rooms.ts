@@ -6,6 +6,8 @@ export interface RoomSession {
   displayName: string
   /** Signed-in creator of the room: can rename, re-password, delete and clear the canvas. */
   isOwner: boolean
+  /** Whether people without an account can join. On by default; the owner can turn it off. */
+  allowGuests: boolean
 }
 
 export interface RoomSummary {
@@ -15,6 +17,7 @@ export interface RoomSummary {
   /** Last change to the board or canvas (tracked by triggers, to the minute). */
   lastEditedAt: string
   isOwner: boolean
+  allowGuests: boolean
 }
 
 export type RoomError =
@@ -29,6 +32,7 @@ export type RoomError =
   | 'not_owner'
   | 'deleted'
   | 'same_password'
+  | 'guests_disabled'
 
 export class RoomRpcError extends Error {
   code: RoomError | string
@@ -49,11 +53,12 @@ const ROOM_ERRORS: Record<RoomError, string> = {
   not_signed_in: 'Your session expired. Start again.',
   not_owner: 'Only the signed-in person who created this room can do that.',
   deleted: 'This room was deleted by its owner.',
+  guests_disabled: 'This room only lets in signed-in accounts. Sign in to join it.',
   same_password:
     'Another room with this name already uses that password. Choose a different password.',
 }
 
-async function rpc(fn: string, args: Record<string, string>) {
+async function rpc(fn: string, args: Record<string, string | boolean>) {
   const { data, error } = await supabase.rpc(fn, args)
   if (error) throw new Error(error.message)
   if (!data?.ok) throw new RoomRpcError(data?.error ?? 'unknown')
@@ -67,6 +72,7 @@ async function call(fn: string, args: Record<string, string>): Promise<RoomSessi
     roomName: data.room_name,
     displayName: data.display_name,
     isOwner: !!data.is_owner,
+    allowGuests: data.allow_guests ?? true,
   }
 }
 
@@ -116,11 +122,49 @@ export async function roomPassword(roomId: string): Promise<string | null> {
 
 /* ---------- owner only ---------- */
 
+/**
+ * From outside a room (the rooms page): join its channel, run `action`, then tell everyone in
+ * the room. Joining first matters for deletes, since afterwards you're no longer a member.
+ * Best effort: if the channel can't be reached, the action still runs.
+ */
+export async function actAndNotify<T>(
+  roomId: string,
+  action: () => Promise<T>,
+  event: string,
+  payload: (result: T) => Record<string, unknown> = () => ({}),
+): Promise<T> {
+  await supabase.realtime.setAuth()
+  const channel = supabase.channel(`devboard:${roomId}`, {
+    config: { private: true, broadcast: { self: false } },
+  })
+  const joined = await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), 4000)
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        clearTimeout(timer)
+        resolve(status === 'SUBSCRIBED')
+      }
+    })
+  })
+  try {
+    const result = await action()
+    if (joined) await channel.send({ type: 'broadcast', event, payload: payload(result) })
+    return result
+  } finally {
+    supabase.removeChannel(channel)
+  }
+}
+
 export const renameRoom = async (roomId: string, name: string): Promise<string> =>
   (await rpc('rename_room', { p_room_id: roomId, p_name: name })).room_name
 
 export const changeRoomPassword = async (roomId: string, password: string) => {
   await rpc('change_room_password', { p_room_id: roomId, p_password: password })
+}
+
+/** Turning guests off also removes the guests already in the room. */
+export const setGuestAccess = async (roomId: string, allow: boolean) => {
+  await rpc('set_room_guest_access', { p_room_id: roomId, p_allow: allow })
 }
 
 export const clearCanvas = async (roomId: string) => {
@@ -152,7 +196,7 @@ export async function roomInviteInfo(roomId: string): Promise<InviteInfo> {
 export async function myRooms(userId: string): Promise<RoomSummary[]> {
   const { data, error } = await supabase
     .from('room_members')
-    .select('room_id,last_active_at,rooms(name,created_by,last_edited_at)')
+    .select('room_id,last_active_at,rooms(name,created_by,last_edited_at,allow_guests)')
     .eq('user_id', userId)
     .order('last_active_at', { ascending: false })
   if (error) throw new Error(error.message)
@@ -162,5 +206,6 @@ export async function myRooms(userId: string): Promise<RoomSummary[]> {
     lastActiveAt: r.last_active_at,
     lastEditedAt: r.rooms?.last_edited_at ?? r.last_active_at,
     isOwner: r.rooms?.created_by === userId,
+    allowGuests: r.rooms?.allow_guests ?? true,
   }))
 }
