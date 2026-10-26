@@ -241,6 +241,8 @@ export const RoomForm: React.FC<{
   const [wasDeleted, setWasDeleted] = useState(false)
 
   useEffect(() => setName(initialName), [initialName])
+  // Report the mode on mount too, so a heading outside the form can never show the other one.
+  useEffect(() => onModeChange?.(mode), [mode, onModeChange])
 
   const run = async (action: 'join' | 'create') => {
     setBusy(true)
@@ -365,7 +367,6 @@ export const RoomForm: React.FC<{
             onClick={() => {
               const next = mode === 'join' ? 'create' : 'join'
               setMode(next)
-              onModeChange?.(next)
               setError(null)
               setOfferCreate(false)
             }}
