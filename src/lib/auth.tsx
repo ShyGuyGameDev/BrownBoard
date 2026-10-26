@@ -6,7 +6,8 @@ import { supabase } from './supabase'
  * Username accounts are Supabase email accounts with a placeholder address (see the SQL migration).
  * Use a domain you control so the address can never belong to a real inbox.
  */
-const USERNAME_DOMAIN = (import.meta.env.VITE_USERNAME_EMAIL_DOMAIN as string | undefined) || 'users.brownboard.app'
+const USERNAME_DOMAIN =
+  (import.meta.env.VITE_USERNAME_EMAIL_DOMAIN as string | undefined) || 'users.brownboard.app'
 
 export const isElectron = navigator.userAgent.includes('Electron')
 
@@ -49,8 +50,11 @@ const friendly = (message: string) => {
   if (/invalid login credentials/i.test(message)) return 'That username or password is incorrect.'
   if (/already registered/i.test(message)) return 'That username is taken.'
   if (/rate limit|too many/i.test(message)) return 'Too many attempts. Wait a minute and try again.'
-  if (/anonymous sign-ins are disabled/i.test(message)) return 'Guest access is turned off for this workspace.'
-  if (/database error saving new user/i.test(message)) return 'That username is taken or not allowed.'
+  // Project-wide Supabase setting, not a room's "Guest access" switch.
+  if (/anonymous sign-ins are disabled/i.test(message))
+    return "Guest sign-in isn't set up for this app yet, so you'll need an account to join. (Admin: turn on Anonymous sign-ins in Supabase → Authentication.)"
+  if (/database error saving new user/i.test(message))
+    return 'That username is taken or not allowed.'
   return message
 }
 const fail = (message: string): never => {
@@ -107,20 +111,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (error) fail(error.message)
       return
     }
-    const { error } = await supabase.auth.signInWithPassword({ email: usernameEmail(value), password })
+    const { error } = await supabase.auth.signInWithPassword({
+      email: usernameEmail(value),
+      password,
+    })
     if (!error) return
     // The username may exist but sign in another way. Say so instead of a bare "wrong password".
     if (/invalid login credentials/i.test(error.message)) {
       const { data: method } = await supabase.rpc('username_sign_in_method', { p_username: value })
       if (method === 'google') fail('This account uses Google. Use "Continue with Google" instead.')
-      if (method === 'email') fail('This account now signs in with its email address. Enter that instead of the username.')
+      if (method === 'email')
+        fail(
+          'This account now signs in with its email address. Enter that instead of the username.',
+        )
     }
     fail(error.message)
   }, [])
 
   const signUp = useCallback(async (username: string, password: string) => {
     const name = username.trim().toLowerCase()
-    if (!USERNAME_RE.test(name)) fail('Usernames are 3–24 characters: letters, numbers and underscores.')
+    if (!USERNAME_RE.test(name))
+      fail('Usernames are 3–24 characters: letters, numbers and underscores.')
     if (password.length < MIN_PASSWORD) fail(`Passwords need at least ${MIN_PASSWORD} characters.`)
     const { data: available } = await supabase.rpc('username_available', { p_username: name })
     if (available === false) fail('That username is taken.')
@@ -130,11 +141,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       options: { data: { username: name } },
     })
     if (error) fail(error.message)
-    if (!data.session) fail('Account created, but email confirmation is on in Supabase. Turn it off to use usernames.')
+    if (!data.session)
+      fail(
+        'Account created, but email confirmation is on in Supabase. Turn it off to use usernames.',
+      )
   }, [])
 
   const signInWithGoogle = useCallback(async () => {
-    const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: siteUrl() } })
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: siteUrl() },
+    })
     if (error) fail(error.message)
   }, [])
 
@@ -150,14 +167,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [])
 
   const addEmail = useCallback(async (email: string) => {
-    const { error } = await supabase.auth.updateUser({ email: email.trim() }, { emailRedirectTo: siteUrl() })
+    const { error } = await supabase.auth.updateUser(
+      { email: email.trim() },
+      { emailRedirectTo: siteUrl() },
+    )
     if (error) fail(error.message)
     // With "Confirm email" off the change is immediate; refresh so needsEmail clears.
     await supabase.auth.refreshSession()
   }, [])
 
   const sendPasswordReset = useCallback(async (email: string) => {
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: siteUrl() })
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: siteUrl(),
+    })
     if (error) fail(error.message)
   }, [])
 
