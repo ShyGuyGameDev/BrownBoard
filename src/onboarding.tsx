@@ -229,7 +229,9 @@ export const RoomForm: React.FC<{
   guest?: boolean
   /** Fix the form to joining or creating, with no switch between the two. */
   only?: 'join' | 'create'
-}> = ({ initialName = '', lockName, roomId, prepare, onEntered, guest, only }) => {
+  /** Told when the user switches between joining and creating (so a heading can follow). */
+  onModeChange?: (mode: 'join' | 'create') => void
+}> = ({ initialName = '', lockName, roomId, prepare, onEntered, guest, only, onModeChange }) => {
   const [mode, setMode] = useState<'join' | 'create'>(only ?? 'join')
   const [name, setName] = useState(initialName)
   const [password, setPassword] = useState('')
@@ -273,7 +275,7 @@ export const RoomForm: React.FC<{
         if (canSubmit) run(mode)
       }}
     >
-      <Field label="Room name">
+      <Field label={mode === 'create' ? 'What do you want to call your room?' : 'Room name'}>
         {(id) => (
           <input
             id={id}
@@ -361,7 +363,9 @@ export const RoomForm: React.FC<{
             type="button"
             className="dv-link"
             onClick={() => {
-              setMode((m) => (m === 'join' ? 'create' : 'join'))
+              const next = mode === 'join' ? 'create' : 'join'
+              setMode(next)
+              onModeChange?.(next)
               setError(null)
               setOfferCreate(false)
             }}
@@ -612,6 +616,7 @@ type Step = 'choose' | 'account' | 'guest' | 'forgot'
 export const Onboarding: React.FC = () => {
   const { signInAsGuest } = useAuth()
   const [step, setStep] = useState<Step>('choose')
+  const [guestMode, setGuestMode] = useState<'join' | 'create'>('join')
 
   return (
     <AuthLayout>
@@ -665,10 +670,17 @@ export const Onboarding: React.FC = () => {
         <>
           <BackButton onClick={() => setStep('choose')} />
           <div className="flex flex-col gap-2">
-            <h2>Enter a room</h2>
-            <p className="dv-sub">Ask whoever invited you for the room's name and password.</p>
+            <h2>{guestMode === 'create' ? 'Create a room' : 'Enter a room'}</h2>
+            {guestMode === 'join' && (
+              <p className="dv-sub">Ask whoever invited you for the room's name and password.</p>
+            )}
           </div>
-          <RoomForm guest prepare={signInAsGuest} onEntered={(room) => goToRoom(room.roomId)} />
+          <RoomForm
+            guest
+            prepare={signInAsGuest}
+            onModeChange={setGuestMode}
+            onEntered={(room) => goToRoom(room.roomId)}
+          />
         </>
       )}
     </AuthLayout>
