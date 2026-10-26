@@ -2,17 +2,23 @@ import React, { useEffect, useId, useState } from 'react'
 import {
   AlertCircle,
   ArrowLeft,
+  Check,
   ChevronRight,
+  Clock,
+  Copy,
   DoorOpen,
   Eye,
   EyeOff,
   Info,
+  KeyRound,
   LogOut,
   Mail,
   Moon,
   Plus,
+  Search,
   Sun,
   UserRound,
+  X,
 } from 'lucide-react'
 import { MIN_PASSWORD, USERNAME_RE, isElectron, useAuth } from './lib/auth'
 import {
@@ -24,6 +30,7 @@ import {
   joinRoom,
   myRooms,
   peekFlash,
+  roomPassword,
 } from './lib/rooms'
 import { colorFor, goHome, goToRoom } from './lib/room'
 import { useTheme } from './lib/theme'
@@ -808,56 +815,241 @@ const AddEmailBanner: React.FC = () => {
   )
 }
 
+const fullDate = (iso: string) =>
+  new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+
+/** Password on a room card: hidden until asked for, fetched only then, copyable. */
+const CardPassword: React.FC<{ roomId: string; isOwner: boolean }> = ({ roomId, isOwner }) => {
+  const [value, setValue] = useState<string | null | undefined>(undefined) // undefined = not fetched
+  const [shown, setShown] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const load = async () => {
+    if (value !== undefined) return value
+    setBusy(true)
+    try {
+      const pw = await roomPassword(roomId)
+      setValue(pw)
+      return pw
+    } catch {
+      setValue(null)
+      return null
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (value === null) {
+    return (
+      <p className="dv-room-pw-missing">
+        {isOwner
+          ? 'Password not saved. Set a new one in room settings to show it here.'
+          : 'Password not saved. Ask the owner for it.'}
+      </p>
+    )
+  }
+
+  return (
+    <div className="dv-room-pw">
+      <KeyRound size={13} aria-hidden />
+      <span
+        className="dv-room-pw-value"
+        aria-label={shown ? 'Room password' : 'Room password hidden'}
+      >
+        {/* Fixed-width mask so the hidden state doesn't reveal the length. */}
+        {shown && value ? value : '••••••••'}
+      </span>
+      <button
+        type="button"
+        className="dv-iconbtn sm"
+        aria-label={shown ? 'Hide password' : 'Show password'}
+        aria-pressed={shown}
+        disabled={busy}
+        onClick={async () => {
+          if (!shown) await load()
+          setShown((v) => !v)
+        }}
+      >
+        {busy ? (
+          <span className="dv-spinner sm" />
+        ) : shown ? (
+          <EyeOff size={14} />
+        ) : (
+          <Eye size={14} />
+        )}
+      </button>
+      <button
+        type="button"
+        className="dv-iconbtn sm"
+        aria-label="Copy password"
+        disabled={busy}
+        onClick={async () => {
+          const pw = await load()
+          if (!pw) return
+          try {
+            await navigator.clipboard.writeText(pw)
+            setCopied(true)
+            setTimeout(() => setCopied(false), 1400)
+          } catch {
+            setShown(true)
+          }
+        }}
+      >
+        {copied ? <Check size={14} /> : <Copy size={14} />}
+      </button>
+    </div>
+  )
+}
+
+const RoomCard: React.FC<{ room: RoomSummary }> = ({ room }) => (
+  <article className="dv-room-card">
+    {/* Stretched button: the whole card opens the room; the password buttons sit above it. */}
+    <button
+      type="button"
+      className="dv-room-card-open"
+      aria-label={`Open ${room.roomName}`}
+      onClick={() => goToRoom(room.roomId)}
+    />
+    <div
+      className="dv-room-cover"
+      style={{ '--room': colorFor(room.roomId) } as React.CSSProperties}
+    >
+      <span className="dv-room-initial" aria-hidden>
+        {room.roomName.slice(0, 1).toUpperCase()}
+      </span>
+      {room.isOwner && <span className="dv-room-owner">Owner</span>}
+    </div>
+    <div className="dv-room-body">
+      <h3 className="dv-room-name" title={room.roomName}>
+        {room.roomName}
+      </h3>
+      <p className="dv-room-meta">
+        <Clock size={12} aria-hidden />
+        Edited{' '}
+        <time dateTime={room.lastEditedAt} title={fullDate(room.lastEditedAt)}>
+          {relative(room.lastEditedAt)}
+        </time>
+      </p>
+      <CardPassword roomId={room.roomId} isOwner={room.isOwner} />
+    </div>
+  </article>
+)
+
+const RoomCardSkeleton: React.FC = () => (
+  <div className="dv-room-card dv-skeleton" aria-hidden>
+    <div className="dv-room-cover" />
+    <div className="dv-room-body">
+      <div className="dv-skel-line" style={{ width: '60%' }} />
+      <div className="dv-skel-line" style={{ width: '40%' }} />
+      <div className="dv-skel-line" style={{ width: '75%' }} />
+    </div>
+  </div>
+)
+
+const Modal: React.FC<{ title: string; onClose: () => void; children: React.ReactNode }> = ({
+  title,
+  onClose,
+  children,
+}) => {
+  const titleId = useId()
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  return (
+    <div
+      className="dv-modal-backdrop"
+      onPointerDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        className="dv-floating dv-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+      >
+        <div className="flex items-center justify-between">
+          <h2 id={titleId}>{title}</h2>
+          <button type="button" className="dv-iconbtn" aria-label="Close" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 export const RoomsHome: React.FC = () => {
   const { user, profile, needsEmail, signOut } = useAuth()
   const [rooms, setRooms] = useState<RoomSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [panel, setPanel] = useState<'join' | 'create' | null>(null)
+  const [query, setQuery] = useState('')
+  const [flash] = useState(peekFlash)
+  useEffect(() => clearFlash(), [])
 
   useEffect(() => {
     if (!user) return
     myRooms(user.id)
-      .then(setRooms)
+      .then((r) => setRooms([...r].sort((a, b) => b.lastEditedAt.localeCompare(a.lastEditedAt))))
       .catch((e) => setError(errorText(e)))
   }, [user])
 
   const name = profile?.username ?? user?.email ?? ''
+  const q = query.trim().toLowerCase()
+  const shown = rooms?.filter((r) => !q || r.roomName.toLowerCase().includes(q)) ?? null
 
   return (
-    <AuthLayout
-      wide
-      top={
-        <>
-          <Brand />
-          <div className="flex-1" />
-          <div className="flex items-center gap-2 text-[13px]" style={{ color: 'var(--dv-muted)' }}>
-            <div
-              className="flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold text-white"
-              style={{ background: user ? colorFor(user.id) : 'var(--dv-muted)' }}
-            >
-              {name.slice(0, 2).toUpperCase()}
-            </div>
-            <span className="max-sm:hidden">{name}</span>
+    <div className="dv-home dv-scroll">
+      <header
+        className="dv-home-bar dv-drag"
+        style={{ paddingLeft: isElectron && /Mac/i.test(navigator.platform) ? 84 : undefined }}
+      >
+        <Brand />
+        <div className="flex-1" />
+        <div className="flex items-center gap-2 text-[13px]" style={{ color: 'var(--dv-muted)' }}>
+          <div
+            className="flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold text-white"
+            style={{ background: user ? colorFor(user.id) : 'var(--dv-muted)' }}
+          >
+            {name.slice(0, 2).toUpperCase()}
           </div>
-          <button className="dv-btn ghost" onClick={signOut}>
-            <LogOut size={14} />
-            Sign out
-          </button>
-        </>
-      }
-    >
-      {needsEmail && <AddEmailBanner />}
-
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-col gap-1">
-          <h1>Your rooms</h1>
-          <p className="dv-sub">
-            You appear as {profile ? <strong>{profile.username}</strong> : 'yourself'} in every
-            room.
-          </p>
+          <span className="max-sm:hidden">{name}</span>
         </div>
-        {!panel && (
-          <div className="flex shrink-0 gap-2">
+        <button className="dv-btn ghost" onClick={signOut}>
+          <LogOut size={14} />
+          <span className="max-sm:hidden">Sign out</span>
+        </button>
+        <ThemeButton />
+      </header>
+
+      <main className="dv-home-main">
+        {flash && <Alert tone="info">{flash}</Alert>}
+        {needsEmail && <AddEmailBanner />}
+
+        <div className="dv-home-head">
+          <div className="flex min-w-0 flex-col gap-1">
+            <h1>Your rooms</h1>
+            <p className="dv-sub">
+              You appear as {profile ? <strong>{profile.username}</strong> : 'yourself'} in every
+              room.
+            </p>
+          </div>
+          <div className="dv-home-actions">
+            {rooms && rooms.length > 4 && (
+              <label className="dv-search">
+                <Search size={14} aria-hidden />
+                <input
+                  className="dv-input"
+                  placeholder="Search rooms"
+                  aria-label="Search rooms"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </label>
+            )}
             <button className="dv-btn" onClick={() => setPanel('create')}>
               <Plus size={14} />
               New room
@@ -867,79 +1059,45 @@ export const RoomsHome: React.FC = () => {
               Join room
             </button>
           </div>
+        </div>
+
+        {error && <Alert>{error}</Alert>}
+
+        {!error && (shown === null || shown.length > 0) && (
+          <div className="dv-room-grid">
+            {shown === null
+              ? [0, 1, 2].map((i) => <RoomCardSkeleton key={i} />)
+              : shown.map((r) => <RoomCard key={r.roomId} room={r} />)}
+          </div>
         )}
-      </div>
+
+        {rooms && rooms.length > 0 && shown?.length === 0 && (
+          <p className="dv-sub py-8 text-center">No rooms match “{query.trim()}”.</p>
+        )}
+
+        {rooms && rooms.length === 0 && (
+          <div className="dv-empty">
+            <span className="dv-choice-icon">
+              <DoorOpen size={18} />
+            </span>
+            <span className="text-[15px] font-semibold">No rooms yet</span>
+            <p className="dv-sub max-w-[360px]">
+              Rooms you join or create will show up here. Use <strong>Join room</strong> for one
+              someone shared with you, or <strong>New room</strong> to start your own.
+            </p>
+          </div>
+        )}
+      </main>
 
       {panel && (
-        <div
-          className="flex flex-col gap-3 rounded-[10px] border p-4"
-          style={{ borderColor: 'var(--dv-border)' }}
+        <Modal
+          title={panel === 'join' ? 'Join a room' : 'Create a room'}
+          onClose={() => setPanel(null)}
         >
-          <div className="flex items-center justify-between">
-            <span className="text-[14px] font-semibold">
-              {panel === 'join' ? 'Join a room' : 'Create a room'}
-            </span>
-            <button className="dv-btn ghost" onClick={() => setPanel(null)}>
-              Cancel
-            </button>
-          </div>
-          {/* key: switching panels starts a fresh form */}
           <RoomForm key={panel} only={panel} onEntered={(room) => goToRoom(room.roomId)} />
-        </div>
+        </Modal>
       )}
-
-      {error && <Alert>{error}</Alert>}
-
-      {rooms === null && !error && (
-        <div className="flex justify-center py-6" style={{ color: 'var(--dv-muted)' }}>
-          <span className="dv-spinner" />
-        </div>
-      )}
-
-      {rooms && rooms.length > 0 && (
-        <ul className="m-0 flex list-none flex-col gap-2 p-0">
-          {rooms.map((r) => (
-            <li key={r.roomId}>
-              <button className="dv-room-row" onClick={() => goToRoom(r.roomId)}>
-                <span className="dv-room-avatar" style={{ background: colorFor(r.roomId) }}>
-                  {r.roomName.slice(0, 1).toUpperCase()}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
-                    <span className="truncate text-[14px] font-semibold">{r.roomName}</span>
-                    {r.isOwner && (
-                      <span
-                        className="dv-chip shrink-0 cursor-default"
-                        style={{ background: 'var(--dv-accent-soft)', color: 'var(--dv-accent)' }}
-                      >
-                        Owner
-                      </span>
-                    )}
-                  </span>
-                  <span className="block text-[12px]" style={{ color: 'var(--dv-muted)' }}>
-                    Last opened {relative(r.lastActiveAt)}
-                  </span>
-                </span>
-                <ChevronRight size={16} style={{ color: 'var(--dv-muted)' }} />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {rooms && rooms.length === 0 && !panel && (
-        <div
-          className="flex flex-col items-center gap-2 rounded-[10px] border border-dashed px-4 py-10 text-center"
-          style={{ borderColor: 'var(--dv-border)' }}
-        >
-          <span className="text-[14px] font-semibold">No rooms yet</span>
-          <p className="dv-sub">
-            Rooms you join or create will show up here. Use <strong>Join room</strong> for one
-            someone shared with you, or <strong>New room</strong> to start your own.
-          </p>
-        </div>
-      )}
-    </AuthLayout>
+    </div>
   )
 }
 

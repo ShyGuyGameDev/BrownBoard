@@ -12,6 +12,8 @@ export interface RoomSummary {
   roomId: string
   roomName: string
   lastActiveAt: string
+  /** Last change to the board or canvas (tracked by triggers, to the minute). */
+  lastEditedAt: string
   isOwner: boolean
 }
 
@@ -107,6 +109,11 @@ export const clearFlash = () => {
   }
 }
 
+/** The room's password, for members. Null for rooms created before passwords were kept readable. */
+export async function roomPassword(roomId: string): Promise<string | null> {
+  return (await rpc('room_password', { p_room_id: roomId })).password ?? null
+}
+
 /* ---------- owner only ---------- */
 
 export const renameRoom = async (roomId: string, name: string): Promise<string> =>
@@ -145,7 +152,7 @@ export async function roomInviteInfo(roomId: string): Promise<InviteInfo> {
 export async function myRooms(userId: string): Promise<RoomSummary[]> {
   const { data, error } = await supabase
     .from('room_members')
-    .select('room_id,last_active_at,rooms(name,created_by)')
+    .select('room_id,last_active_at,rooms(name,created_by,last_edited_at)')
     .eq('user_id', userId)
     .order('last_active_at', { ascending: false })
   if (error) throw new Error(error.message)
@@ -153,6 +160,7 @@ export async function myRooms(userId: string): Promise<RoomSummary[]> {
     roomId: r.room_id,
     roomName: r.rooms?.name ?? r.room_id,
     lastActiveAt: r.last_active_at,
+    lastEditedAt: r.rooms?.last_edited_at ?? r.last_active_at,
     isOwner: r.rooms?.created_by === userId,
   }))
 }
