@@ -4,6 +4,7 @@ import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room'
 import { bus, getLinkCounts, isTyping, toast } from './lib/bus'
 import { uploadTaskImage } from './lib/upload.ts'
+import { LIMITS, cleanHexColor, cleanLine, cleanMultiline, isSafeImageSrc } from './lib/sanitize'
 import {
   DEFAULT_STATUS,
   DEFAULT_URGENCY,
@@ -52,7 +53,7 @@ const mapTask = (t: DbTask): Task => ({
   description: t.description || '',
   status: t.status,
   urgency: t.urgency ?? 'medium',
-  images: Array.isArray(t.images) ? (t.images as string[]) : [],
+  images: Array.isArray(t.images) ? (t.images as unknown[]).filter(isSafeImageSrc) : [],
   categoryId: t.category_id,
   position: t.position ?? 0,
 })
@@ -238,7 +239,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   // ---------- categories ----------
 
   const addCategory = async () => {
-    const name = newListName.trim()
+    const name = cleanLine(newListName, LIMITS.categoryName)
     if (!name) return
     const position = Math.max(0, ...categories.map((c) => c.position)) + 1
     const { data, error: err } = await supabase
@@ -260,7 +261,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const renameCategory = async () => {
     if (!renamingCat) return
-    const name = renamingCat.name.trim()
+    const name = cleanLine(renamingCat.name, LIMITS.categoryName)
     const id = renamingCat.id
     setRenamingCat(null)
     if (!name) return
@@ -295,7 +296,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   // ---------- tasks ----------
 
   const addTask = async (categoryId: string) => {
-    const title = newTaskInputs[categoryId]?.trim()
+    const title = cleanLine(newTaskInputs[categoryId] ?? '', LIMITS.taskTitle)
     if (!title) return
     const cat = categories.find((c) => c.id === categoryId)
     const position = cat ? cat.tasks.length : 0
@@ -333,7 +334,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       })),
     )
     const dbPatch: Record<string, unknown> = { ...patch }
-    if ('description' in patch) dbPatch.description = patch.description?.trim() || null
+    if ('title' in patch) dbPatch.title = cleanLine(patch.title ?? '', LIMITS.taskTitle)
+    if ('description' in patch)
+      dbPatch.description = cleanMultiline(patch.description ?? '', LIMITS.taskDescription) || null
+    if ('images' in patch) dbPatch.images = (patch.images ?? []).filter(isSafeImageSrc)
     const { error: err } = await supabase.from('tasks').update(dbPatch).eq('id', taskId)
     if (err) {
       fail(err.message)
@@ -343,8 +347,9 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const saveEdit = () => {
     if (!editingTask) return
-    const title = editingTask.title.trim()
-    if (title) patchTask(editingTask.id, { title, description: editingTask.description.trim() })
+    const title = cleanLine(editingTask.title, LIMITS.taskTitle)
+    const description = cleanMultiline(editingTask.description, LIMITS.taskDescription)
+    if (title) patchTask(editingTask.id, { title, description })
     setEditingTask(null)
   }
 
@@ -427,7 +432,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const createOption = async () => {
     if (!menu || !optForm) return
-    const label = optForm.label.trim()
+    const label = cleanLine(optForm.label, LIMITS.optionLabel)
     if (!label) return
     const pool = menu.kind === 'status' ? statusOptions : urgencyOptions
     const value = slugify(label)
@@ -435,7 +440,13 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (existing) return pick(existing.value)
     const { data, error: err } = await supabase
       .from('task_options')
-      .insert({ type: menu.kind, value, label, color: optForm.color, room_id: roomId })
+      .insert({
+        type: menu.kind,
+        value,
+        label,
+        color: cleanHexColor(optForm.color, '#71717a'),
+        room_id: roomId,
+      })
       .select()
       .single()
     if (err) return fail(err.message)

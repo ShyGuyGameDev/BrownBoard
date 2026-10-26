@@ -30,6 +30,7 @@ import { bus, isTyping, setLinkCounts, toast } from './lib/bus'
 import { useRoomTasks } from './lib/tasks'
 import { clearCanvas as clearRoomCanvas } from './lib/rooms'
 import { canvas, font, noteColors, noteInk, swatches } from './design/tokens'
+import { LIMITS, cleanInk, cleanMultiline, isSafeImageSrc, safeExtension } from './lib/sanitize'
 
 /* ================================================================== */
 /* Types                                                               */
@@ -250,12 +251,21 @@ const pointNear = (el: El, p: Pt, pad: number, map: Map<string, El>): boolean =>
   return false
 }
 
-/** Old rows used drawColor / shapeFill / imageDataUrl; map them onto the current schema. */
+/**
+ * Every item that arrives from the database or another person passes through here.
+ * Old rows used drawColor / shapeFill / imageDataUrl; map them onto the current schema.
+ * Also sanitises what could be abused: text (see lib/sanitize), ink colour, and image sources
+ * (only our storage / embedded images load, so a crafted item can't make viewers fetch any URL).
+ */
 const normalize = (raw: any): El => {
   const { drawColor, shapeFill, imageDataUrl, drawing, ...rest } = raw
   let color = rest.color ?? drawColor
   if (color === '#000000' || color === '#0a0a0a') color = 'auto'
-  return { ...rest, color, fill: rest.fill ?? shapeFill, src: rest.src ?? imageDataUrl } as El
+  const src = rest.src ?? imageDataUrl
+  const el = { ...rest, color: cleanInk(color), fill: rest.fill ?? shapeFill } as El
+  if (src !== undefined) el.src = isSafeImageSrc(src) ? src : undefined
+  if (typeof el.text === 'string') el.text = cleanMultiline(el.text, LIMITS.canvasText)
+  return el
 }
 
 /** Auto-height for plain text; sticky notes only grow. */
@@ -1187,7 +1197,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     if (!ed) return
     editingRef.current = null
     setEditing(null)
-    const text = editTextRef.current
+    const text = cleanMultiline(editTextRef.current, LIMITS.canvasText)
     const el = st.preview?.id === ed.id ? st.preview : st.map.get(ed.id)
     if (st.preview?.id === ed.id) st.preview = null
     if (!el) return requestDraw()
@@ -1243,8 +1253,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   /* ================================================================== */
 
   const uploadImage = async (file: File): Promise<string> => {
-    const ext = (file.name.split('.').pop() || 'png').toLowerCase()
-    const path = `${roomId}/${uid()}.${ext}`
+    const path = `${roomId}/${uid()}.${safeExtension(file.name)}`
     const { error } = await supabase.storage
       .from('board-assets')
       .upload(path, file, { contentType: file.type, cacheControl: '31536000' })
@@ -1816,7 +1825,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       }),
       on('wb:patch', ({ items }: { items: any[] }) => {
         const m = new Map(items.map((i) => [i.id, i]))
-        setEls(st.els.map((e) => (m.has(e.id) ? { ...e, ...m.get(e.id) } : e)))
+        setEls(st.els.map((e) => (m.has(e.id) ? normalize({ ...e, ...m.get(e.id) }) : e)))
       }),
       on('wb:remove', ({ ids }: { ids: string[] }) => {
         const s = new Set(ids)
@@ -1979,7 +1988,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           type: 'text',
           userId: me.id,
           points: [c, { x: c.x + 320, y: c.y + 40 }],
-          text: text.slice(0, 4000),
+          text: cleanMultiline(text, LIMITS.canvasText),
           fontSize: 18,
           color: styleRef.current.color,
         }
@@ -2441,7 +2450,12 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           {isOwner && (
             <>
               <div className="dv-sep" />
-              <ToolBtn icon={<Trash2 size={16} />} label="Clear canvas" danger onClick={clearCanvas} />
+              <ToolBtn
+                icon={<Trash2 size={16} />}
+                label="Clear canvas"
+                danger
+                onClick={clearCanvas}
+              />
             </>
           )}
 

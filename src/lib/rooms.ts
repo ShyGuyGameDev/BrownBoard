@@ -1,4 +1,7 @@
 import { supabase } from './supabase'
+import { LIMITS, cleanLine } from './sanitize'
+
+const cleanRoomName = (name: string) => cleanLine(name, LIMITS.roomName)
 
 export interface RoomSession {
   roomId: string
@@ -79,13 +82,13 @@ async function call(fn: string, args: Record<string, string>): Promise<RoomSessi
 /** `roomId` pins the join to one room (invite links), since several rooms can share a name. */
 export const joinRoom = (name: string, password: string, roomId?: string) =>
   call('join_room', {
-    p_name: name,
+    p_name: cleanRoomName(name),
     p_password: password,
     ...(roomId ? { p_room_id: roomId } : {}),
   })
 
 export const createRoom = (name: string, password: string) =>
-  call('create_room', { p_name: name, p_password: password })
+  call('create_room', { p_name: cleanRoomName(name), p_password: password })
 
 /** Re-enter a room you're already a member of. */
 export const enterRoom = (roomId: string) => call('enter_room', { p_room_id: roomId })
@@ -156,7 +159,7 @@ export async function actAndNotify<T>(
 }
 
 export const renameRoom = async (roomId: string, name: string): Promise<string> =>
-  (await rpc('rename_room', { p_room_id: roomId, p_name: name })).room_name
+  (await rpc('rename_room', { p_room_id: roomId, p_name: cleanRoomName(name) })).room_name
 
 export const changeRoomPassword = async (roomId: string, password: string) => {
   await rpc('change_room_password', { p_room_id: roomId, p_password: password })
