@@ -165,9 +165,8 @@ const Shell: React.FC = () => {
   const { roomId, roomName, isOwner, setRoomName, setAllowGuests, peers, status, me, on } =
     useRoom()
   const { isGuest, signOut } = useAuth()
-  const [page, setPage] = useState<Page>(
-    () => (localStorage.getItem('devboard.page') as Page) || 'board',
-  )
+  // Every visit to a room starts on the board (Shell remounts per room, so this resets on entry).
+  const [page, setPage] = useState<Page>('board')
   const { theme, toggle: toggleTheme } = useTheme()
   const [shareOpen, setShareOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -198,10 +197,7 @@ const Shell: React.FC = () => {
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
 
-  const go = useCallback((p: Page) => {
-    setPage(p)
-    localStorage.setItem('devboard.page', p)
-  }, [])
+  const go = useCallback((p: Page) => setPage(p), [])
 
   // Navigation: 1 / 2 (when not typing), Ctrl/Cmd+1 / 2 anywhere, plus bus + Electron menu events.
   useEffect(() => {
