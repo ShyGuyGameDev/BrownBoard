@@ -18,6 +18,9 @@ import {
   buildShareLink,
   getRoomIdFromLocation,
   goHome,
+  goToRoom,
+  initials,
+  takeReturnRoom,
   useRoom,
 } from './lib/room.tsx'
 import { bus, isTyping, toast } from './lib/bus.ts'
@@ -33,14 +36,18 @@ import {
   setGuestAccess,
 } from './lib/rooms.ts'
 import { useTheme } from './lib/theme.ts'
-import { JoinRoomScreen, NewPasswordScreen, Onboarding, RoomsHome } from './onboarding.tsx'
+import {
+  InviteScreen,
+  JoinRoomScreen,
+  NewPasswordScreen,
+  Onboarding,
+  RoomsHome,
+} from './onboarding.tsx'
 import { type RoomSettingsActions, RoomSettingsForm } from './room-settings.tsx'
 
 type Page = 'board' | 'canvas'
 
 const isMac = /Mac/i.test(navigator.platform)
-
-const initials = (name: string) => name.trim().slice(0, 2).toUpperCase() || '?'
 
 /* ------------------------------------------------------------------ */
 /* Share popover                                                       */
@@ -325,25 +332,38 @@ const Shell: React.FC = () => {
 
           <div className="flex items-center">
             <div
-              className="-ml-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 text-[10px] font-bold text-white first:ml-0"
+              className="dv-avatar -ml-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 text-[10px] font-bold text-white first:ml-0"
               style={{ background: me.color, borderColor: 'var(--dv-panel)' }}
-              title={`${me.name} (you)`}
+              data-tip={`${me.name} (you)`}
+              aria-label={`${me.name} (you)`}
+              tabIndex={0}
             >
               {initials(me.name)}
             </div>
             {shown.map((p) => (
               <div
                 key={p.id}
-                className="-ml-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 text-[10px] font-bold text-white"
+                className="dv-avatar -ml-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 text-[10px] font-bold text-white"
                 style={{ background: p.color, borderColor: 'var(--dv-panel)' }}
-                title={p.name}
+                data-tip={p.name}
+                aria-label={p.name}
+                tabIndex={0}
               >
                 {initials(p.name)}
               </div>
             ))}
             {peers.length > shown.length && (
               <div
-                className="-ml-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 text-[10px] font-semibold"
+                className="dv-avatar multi -ml-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 text-[10px] font-semibold"
+                data-tip={peers
+                  .slice(shown.length)
+                  .map((p) => p.name)
+                  .join('\n')}
+                aria-label={`Also here: ${peers
+                  .slice(shown.length)
+                  .map((p) => p.name)
+                  .join(', ')}`}
+                tabIndex={0}
                 style={{
                   background: 'var(--dv-panel-2)',
                   borderColor: 'var(--dv-panel)',
@@ -464,20 +484,34 @@ const RoomGate: React.FC<{ roomId: string; userId: string }> = ({ roomId, userId
   )
 }
 
-const InviteOnboarding: React.FC<{ roomId: string }> = ({ roomId }) => {
-  const [info, setInfo] = useState<{ name: string | null; deleted: boolean }>({
-    name: null,
-    deleted: false,
-  })
+const InviteOnboarding: React.FC<{ roomId: string; onHold: (hold: boolean) => void }> = ({
+  roomId,
+  onHold,
+}) => {
+  const [info, setInfo] = useState<{ name: string | null; deleted: boolean } | null>(null)
   useEffect(() => {
-    roomInviteInfo(roomId).then(setInfo)
+    roomInviteInfo(roomId)
+      .then(setInfo)
+      .catch(() => setInfo({ name: null, deleted: false }))
   }, [roomId])
-  return <Onboarding inviteName={info.name} inviteDeleted={info.deleted} />
+  if (!info) return <Splash />
+  return (
+    <InviteScreen roomId={roomId} roomName={info.name} deleted={info.deleted} onHold={onHold} />
+  )
 }
 
 const Router: React.FC = () => {
   const { ready, session, isGuest, recovering } = useAuth()
   const [roomId, setRoomId] = useState(getRoomIdFromLocation)
+  // Keeps the invite screen up while a guest session starts and joins (see InviteScreen).
+  const [holdInvite, setHoldInvite] = useState(false)
+
+  // Back from Google sign-in: OAuth returns to the bare site URL, so reopen the linked room.
+  useEffect(() => {
+    if (!session || roomId) return
+    const pending = takeReturnRoom()
+    if (pending) goToRoom(pending)
+  }, [session, roomId])
 
   useEffect(() => {
     const onHash = () => setRoomId(getRoomIdFromLocation())
@@ -488,7 +522,8 @@ const Router: React.FC = () => {
   if (!ready) return <Splash />
   if (recovering) return <NewPasswordScreen />
   if (roomId) {
-    if (!session) return <InviteOnboarding roomId={roomId} />
+    if (!session || (holdInvite && isGuest))
+      return <InviteOnboarding roomId={roomId} onHold={setHoldInvite} />
     return (
       <RoomGate key={`${roomId}:${session.user.id}`} roomId={roomId} userId={session.user.id} />
     )

@@ -325,6 +325,54 @@ textarea.dv-input {
 }
 
 /* ---------- misc ---------- */
+/* Presence avatars: full name on hover or keyboard focus (shows instantly, unlike title=). */
+.dv-avatar {
+  position: relative;
+  outline-offset: 2px;
+}
+.dv-avatar:hover,
+.dv-avatar:focus-visible {
+  z-index: 1;
+}
+.dv-avatar[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  z-index: var(--dv-z-popover);
+  padding: 4px 8px;
+  border-radius: var(--dv-radius-md);
+  background: var(--dv-text);
+  box-shadow: var(--dv-shadow);
+  color: var(--dv-bg);
+  font-size: var(--dv-text-xs);
+  font-weight: var(--dv-weight-medium);
+  line-height: 1.5;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -2px);
+  transition:
+    opacity var(--dv-dur-fast),
+    transform var(--dv-dur-fast) var(--dv-ease);
+}
+/* "+3" lists one name per line, right-aligned so it doesn't run off the screen edge. */
+.dv-avatar.multi[data-tip]::after {
+  left: auto;
+  right: -4px;
+  white-space: pre;
+  transform: translateY(-2px);
+}
+.dv-avatar:hover::after,
+.dv-avatar:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.dv-avatar.multi:hover::after,
+.dv-avatar.multi:focus-visible::after {
+  transform: none;
+}
+
 .dv-toast {
   background: var(--dv-text);
   color: var(--dv-bg);

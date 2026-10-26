@@ -294,6 +294,8 @@ begin
 end;
 $$;
 
+-- An earlier draft had a two-argument join_room; drop it so calls aren't ambiguous.
+drop function if exists public.join_room(text, text);
 -- p_room_id (optional) pins the join to one room, for invite links: names can repeat.
 create or replace function public.join_room(p_name text, p_password text, p_room_id text default null)
 returns jsonb

@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from './supabase'
+import { rememberReturnRoom } from './room'
 
 /**
  * Username accounts are Supabase email accounts with a placeholder address (see the SQL migration).
@@ -148,6 +149,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [])
 
   const signInWithGoogle = useCallback(async () => {
+    rememberReturnRoom()
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo: siteUrl() },

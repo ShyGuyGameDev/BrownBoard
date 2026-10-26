@@ -11,6 +11,9 @@
 alter table public.rooms add column if not exists allow_guests boolean not null default true;
 grant select (allow_guests) on public.rooms to authenticated;
 
+-- Older two-argument version, if an earlier run left it behind (it makes calls ambiguous).
+drop function if exists public.join_room(text, text);
+
 -- join_room: same as before, plus the guest check (after the password, so only people who know
 -- it learn the room is accounts-only).
 create or replace function public.join_room(p_name text, p_password text, p_room_id text default null)

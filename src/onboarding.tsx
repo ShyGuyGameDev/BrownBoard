@@ -40,7 +40,7 @@ import {
   setGuestAccess,
 } from './lib/rooms'
 import { type RoomSettingsActions, RoomSettingsForm } from './room-settings'
-import { colorFor, goHome, goToRoom } from './lib/room'
+import { colorFor, goHome, goToRoom, initials } from './lib/room'
 import { useTheme } from './lib/theme'
 
 /* ------------------------------------------------------------------ */
@@ -608,41 +608,19 @@ const ForgotForm: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
 type Step = 'choose' | 'account' | 'guest' | 'forgot'
 
-/** First screen for anyone without an account session. `inviteName` is set when they opened a room link. */
-export const Onboarding: React.FC<{ inviteName?: string | null; inviteDeleted?: boolean }> = ({
-  inviteName,
-  inviteDeleted,
-}) => {
+/** First screen for anyone without an account session (opened without a room link). */
+export const Onboarding: React.FC = () => {
   const { signInAsGuest } = useAuth()
   const [step, setStep] = useState<Step>('choose')
-  const [error, setError] = useState<string | null>(null)
-
-  const chooseGuest = async () => {
-    if (!inviteName) return setStep('guest')
-    // Invite link: start the guest session now; the room gate then asks for this room's password.
-    setError(null)
-    try {
-      await signInAsGuest()
-    } catch (e) {
-      setError(errorText(e))
-    }
-  }
 
   return (
     <AuthLayout>
       {step === 'choose' && (
         <>
-          {inviteDeleted && (
-            <Alert tone="info">
-              The room in this link was deleted by its owner, so its board and canvas are gone.
-            </Alert>
-          )}
           <div className="flex flex-col gap-2">
-            <h1>{inviteName ? `Join “${inviteName}”` : 'Welcome to devboard'}</h1>
+            <h1>Welcome to devboard</h1>
             <p className="dv-sub">
-              {inviteName
-                ? "You've been invited to a shared board and canvas. How would you like to come in?"
-                : 'A shared task board and canvas for your team. How would you like to start?'}
+              A shared task board and canvas for your team. How would you like to start?
             </p>
           </div>
           <div className="flex flex-col gap-3">
@@ -658,7 +636,7 @@ export const Onboarding: React.FC<{ inviteName?: string | null; inviteDeleted?: 
               </span>
               <ChevronRight size={16} style={{ color: 'var(--dv-muted)' }} />
             </button>
-            <button className="dv-choice" onClick={chooseGuest}>
+            <button className="dv-choice" onClick={() => setStep('guest')}>
               <span className="dv-choice-icon">
                 <DoorOpen size={18} />
               </span>
@@ -671,7 +649,6 @@ export const Onboarding: React.FC<{ inviteName?: string | null; inviteDeleted?: 
               <ChevronRight size={16} style={{ color: 'var(--dv-muted)' }} />
             </button>
           </div>
-          {error && <Alert>{error}</Alert>}
         </>
       )}
 
@@ -692,6 +669,142 @@ export const Onboarding: React.FC<{ inviteName?: string | null; inviteDeleted?: 
             <p className="dv-sub">Ask whoever invited you for the room's name and password.</p>
           </div>
           <RoomForm guest prepare={signInAsGuest} onEntered={(room) => goToRoom(room.roomId)} />
+        </>
+      )}
+    </AuthLayout>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Share link, opened while signed out                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Straight into the linked room: just its password, as a guest. Signing in is one click away.
+ * `onHold(true)` keeps this screen up while the guest session starts and the join runs (the app
+ * would otherwise switch to the room gate the moment a session exists); `onHold(false)` hands over.
+ * Signing in with an account always hands over, since that isn't a guest session.
+ */
+export const InviteScreen: React.FC<{
+  roomId: string
+  roomName: string | null
+  deleted: boolean
+  onHold: (hold: boolean) => void
+}> = ({ roomId, roomName, deleted, onHold }) => {
+  const { signInAsGuest } = useAuth()
+  const [step, setStep] = useState<'password' | 'account' | 'forgot'>('password')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [accountsOnly, setAccountsOnly] = useState(false)
+
+  if (deleted) {
+    return (
+      <AuthLayout>
+        <div className="flex flex-col gap-2">
+          <h1>This room was deleted</h1>
+          <p className="dv-sub">Its owner deleted it, so its board and canvas are gone.</p>
+        </div>
+        <button className="dv-btn lg block" onClick={goHome}>
+          Go to the start page
+        </button>
+      </AuthLayout>
+    )
+  }
+
+  if (step === 'account' || step === 'forgot') {
+    return (
+      <AuthLayout>
+        {step === 'account' ? (
+          <>
+            <BackButton onClick={() => setStep('password')} />
+            {roomName && (
+              <p className="dv-sub -mt-2">
+                After you sign in, you'll go straight to <strong>{roomName}</strong>.
+              </p>
+            )}
+            <AccountForm onForgot={() => setStep('forgot')} />
+          </>
+        ) : (
+          <ForgotForm onBack={() => setStep('account')} />
+        )}
+      </AuthLayout>
+    )
+  }
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!password) return
+    setBusy(true)
+    setError(null)
+    onHold(true)
+    try {
+      await signInAsGuest()
+      await joinRoom(roomName ?? '', password, roomId)
+      onHold(false) // member now: the room gate takes over and opens the room
+    } catch (err) {
+      if (err instanceof RoomRpcError && err.code === 'guests_disabled') setAccountsOnly(true)
+      else setError(errorText(err))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <AuthLayout>
+      <div className="flex flex-col gap-2">
+        <h1>{roomName ? `Join “${roomName}”` : 'Join this room'}</h1>
+        <p className="dv-sub">
+          You've been invited to a shared board and canvas. Enter the room password to jump in.
+        </p>
+      </div>
+
+      {accountsOnly ? (
+        <Alert tone="info">
+          <div className="flex flex-col gap-2">
+            <span>This room only lets in signed-in accounts.</span>
+            <button
+              type="button"
+              className="dv-btn primary self-start"
+              onClick={() => setStep('account')}
+            >
+              Sign in or create an account
+            </button>
+          </div>
+        </Alert>
+      ) : (
+        <form className="flex flex-col gap-4" onSubmit={submit}>
+          <Field label="Room password">
+            {(id) => (
+              <PasswordInput
+                id={id}
+                value={password}
+                onChange={(v) => {
+                  setPassword(v)
+                  setError(null)
+                }}
+                autoFocus
+                maxLength={72}
+                autoComplete="current-password"
+              />
+            )}
+          </Field>
+          {error && <Alert>{error}</Alert>}
+          <Submit busy={busy} disabled={!password}>
+            Enter room
+          </Submit>
+          <p className="dv-sub text-center" style={{ fontSize: 'var(--dv-text-xs)' }}>
+            You'll join as a guest, shown to others as an anonymous animal like “Anonymous Otter”.
+          </p>
+        </form>
+      )}
+
+      {!accountsOnly && (
+        <>
+          <div className="dv-divider">or</div>
+          <button type="button" className="dv-btn lg block" onClick={() => setStep('account')}>
+            <UserRound size={16} />
+            Sign in to join with your account
+          </button>
         </>
       )}
     </AuthLayout>
@@ -1263,7 +1376,7 @@ export const RoomsHome: React.FC = () => {
             className="flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold text-white"
             style={{ background: user ? colorFor(user.id) : 'var(--dv-muted)' }}
           >
-            {name.slice(0, 2).toUpperCase()}
+            {initials(name)}
           </div>
           <span className="max-sm:hidden">{name}</span>
         </div>

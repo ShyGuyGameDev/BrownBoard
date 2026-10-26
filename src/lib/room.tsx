@@ -62,6 +62,26 @@ export const goHome = () => {
   window.location.hash = '/'
 }
 
+/** Remember the room in the URL across a full-page sign-in redirect (Google), which drops it. */
+export const rememberReturnRoom = () => {
+  const id = getRoomIdFromLocation()
+  try {
+    if (id) sessionStorage.setItem('devboard.returnRoom', id)
+  } catch {
+    /* storage unavailable: they'll land on their rooms page instead */
+  }
+}
+
+export const takeReturnRoom = (): string | null => {
+  try {
+    const id = sessionStorage.getItem('devboard.returnRoom')
+    sessionStorage.removeItem('devboard.returnRoom')
+    return id
+  } catch {
+    return null
+  }
+}
+
 /**
  * In a browser this is just the current URL. In Electron (file://) there is no public URL,
  * so set VITE_SHARE_BASE_URL to wherever you host the web build; otherwise we fall back to
@@ -74,6 +94,19 @@ export const buildShareLink = (roomId: string) => {
     : ''
   const base = (envBase || httpBase).replace(/#.*$/, '')
   return base ? `${base}#/r/${roomId}` : `devboard://r/${roomId}`
+}
+
+/** Avatar letters: first letter of the first two words ("Anonymous Cat" → "AC", "shaayer" → "S"). */
+export const initials = (name: string) => {
+  const words = name.trim().split(/\s+/).filter(Boolean)
+  // [...word][0] takes a whole character, so names starting with an emoji or accent stay intact.
+  return (
+    words
+      .slice(0, 2)
+      .map((w) => [...w][0])
+      .join('')
+      .toUpperCase() || '?'
+  )
 }
 
 export const colorFor = (id: string) => {
