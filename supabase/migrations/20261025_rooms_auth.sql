@@ -94,9 +94,11 @@ create table if not exists public.rooms (
   -- bcrypt hash. NULL = nobody can join with a password (used for rooms imported below).
   password_hash text,
   created_by uuid references auth.users (id) on delete set null,
-  created_at timestamptz not null default now(),
-  constraint rooms_name_key_unique unique (name_key)
+  created_at timestamptz not null default now()
 );
+-- Names can repeat. A room is found by name + password together, and no two rooms with the
+-- same name may share a password (enforced in create_room / change_room_password).
+create index if not exists rooms_name_key_idx on public.rooms (name_key);
 
 create table if not exists public.room_members (
   room_id text not null references public.rooms (id) on delete cascade,
@@ -116,6 +118,14 @@ create table if not exists private.room_join_attempts (
   at timestamptz not null default now()
 );
 create index if not exists room_join_attempts_user_at on private.room_join_attempts (user_id, at desc);
+
+-- Rooms that were deleted, so people who try to join one later are told why it's gone.
+create table if not exists private.deleted_rooms (
+  id text primary key,
+  name_key text not null,
+  deleted_at timestamptz not null default now()
+);
+create index if not exists deleted_rooms_name_key on private.deleted_rooms (name_key);
 
 -- Bring every room id already used by existing rows into `rooms`, so nothing is orphaned.
 -- These rooms are locked (no password) until you set one, e.g.:
@@ -176,6 +186,23 @@ security definer
 set search_path = ''
 as $$
   select coalesce((select is_anonymous from auth.users where id = p_user), true);
+$$;
+
+/**
+ * The room's owner: the signed-in account that created it. Rooms created by a guest have no
+ * owner, so nobody can rename, re-password, delete or clear them.
+ */
+create or replace function private.is_room_owner(p_room_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from public.rooms r
+    where r.id = p_room_id and r.created_by = (select auth.uid())
+  ) and not private.is_guest((select auth.uid()));
 $$;
 
 /** Username for accounts; for guests, their existing animal in this room or a fresh one. */
@@ -246,24 +273,29 @@ begin
   if (select count(*) from public.rooms where created_by = uid and created_at > now() - interval '1 hour') >= 20 then
     return jsonb_build_object('ok', false, 'error', 'rate_limited');
   end if;
+  -- Same name + same password would make the two rooms indistinguishable when joining.
+  if exists (
+    select 1 from public.rooms
+    where name_key = lower(clean) and password_hash = extensions.crypt(p_password, password_hash)
+  ) then
+    return jsonb_build_object('ok', false, 'error', 'same_password');
+  end if;
 
-  begin
-    insert into public.rooms (name, password_hash, created_by)
-    values (clean, extensions.crypt(p_password, extensions.gen_salt('bf', 10)), uid)
-    returning id into rid;
-  exception when unique_violation then
-    return jsonb_build_object('ok', false, 'error', 'taken');
-  end;
+  insert into public.rooms (name, password_hash, created_by)
+  values (clean, extensions.crypt(p_password, extensions.gen_salt('bf', 10)), uid)
+  returning id into rid;
 
   dn := private.display_name_for(uid, rid);
   insert into public.room_members (room_id, user_id, display_name, is_guest)
   values (rid, uid, dn, private.is_guest(uid));
 
-  return jsonb_build_object('ok', true, 'room_id', rid, 'room_name', clean, 'display_name', dn);
+  return jsonb_build_object('ok', true, 'room_id', rid, 'room_name', clean, 'display_name', dn,
+    'is_owner', private.is_room_owner(rid));
 end;
 $$;
 
-create or replace function public.join_room(p_name text, p_password text)
+-- p_room_id (optional) pins the join to one room, for invite links: names can repeat.
+create or replace function public.join_room(p_name text, p_password text, p_room_id text default null)
 returns jsonb
 language plpgsql
 security definer
@@ -271,6 +303,7 @@ set search_path = ''
 as $$
 declare
   uid uuid := auth.uid();
+  lookup text;
   r record;
   dn text;
   guest boolean;
@@ -284,16 +317,30 @@ begin
     return jsonb_build_object('ok', false, 'error', 'rate_limited');
   end if;
 
-  select id, name, password_hash into r
-  from public.rooms
-  where name_key = lower(btrim(regexp_replace(coalesce(p_name, ''), '\s+', ' ', 'g')));
+  lookup := lower(btrim(regexp_replace(coalesce(p_name, ''), '\s+', ' ', 'g')));
 
-  if not found then
+  if not exists (
+    select 1 from public.rooms where (p_room_id is null and name_key = lookup) or id = p_room_id
+  ) then
     insert into private.room_join_attempts (user_id) values (uid);
+    if exists (
+      select 1 from private.deleted_rooms where (p_room_id is null and name_key = lookup) or id = p_room_id
+    ) then
+      return jsonb_build_object('ok', false, 'error', 'deleted');
+    end if;
     return jsonb_build_object('ok', false, 'error', 'not_found');
   end if;
 
-  if r.password_hash is null or r.password_hash <> extensions.crypt(coalesce(p_password, ''), r.password_hash) then
+  -- Several rooms may share this name; the password picks which one.
+  select id, name into r
+  from public.rooms
+  where ((p_room_id is null and name_key = lookup) or id = p_room_id)
+    and password_hash is not null
+    and password_hash = extensions.crypt(coalesce(p_password, ''), password_hash)
+  order by created_at
+  limit 1;
+
+  if not found then
     insert into private.room_join_attempts (user_id) values (uid);
     return jsonb_build_object('ok', false, 'error', 'wrong_password');
   end if;
@@ -305,7 +352,8 @@ begin
   on conflict (room_id, user_id) do update
     set last_active_at = now(), display_name = excluded.display_name;
 
-  return jsonb_build_object('ok', true, 'room_id', r.id, 'room_name', r.name, 'display_name', dn);
+  return jsonb_build_object('ok', true, 'room_id', r.id, 'room_name', r.name, 'display_name', dn,
+    'is_owner', private.is_room_owner(r.id));
 end;
 $$;
 
@@ -328,19 +376,117 @@ begin
   update public.room_members set last_active_at = now(), display_name = dn
   where room_id = p_room_id and user_id = uid;
   select name into rname from public.rooms where id = p_room_id;
-  return jsonb_build_object('ok', true, 'room_id', p_room_id, 'room_name', rname, 'display_name', dn);
+  return jsonb_build_object('ok', true, 'room_id', p_room_id, 'room_name', rname, 'display_name', dn,
+    'is_owner', private.is_room_owner(p_room_id));
 end;
 $$;
 
-/** Name for an invite link. Room ids are unguessable, so knowing one already means you were sent it. */
-create or replace function public.room_invite_name(p_room_id text)
-returns text
+-- Owner-only room management ------------------------------------------
+
+create or replace function public.rename_room(p_room_id text, p_name text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  clean text := btrim(regexp_replace(coalesce(p_name, ''), '\s+', ' ', 'g'));
+begin
+  if not private.is_room_owner(p_room_id) then
+    return jsonb_build_object('ok', false, 'error', 'not_owner');
+  end if;
+  if char_length(clean) not between 2 and 48 then
+    return jsonb_build_object('ok', false, 'error', 'bad_name');
+  end if;
+  -- Passwords are stored as one-way hashes, so we can't tell whether this room's password
+  -- matches another same-named room's. Block renaming onto a name that's in use instead.
+  if exists (select 1 from public.rooms where name_key = lower(clean) and id <> p_room_id) then
+    return jsonb_build_object('ok', false, 'error', 'taken');
+  end if;
+  update public.rooms set name = clean where id = p_room_id;
+  return jsonb_build_object('ok', true, 'room_id', p_room_id, 'room_name', clean);
+end;
+$$;
+
+/** New password for joining. People already in the room stay in; it only affects new joins. */
+create or replace function public.change_room_password(p_room_id text, p_password text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not private.is_room_owner(p_room_id) then
+    return jsonb_build_object('ok', false, 'error', 'not_owner');
+  end if;
+  if char_length(coalesce(p_password, '')) not between 4 and 72 then
+    return jsonb_build_object('ok', false, 'error', 'bad_password');
+  end if;
+  if exists (
+    select 1 from public.rooms o
+    where o.id <> p_room_id
+      and o.name_key = (select name_key from public.rooms where id = p_room_id)
+      and o.password_hash = extensions.crypt(p_password, o.password_hash)
+  ) then
+    return jsonb_build_object('ok', false, 'error', 'same_password');
+  end if;
+  update public.rooms
+  set password_hash = extensions.crypt(p_password, extensions.gen_salt('bf', 10))
+  where id = p_room_id;
+  return jsonb_build_object('ok', true, 'room_id', p_room_id);
+end;
+$$;
+
+/** Deletes the room and, through the foreign keys, its board, canvas and member list. */
+create or replace function public.delete_room(p_room_id text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not private.is_room_owner(p_room_id) then
+    return jsonb_build_object('ok', false, 'error', 'not_owner');
+  end if;
+  insert into private.deleted_rooms (id, name_key)
+  select id, name_key from public.rooms where id = p_room_id
+  on conflict (id) do nothing;
+  delete from public.rooms where id = p_room_id;
+  return jsonb_build_object('ok', true, 'room_id', p_room_id);
+end;
+$$;
+
+/** Wipes the whole canvas. Members can still erase individual items with the eraser. */
+create or replace function public.clear_canvas(p_room_id text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not private.is_room_owner(p_room_id) then
+    return jsonb_build_object('ok', false, 'error', 'not_owner');
+  end if;
+  delete from public.strokes where room_id = p_room_id;
+  return jsonb_build_object('ok', true, 'room_id', p_room_id);
+end;
+$$;
+
+/**
+ * What an invite link points to: { name } for a live room, { deleted: true } for a deleted one,
+ * or NULL. Room ids are unguessable, so knowing one already means you were sent it.
+ */
+create or replace function public.room_invite_info(p_room_id text)
+returns jsonb
 language sql
 stable
 security definer
 set search_path = ''
 as $$
-  select name from public.rooms where id = p_room_id;
+  select coalesce(
+    (select jsonb_build_object('name', name, 'deleted', false) from public.rooms where id = p_room_id),
+    (select jsonb_build_object('name', null, 'deleted', true) from private.deleted_rooms where id = p_room_id)
+  );
 $$;
 
 create or replace function public.username_available(p_username text)
@@ -383,16 +529,25 @@ grant usage on schema private to supabase_auth_admin;
 grant execute on function private.handle_new_user() to supabase_auth_admin;
 
 revoke execute on function public.create_room(text, text) from public, anon;
-revoke execute on function public.join_room(text, text) from public, anon;
+revoke execute on function public.join_room(text, text, text) from public, anon;
 revoke execute on function public.enter_room(text) from public, anon;
 grant execute on function public.create_room(text, text) to authenticated;
-grant execute on function public.join_room(text, text) to authenticated;
+grant execute on function public.join_room(text, text, text) to authenticated;
 grant execute on function public.enter_room(text) to authenticated;
 
-revoke execute on function public.room_invite_name(text) from public;
+revoke execute on function public.rename_room(text, text) from public, anon;
+revoke execute on function public.change_room_password(text, text) from public, anon;
+revoke execute on function public.delete_room(text) from public, anon;
+revoke execute on function public.clear_canvas(text) from public, anon;
+grant execute on function public.rename_room(text, text) to authenticated;
+grant execute on function public.change_room_password(text, text) to authenticated;
+grant execute on function public.delete_room(text) to authenticated;
+grant execute on function public.clear_canvas(text) to authenticated;
+
+revoke execute on function public.room_invite_info(text) from public;
 revoke execute on function public.username_available(text) from public;
 revoke execute on function public.username_sign_in_method(text) from public;
-grant execute on function public.room_invite_name(text) to anon, authenticated;
+grant execute on function public.room_invite_info(text) to anon, authenticated;
 grant execute on function public.username_available(text) to anon, authenticated;
 grant execute on function public.username_sign_in_method(text) to anon, authenticated;
 

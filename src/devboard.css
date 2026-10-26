@@ -137,6 +137,15 @@ button {
   filter: brightness(1.08);
   background: var(--dv-accent);
 }
+.dv-btn.danger {
+  background: var(--dv-danger);
+  border-color: var(--dv-danger);
+  color: #fff;
+}
+.dv-btn.danger:hover:not(:disabled) {
+  filter: brightness(1.08);
+  background: var(--dv-danger);
+}
 
 .dv-input {
   height: var(--dv-size-control);

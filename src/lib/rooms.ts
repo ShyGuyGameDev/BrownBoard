@@ -4,12 +4,15 @@ export interface RoomSession {
   roomId: string
   roomName: string
   displayName: string
+  /** Signed-in creator of the room: can rename, re-password, delete and clear the canvas. */
+  isOwner: boolean
 }
 
 export interface RoomSummary {
   roomId: string
   roomName: string
   lastActiveAt: string
+  isOwner: boolean
 }
 
 export type RoomError =
@@ -21,6 +24,9 @@ export type RoomError =
   | 'rate_limited'
   | 'not_member'
   | 'not_signed_in'
+  | 'not_owner'
+  | 'deleted'
+  | 'same_password'
 
 export class RoomRpcError extends Error {
   code: RoomError | string
@@ -33,22 +39,42 @@ export class RoomRpcError extends Error {
 const ROOM_ERRORS: Record<RoomError, string> = {
   not_found: 'No room has that name.',
   wrong_password: "That password doesn't match this room.",
-  taken: 'A room with that name already exists.',
+  taken: 'Another room already uses that name.',
   bad_name: 'Room names are 2–48 characters.',
   bad_password: 'Room passwords need at least 4 characters.',
   rate_limited: 'Too many tries. Wait a few minutes and try again.',
   not_member: "You haven't joined this room yet.",
   not_signed_in: 'Your session expired. Start again.',
+  not_owner: 'Only the signed-in person who created this room can do that.',
+  deleted: 'This room was deleted by its owner.',
+  same_password:
+    'Another room with this name already uses that password. Choose a different password.',
 }
 
-async function call(fn: string, args: Record<string, string>): Promise<RoomSession> {
+async function rpc(fn: string, args: Record<string, string>) {
   const { data, error } = await supabase.rpc(fn, args)
   if (error) throw new Error(error.message)
   if (!data?.ok) throw new RoomRpcError(data?.error ?? 'unknown')
-  return { roomId: data.room_id, roomName: data.room_name, displayName: data.display_name }
+  return data
 }
 
-export const joinRoom = (name: string, password: string) => call('join_room', { p_name: name, p_password: password })
+async function call(fn: string, args: Record<string, string>): Promise<RoomSession> {
+  const data = await rpc(fn, args)
+  return {
+    roomId: data.room_id,
+    roomName: data.room_name,
+    displayName: data.display_name,
+    isOwner: !!data.is_owner,
+  }
+}
+
+/** `roomId` pins the join to one room (invite links), since several rooms can share a name. */
+export const joinRoom = (name: string, password: string, roomId?: string) =>
+  call('join_room', {
+    p_name: name,
+    p_password: password,
+    ...(roomId ? { p_room_id: roomId } : {}),
+  })
 
 export const createRoom = (name: string, password: string) =>
   call('create_room', { p_name: name, p_password: password })
@@ -56,16 +82,70 @@ export const createRoom = (name: string, password: string) =>
 /** Re-enter a room you're already a member of. */
 export const enterRoom = (roomId: string) => call('enter_room', { p_room_id: roomId })
 
-/** The room's name for an invite link, without needing to be a member. */
-export async function roomInviteName(roomId: string): Promise<string | null> {
-  const { data } = await supabase.rpc('room_invite_name', { p_room_id: roomId })
-  return (data as string | null) ?? null
+/** One-off notice to show on the next screen (e.g. after a room is deleted). */
+export const setFlash = (msg: string) => {
+  try {
+    sessionStorage.setItem('devboard.flash', msg)
+  } catch {
+    /* storage unavailable: skip the notice */
+  }
+}
+
+export const peekFlash = (): string | null => {
+  try {
+    return sessionStorage.getItem('devboard.flash')
+  } catch {
+    return null
+  }
+}
+
+export const clearFlash = () => {
+  try {
+    sessionStorage.removeItem('devboard.flash')
+  } catch {
+    /* ignore */
+  }
+}
+
+/* ---------- owner only ---------- */
+
+export const renameRoom = async (roomId: string, name: string): Promise<string> =>
+  (await rpc('rename_room', { p_room_id: roomId, p_name: name })).room_name
+
+export const changeRoomPassword = async (roomId: string, password: string) => {
+  await rpc('change_room_password', { p_room_id: roomId, p_password: password })
+}
+
+export const clearCanvas = async (roomId: string) => {
+  await rpc('clear_canvas', { p_room_id: roomId })
+}
+
+/** Removes the room's uploaded images (best effort), then the room and everything in it. */
+export async function deleteRoom(roomId: string) {
+  const bucket = supabase.storage.from('board-assets')
+  for (const folder of [roomId, `${roomId}/tasks`]) {
+    const { data } = await bucket.list(folder, { limit: 1000 })
+    const files = (data ?? []).filter((f) => f.id).map((f) => `${folder}/${f.name}`)
+    if (files.length) await bucket.remove(files)
+  }
+  await rpc('delete_room', { p_room_id: roomId })
+}
+
+export interface InviteInfo {
+  name: string | null
+  deleted: boolean
+}
+
+/** What an invite link points to, without needing to be a member. */
+export async function roomInviteInfo(roomId: string): Promise<InviteInfo> {
+  const { data } = await supabase.rpc('room_invite_info', { p_room_id: roomId })
+  return { name: data?.name ?? null, deleted: !!data?.deleted }
 }
 
 export async function myRooms(userId: string): Promise<RoomSummary[]> {
   const { data, error } = await supabase
     .from('room_members')
-    .select('room_id,last_active_at,rooms(name)')
+    .select('room_id,last_active_at,rooms(name,created_by)')
     .eq('user_id', userId)
     .order('last_active_at', { ascending: false })
   if (error) throw new Error(error.message)
@@ -73,5 +153,6 @@ export async function myRooms(userId: string): Promise<RoomSummary[]> {
     roomId: r.room_id,
     roomName: r.rooms?.name ?? r.room_id,
     lastActiveAt: r.last_active_at,
+    isOwner: r.rooms?.created_by === userId,
   }))
 }

@@ -1,4 +1,12 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 
@@ -16,6 +24,10 @@ type Handler = (payload: any, fromSelf: boolean) => void
 interface RoomContextValue {
   roomId: string
   roomName: string
+  /** Signed-in creator: can rename, re-password, delete the room and clear the canvas. */
+  isOwner: boolean
+  /** Update the name shown locally (after a rename here or by the owner elsewhere). */
+  setRoomName: (name: string) => void
   me: Peer
   peers: Peer[]
   status: RoomStatus
@@ -55,7 +67,9 @@ export const goHome = () => {
  */
 export const buildShareLink = (roomId: string) => {
   const envBase = import.meta.env.VITE_SHARE_BASE_URL as string | undefined
-  const httpBase = window.location.protocol.startsWith('http') ? window.location.origin + window.location.pathname : ''
+  const httpBase = window.location.protocol.startsWith('http')
+    ? window.location.origin + window.location.pathname
+    : ''
   const base = (envBase || httpBase).replace(/#.*$/, '')
   return base ? `${base}#/r/${roomId}` : `devboard://r/${roomId}`
 }
@@ -74,10 +88,19 @@ interface RoomProviderProps {
   /** Username for accounts, "Anonymous <Animal>" for guests. Assigned by the server on join. */
   displayName: string
   userId: string
+  isOwner: boolean
   children: React.ReactNode
 }
 
-export const RoomProvider: React.FC<RoomProviderProps> = ({ roomId, roomName, displayName, userId, children }) => {
+export const RoomProvider: React.FC<RoomProviderProps> = ({
+  roomId,
+  roomName: initialRoomName,
+  displayName,
+  userId,
+  isOwner,
+  children,
+}) => {
+  const [roomName, setRoomName] = useState(initialRoomName)
   // Presence is per tab (so two tabs don't fight over one cursor); colour follows the person.
   const idRef = useRef(crypto.randomUUID())
   const me = useMemo<Peer>(
@@ -114,7 +137,8 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({ roomId, roomName, di
         Object.values(state)
           .flat()
           .forEach((p) => {
-            if (p.id && p.id !== idRef.current) seen.set(p.id, { id: p.id, name: p.name, color: p.color })
+            if (p.id && p.id !== idRef.current)
+              seen.set(p.id, { id: p.id, name: p.name, color: p.color })
           })
         setPeers([...seen.values()])
       })
@@ -160,8 +184,8 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({ roomId, roomName, di
   }, [])
 
   const value = useMemo(
-    () => ({ roomId, roomName, me, peers, status, send, on }),
-    [roomId, roomName, me, peers, status, send, on],
+    () => ({ roomId, roomName, isOwner, setRoomName, me, peers, status, send, on }),
+    [roomId, roomName, isOwner, me, peers, status, send, on],
   )
 
   return <RoomContext.Provider value={value}>{children}</RoomContext.Provider>

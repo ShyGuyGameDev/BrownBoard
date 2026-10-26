@@ -15,7 +15,16 @@ import {
   UserRound,
 } from 'lucide-react'
 import { MIN_PASSWORD, USERNAME_RE, isElectron, useAuth } from './lib/auth'
-import { RoomRpcError, type RoomSession, type RoomSummary, createRoom, joinRoom, myRooms } from './lib/rooms'
+import {
+  RoomRpcError,
+  type RoomSession,
+  type RoomSummary,
+  createRoom,
+  clearFlash,
+  joinRoom,
+  myRooms,
+  peekFlash,
+} from './lib/rooms'
 import { colorFor, goHome, goToRoom } from './lib/room'
 import { useTheme } from './lib/theme'
 
@@ -49,33 +58,41 @@ const ThemeButton: React.FC = () => {
 }
 
 /** Full-screen dotted backdrop (echoes the canvas) with a centred card. */
-const AuthLayout: React.FC<{ children: React.ReactNode; wide?: boolean; top?: React.ReactNode }> = ({
-  children,
-  wide,
-  top,
-}) => (
-  <div className="dv-auth">
-    <div
-      className="dv-drag absolute left-0 right-0 top-0 flex h-12 items-center gap-2 px-4"
-      style={{ paddingLeft: isElectron && /Mac/i.test(navigator.platform) ? 84 : undefined }}
-    >
-      {top ?? (
-        <>
-          <Brand />
-          <div className="flex-1" />
-        </>
-      )}
-      <ThemeButton />
+const AuthLayout: React.FC<{
+  children: React.ReactNode
+  wide?: boolean
+  top?: React.ReactNode
+}> = ({ children, wide, top }) => {
+  // StrictMode runs state initialisers twice, so read the notice and clear it in separate steps.
+  const [flash] = useState(peekFlash)
+  useEffect(() => clearFlash(), [])
+  return (
+    <div className="dv-auth">
+      <div
+        className="dv-drag absolute left-0 right-0 top-0 flex h-12 items-center gap-2 px-4"
+        style={{ paddingLeft: isElectron && /Mac/i.test(navigator.platform) ? 84 : undefined }}
+      >
+        {top ?? (
+          <>
+            <Brand />
+            <div className="flex-1" />
+          </>
+        )}
+        <ThemeButton />
+      </div>
+      <div className={`dv-floating dv-auth-card ${wide ? 'wide' : ''}`}>
+        {flash && <Alert tone="info">{flash}</Alert>}
+        {children}
+      </div>
     </div>
-    <div className={`dv-floating dv-auth-card ${wide ? 'wide' : ''}`}>{children}</div>
-  </div>
-)
+  )
+}
 
-const Field: React.FC<{ label: string; hint?: React.ReactNode; children: (id: string) => React.ReactNode }> = ({
-  label,
-  hint,
-  children,
-}) => {
+const Field: React.FC<{
+  label: string
+  hint?: React.ReactNode
+  children: (id: string) => React.ReactNode
+}> = ({ label, hint, children }) => {
   const id = useId()
   return (
     <label className="dv-field" htmlFor={id}>
@@ -116,8 +133,14 @@ const PasswordInput: React.FC<
   )
 }
 
-const Alert: React.FC<{ tone?: 'error' | 'info' | 'warn'; children: React.ReactNode }> = ({ tone = 'error', children }) => (
-  <div className={`dv-alert ${tone === 'error' ? '' : tone}`} role={tone === 'error' ? 'alert' : 'status'}>
+const Alert: React.FC<{ tone?: 'error' | 'info' | 'warn'; children: React.ReactNode }> = ({
+  tone = 'error',
+  children,
+}) => (
+  <div
+    className={`dv-alert ${tone === 'error' ? '' : tone}`}
+    role={tone === 'error' ? 'alert' : 'status'}
+  >
     {tone === 'error' ? <AlertCircle size={15} /> : <Info size={15} />}
     <div className="min-w-0 flex-1">{children}</div>
   </div>
@@ -128,12 +151,20 @@ const Submit: React.FC<{ busy: boolean; disabled?: boolean; children: React.Reac
   disabled,
   children,
 }) => (
-  <button type="submit" className="dv-btn primary lg block" disabled={busy || disabled} aria-busy={busy}>
+  <button
+    type="submit"
+    className="dv-btn primary lg block"
+    disabled={busy || disabled}
+    aria-busy={busy}
+  >
     {busy ? <span className="dv-spinner" aria-hidden /> : children}
   </button>
 )
 
-const BackButton: React.FC<{ onClick: () => void; label?: string }> = ({ onClick, label = 'Back' }) => (
+const BackButton: React.FC<{ onClick: () => void; label?: string }> = ({
+  onClick,
+  label = 'Back',
+}) => (
   <button type="button" className="dv-btn ghost -ml-2 self-start" onClick={onClick}>
     <ArrowLeft size={14} />
     {label}
@@ -142,14 +173,27 @@ const BackButton: React.FC<{ onClick: () => void; label?: string }> = ({ onClick
 
 const GoogleIcon = () => (
   <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden>
-    <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
-    <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
-    <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z" />
-    <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z" />
+    <path
+      fill="#FFC107"
+      d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"
+    />
+    <path
+      fill="#FF3D00"
+      d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"
+    />
+    <path
+      fill="#4CAF50"
+      d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"
+    />
+    <path
+      fill="#1976D2"
+      d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"
+    />
   </svg>
 )
 
-const errorText = (e: unknown) => (e instanceof Error ? e.message : 'Something went wrong. Try again.')
+const errorText = (e: unknown) =>
+  e instanceof Error ? e.message : 'Something went wrong. Try again.'
 
 /* ------------------------------------------------------------------ */
 /* Room form (guests and signed-in users)                              */
@@ -162,17 +206,20 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : 'Something w
 export const RoomForm: React.FC<{
   initialName?: string
   lockName?: boolean
+  /** Join this exact room (invite links), since several rooms can share a name. */
+  roomId?: string
   /** Runs before any RPC (guests use it to start an anonymous session). */
   prepare?: () => Promise<void>
   onEntered: (room: RoomSession) => void
   guest?: boolean
-}> = ({ initialName = '', lockName, prepare, onEntered, guest }) => {
+}> = ({ initialName = '', lockName, roomId, prepare, onEntered, guest }) => {
   const [mode, setMode] = useState<'join' | 'create'>('join')
   const [name, setName] = useState(initialName)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [offerCreate, setOfferCreate] = useState(false)
+  const [wasDeleted, setWasDeleted] = useState(false)
 
   useEffect(() => setName(initialName), [initialName])
 
@@ -182,11 +229,17 @@ export const RoomForm: React.FC<{
     setOfferCreate(false)
     try {
       await prepare?.()
-      const room = action === 'join' ? await joinRoom(name, password) : await createRoom(name, password)
+      const room =
+        action === 'join'
+          ? await joinRoom(name, password, roomId)
+          : await createRoom(name, password)
       onEntered(room)
     } catch (e) {
-      if (e instanceof RoomRpcError && e.code === 'not_found' && !lockName) setOfferCreate(true)
-      else setError(errorText(e))
+      const code = e instanceof RoomRpcError ? e.code : null
+      if ((code === 'not_found' || code === 'deleted') && !lockName) {
+        setWasDeleted(code === 'deleted')
+        setOfferCreate(true)
+      } else setError(errorText(e))
     } finally {
       setBusy(false)
     }
@@ -224,7 +277,11 @@ export const RoomForm: React.FC<{
       </Field>
       <Field
         label={mode === 'create' ? 'Choose a room password' : 'Room password'}
-        hint={mode === 'create' ? 'Share it with the people you want to invite. At least 4 characters.' : undefined}
+        hint={
+          mode === 'create'
+            ? 'Share it with the people you want to invite. At least 4 characters.'
+            : undefined
+        }
       >
         {(id) => (
           <PasswordInput
@@ -241,13 +298,25 @@ export const RoomForm: React.FC<{
         )}
       </Field>
 
+      {guest && (mode === 'create' || offerCreate) && (
+        <Alert tone="warn">
+          As a guest, you won't be able to rename this room, change its password, delete it or clear
+          its canvas later. Sign in first if you want to manage it.
+        </Alert>
+      )}
       {error && <Alert>{error}</Alert>}
       {offerCreate && (
         <Alert tone="info">
           <div className="flex flex-col gap-2">
-            <span>
-              There's no room called <strong>{clean}</strong> yet. Create it with this password?
-            </span>
+            {wasDeleted ? (
+              <span>
+                <strong>{clean}</strong> was deleted by its owner. Create a new room with this name?
+              </span>
+            ) : (
+              <span>
+                There's no room called <strong>{clean}</strong> yet. Create it with this password?
+              </span>
+            )}
             <button
               type="button"
               className="dv-btn primary self-start"
@@ -257,7 +326,9 @@ export const RoomForm: React.FC<{
               <Plus size={14} />
               Create “{clean}”
             </button>
-            {password.length < 4 && <span className="dv-hint">Room passwords need at least 4 characters.</span>}
+            {password.length < 4 && (
+              <span className="dv-hint">Room passwords need at least 4 characters.</span>
+            )}
           </div>
         </Alert>
       )}
@@ -283,7 +354,10 @@ export const RoomForm: React.FC<{
         </p>
       )}
       {guest && (
-        <p className="dv-hint text-center" style={{ color: 'var(--dv-muted)', fontSize: 'var(--dv-text-xs)' }}>
+        <p
+          className="dv-hint text-center"
+          style={{ color: 'var(--dv-muted)', fontSize: 'var(--dv-text-xs)' }}
+        >
           You'll appear to others as an anonymous animal, like “Anonymous Otter”.
         </p>
       )}
@@ -310,7 +384,9 @@ const AccountForm: React.FC<{ initialTab?: 'signin' | 'signup'; onForgot: () => 
   const username = login.trim().toLowerCase()
   const usernameBad = signup && login.length > 0 && !USERNAME_RE.test(username)
   const passwordShort = signup && password.length > 0 && password.length < MIN_PASSWORD
-  const canSubmit = signup ? USERNAME_RE.test(username) && password.length >= MIN_PASSWORD : !!login.trim() && !!password
+  const canSubmit = signup
+    ? USERNAME_RE.test(username) && password.length >= MIN_PASSWORD
+    : !!login.trim() && !!password
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -402,9 +478,11 @@ const AccountForm: React.FC<{ initialTab?: 'signin' | 'signup'; onForgot: () => 
         <Field
           label="Password"
           hint={
-            signup ? (
-              passwordShort ? `${MIN_PASSWORD - password.length} more characters to go.` : `At least ${MIN_PASSWORD} characters.`
-            ) : undefined
+            signup
+              ? passwordShort
+                ? `${MIN_PASSWORD - password.length} more characters to go.`
+                : `At least ${MIN_PASSWORD} characters.`
+              : undefined
           }
         >
           {(id) => (
@@ -459,11 +537,14 @@ const ForgotForm: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       <div className="flex flex-col gap-2">
         <h2>Reset your password</h2>
         <p className="dv-sub">
-          Enter the email you added to your account. Username-only accounts without an email can't be reset.
+          Enter the email you added to your account. Username-only accounts without an email can't
+          be reset.
         </p>
       </div>
       {sent ? (
-        <Alert tone="info">If an account uses {email.trim()}, a reset link is on its way. Check your inbox.</Alert>
+        <Alert tone="info">
+          If an account uses {email.trim()}, a reset link is on its way. Check your inbox.
+        </Alert>
       ) : (
         <form
           className="flex flex-col gap-4"
@@ -511,7 +592,10 @@ const ForgotForm: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 type Step = 'choose' | 'account' | 'guest' | 'forgot'
 
 /** First screen for anyone without an account session. `inviteName` is set when they opened a room link. */
-export const Onboarding: React.FC<{ inviteName?: string | null }> = ({ inviteName }) => {
+export const Onboarding: React.FC<{ inviteName?: string | null; inviteDeleted?: boolean }> = ({
+  inviteName,
+  inviteDeleted,
+}) => {
   const { signInAsGuest } = useAuth()
   const [step, setStep] = useState<Step>('choose')
   const [error, setError] = useState<string | null>(null)
@@ -531,6 +615,11 @@ export const Onboarding: React.FC<{ inviteName?: string | null }> = ({ inviteNam
     <AuthLayout>
       {step === 'choose' && (
         <>
+          {inviteDeleted && (
+            <Alert tone="info">
+              The room in this link was deleted by its owner, so its board and canvas are gone.
+            </Alert>
+          )}
           <div className="flex flex-col gap-2">
             <h1>{inviteName ? `Join “${inviteName}”` : 'Welcome to devboard'}</h1>
             <p className="dv-sub">
@@ -546,7 +635,9 @@ export const Onboarding: React.FC<{ inviteName?: string | null }> = ({ inviteNam
               </span>
               <span className="min-w-0 flex-1">
                 <span className="dv-choice-title block">Sign in or create an account</span>
-                <span className="dv-choice-desc block">Keep every room you've worked in, under your own name.</span>
+                <span className="dv-choice-desc block">
+                  Keep every room you've worked in, under your own name.
+                </span>
               </span>
               <ChevronRight size={16} style={{ color: 'var(--dv-muted)' }} />
             </button>
@@ -556,7 +647,9 @@ export const Onboarding: React.FC<{ inviteName?: string | null }> = ({ inviteNam
               </span>
               <span className="min-w-0 flex-1">
                 <span className="dv-choice-title block">Work in a room as a guest</span>
-                <span className="dv-choice-desc block">Just the room name and password. No account needed.</span>
+                <span className="dv-choice-desc block">
+                  Just the room name and password. No account needed.
+                </span>
               </span>
               <ChevronRight size={16} style={{ color: 'var(--dv-muted)' }} />
             </button>
@@ -592,7 +685,12 @@ export const Onboarding: React.FC<{ inviteName?: string | null }> = ({ inviteNam
 /* Join prompt for an invite link when you're signed in but not a member */
 /* ------------------------------------------------------------------ */
 
-export const JoinRoomScreen: React.FC<{ roomName: string | null; onJoined: () => void }> = ({ roomName, onJoined }) => {
+export const JoinRoomScreen: React.FC<{
+  roomId: string
+  roomName: string | null
+  deleted: boolean
+  onJoined: () => void
+}> = ({ roomId, roomName, deleted, onJoined }) => {
   const { isGuest, signOut } = useAuth()
   return (
     <AuthLayout>
@@ -601,14 +699,26 @@ export const JoinRoomScreen: React.FC<{ roomName: string | null; onJoined: () =>
         label={isGuest ? 'Back' : 'Your rooms'}
       />
       <div className="flex flex-col gap-2">
-        <h2>{roomName ? `Enter “${roomName}”` : 'Room not found'}</h2>
+        <h2>
+          {roomName ? `Enter “${roomName}”` : deleted ? 'This room was deleted' : 'Room not found'}
+        </h2>
         <p className="dv-sub">
           {roomName
             ? "Enter the room's password to join. You'll only need it once."
-            : "This link doesn't point to a room anymore. It may have been deleted."}
+            : deleted
+              ? 'Its owner deleted it, so its board and canvas are gone.'
+              : "This link doesn't point to a room. Check that you copied all of it."}
         </p>
       </div>
-      {roomName && <RoomForm initialName={roomName} lockName guest={isGuest} onEntered={onJoined} />}
+      {roomName && (
+        <RoomForm
+          initialName={roomName}
+          roomId={roomId}
+          lockName
+          guest={isGuest}
+          onEntered={onJoined}
+        />
+      )}
     </AuthLayout>
   )
 }
@@ -628,7 +738,8 @@ const relative = (iso: string) => {
     ['hour', 3600],
     ['minute', 60],
   ]
-  for (const [unit, secs] of steps) if (Math.abs(diff) >= secs) return rtf.format(Math.round(diff / secs), unit)
+  for (const [unit, secs] of steps)
+    if (Math.abs(diff) >= secs) return rtf.format(Math.round(diff / secs), unit)
   return 'just now'
 }
 
@@ -644,8 +755,8 @@ const AddEmailBanner: React.FC = () => {
       <div className="flex items-start gap-2">
         <Mail size={15} className="mt-0.5 shrink-0" />
         <div className="flex-1">
-          <strong>Add an email so you can't lose your account.</strong> Without one, there's no way to reset a
-          forgotten password.
+          <strong>Add an email so you can't lose your account.</strong> Without one, there's no way
+          to reset a forgotten password.
         </div>
         {!open && (
           <button className="dv-btn shrink-0" onClick={() => setOpen(true)}>
@@ -685,7 +796,8 @@ const AddEmailBanner: React.FC = () => {
             </button>
           </div>
           <span style={{ fontSize: 'var(--dv-text-xs)' }}>
-            After this, sign in with your email instead of your username. Your username stays the same in rooms.
+            After this, sign in with your email instead of your username. Your username stays the
+            same in rooms.
           </span>
           {error && <span style={{ color: 'var(--dv-danger)' }}>{error}</span>}
         </form>
@@ -740,7 +852,10 @@ export const RoomsHome: React.FC = () => {
       <div className="flex items-end justify-between gap-3">
         <div className="flex flex-col gap-1">
           <h1>Your rooms</h1>
-          <p className="dv-sub">You appear as {profile ? <strong>{profile.username}</strong> : 'yourself'} in every room.</p>
+          <p className="dv-sub">
+            You appear as {profile ? <strong>{profile.username}</strong> : 'yourself'} in every
+            room.
+          </p>
         </div>
         {rooms && rooms.length > 0 && !showForm && (
           <button className="dv-btn primary shrink-0" onClick={() => setShowForm(true)}>
@@ -751,7 +866,10 @@ export const RoomsHome: React.FC = () => {
       </div>
 
       {showForm && (
-        <div className="flex flex-col gap-3 rounded-[10px] border p-4" style={{ borderColor: 'var(--dv-border)' }}>
+        <div
+          className="flex flex-col gap-3 rounded-[10px] border p-4"
+          style={{ borderColor: 'var(--dv-border)' }}
+        >
           <div className="flex items-center justify-between">
             <span className="text-[14px] font-semibold">Join or create a room</span>
             {rooms && rooms.length > 0 && (
@@ -781,7 +899,17 @@ export const RoomsHome: React.FC = () => {
                   {r.roomName.slice(0, 1).toUpperCase()}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[14px] font-semibold">{r.roomName}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="truncate text-[14px] font-semibold">{r.roomName}</span>
+                    {r.isOwner && (
+                      <span
+                        className="dv-chip shrink-0 cursor-default"
+                        style={{ background: 'var(--dv-accent-soft)', color: 'var(--dv-accent)' }}
+                      >
+                        Owner
+                      </span>
+                    )}
+                  </span>
                   <span className="block text-[12px]" style={{ color: 'var(--dv-muted)' }}>
                     Last opened {relative(r.lastActiveAt)}
                   </span>
@@ -794,7 +922,9 @@ export const RoomsHome: React.FC = () => {
       )}
 
       {rooms && rooms.length === 0 && (
-        <p className="dv-sub text-center">You haven't joined any rooms yet. Join one above, or create your own.</p>
+        <p className="dv-sub text-center">
+          You haven't joined any rooms yet. Join one above, or create your own.
+        </p>
       )}
     </AuthLayout>
   )
@@ -832,7 +962,15 @@ export const NewPasswordScreen: React.FC = () => {
         }}
       >
         <Field label="New password" hint={`At least ${MIN_PASSWORD} characters.`}>
-          {(id) => <PasswordInput id={id} value={password} onChange={setPassword} autoFocus autoComplete="new-password" />}
+          {(id) => (
+            <PasswordInput
+              id={id}
+              value={password}
+              onChange={setPassword}
+              autoFocus
+              autoComplete="new-password"
+            />
+          )}
         </Field>
         {error && <Alert>{error}</Alert>}
         <Submit busy={busy} disabled={password.length < MIN_PASSWORD}>

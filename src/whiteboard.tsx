@@ -28,6 +28,7 @@ import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room'
 import { bus, isTyping, setLinkCounts, toast } from './lib/bus'
 import { useRoomTasks } from './lib/tasks'
+import { clearCanvas as clearRoomCanvas } from './lib/rooms'
 import { canvas, font, noteColors, noteInk, swatches } from './design/tokens'
 
 /* ================================================================== */
@@ -336,7 +337,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   active = true,
   theme = 'light',
 }) => {
-  const { roomId, me, send, on, status } = useRoom()
+  const { roomId, me, send, on, status, isOwner } = useRoom()
   const taskData = useRoomTasks()
 
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -2006,13 +2007,18 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   /* Render                                                              */
   /* ================================================================== */
 
-  const clearCanvas = () => {
-    if (!st.els.length) return
+  const clearCanvas = async () => {
+    if (!isOwner || !st.els.length) return
     if (!window.confirm('Clear the whole canvas for everyone in this room?')) return
+    try {
+      await clearRoomCanvas(roomId)
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not clear the canvas.')
+      return
+    }
     commit({ added: [], removed: [...st.els], before: [], after: [] })
     setEls([])
     setSel(new Set())
-    supabase.from('strokes').delete().eq('room_id', roomId).then(logErr)
     send('wb:clear', {})
   }
 
@@ -2432,8 +2438,12 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             disabled={!canRedo}
             onClick={redo}
           />
-          <div className="dv-sep" />
-          <ToolBtn icon={<Trash2 size={16} />} label="Clear canvas" danger onClick={clearCanvas} />
+          {isOwner && (
+            <>
+              <div className="dv-sep" />
+              <ToolBtn icon={<Trash2 size={16} />} label="Clear canvas" danger onClick={clearCanvas} />
+            </>
+          )}
 
           {tool === 'shape' && (
             <div className="dv-floating absolute bottom-full left-1/2 mb-2 flex -translate-x-1/2 flex-col gap-2 p-2.5">
