@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useState } from 'react'
+import React, { useEffect, useId, useRef, useState } from 'react'
 import {
   AlertCircle,
   ArrowLeft,
@@ -14,6 +14,7 @@ import {
   LogOut,
   Mail,
   Moon,
+  Pencil,
   Plus,
   Search,
   Settings,
@@ -825,12 +826,100 @@ const AddEmailBanner: React.FC = () => {
 const fullDate = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
+/**
+ * Text field that edits in place: Enter saves, Escape cancels. Blur saves when `saveOnBlur`
+ * (names), otherwise cancels (passwords, so clicking away never changes one by accident).
+ */
+const InlineEdit: React.FC<{
+  initial: string
+  label: string
+  placeholder?: string
+  maxLength: number
+  minLength: number
+  saveOnBlur?: boolean
+  mono?: boolean
+  onSave: (value: string) => Promise<void>
+  onCancel: () => void
+}> = ({
+  initial,
+  label,
+  placeholder,
+  maxLength,
+  minLength,
+  saveOnBlur,
+  mono,
+  onSave,
+  onCancel,
+}) => {
+  const [value, setValue] = useState(initial)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const done = useRef(false)
+
+  const save = async () => {
+    if (busy || done.current) return
+    const v = value.trim()
+    if (v === initial.trim()) return onCancel()
+    if (v.length < minLength) {
+      setError(`At least ${minLength} characters.`)
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await onSave(v)
+      done.current = true
+    } catch (e) {
+      setError(errorText(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="dv-inline-edit">
+      <input
+        className={`dv-input dv-inline-input ${mono ? 'mono' : ''}`}
+        aria-label={label}
+        aria-invalid={!!error}
+        value={value}
+        placeholder={placeholder}
+        maxLength={maxLength}
+        disabled={busy}
+        autoFocus
+        autoComplete="off"
+        spellCheck={false}
+        onFocus={(e) => e.currentTarget.select()}
+        onChange={(e) => {
+          setValue(e.target.value)
+          setError(null)
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') save()
+          else if (e.key === 'Escape') onCancel()
+        }}
+        onBlur={() => (saveOnBlur ? save() : !busy && onCancel())}
+      />
+      {error && (
+        <p className="dv-inline-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
 /** Password on a room card: hidden until asked for, fetched only then, copyable. */
-const CardPassword: React.FC<{ roomId: string; isOwner: boolean }> = ({ roomId, isOwner }) => {
+const CardPassword: React.FC<{
+  roomId: string
+  isOwner: boolean
+  /** Owners only: double-click the password to change it. */
+  onChange?: (password: string) => Promise<void>
+}> = ({ roomId, isOwner, onChange }) => {
   const [value, setValue] = useState<string | null | undefined>(undefined) // undefined = not fetched
   const [shown, setShown] = useState(false)
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(false)
 
   const load = async () => {
     if (value !== undefined) return value
@@ -847,12 +936,39 @@ const CardPassword: React.FC<{ roomId: string; isOwner: boolean }> = ({ roomId, 
     }
   }
 
-  if (value === null) {
+  const startEditing = async () => {
+    if (!onChange) return
+    await load()
+    setEditing(true)
+  }
+
+  if (editing && onChange) {
     return (
+      <InlineEdit
+        initial={value ?? ''}
+        label="New room password"
+        placeholder="New password"
+        minLength={4}
+        maxLength={72}
+        mono
+        onSave={onChange}
+        onCancel={() => setEditing(false)}
+      />
+    )
+  }
+
+  if (value === null) {
+    return onChange ? (
+      <p
+        className="dv-room-pw-missing editable"
+        title="Double-click to set a new password"
+        onDoubleClick={() => setEditing(true)}
+      >
+        Password not saved. Double-click here to set a new one.
+      </p>
+    ) : (
       <p className="dv-room-pw-missing">
-        {isOwner
-          ? 'Password not saved. Set a new one in room settings to show it here.'
-          : 'Password not saved. Ask the owner for it.'}
+        {isOwner ? 'Password not saved.' : 'Password not saved. Ask the owner for it.'}
       </p>
     )
   }
@@ -861,12 +977,26 @@ const CardPassword: React.FC<{ roomId: string; isOwner: boolean }> = ({ roomId, 
     <div className="dv-room-pw">
       <KeyRound size={13} aria-hidden />
       <span
-        className="dv-room-pw-value"
+        className={`dv-room-pw-value ${onChange ? 'editable' : ''}`}
         aria-label={shown ? 'Room password' : 'Room password hidden'}
+        title={onChange ? 'Double-click to change' : undefined}
+        onDoubleClick={startEditing}
       >
         {/* Fixed-width mask so the hidden state doesn't reveal the length. */}
         {shown && value ? value : '••••••••'}
       </span>
+      {onChange && (
+        <button
+          type="button"
+          className="dv-iconbtn sm"
+          aria-label="Change password"
+          title="Change password"
+          disabled={busy}
+          onClick={startEditing}
+        >
+          <Pencil size={13} />
+        </button>
+      )}
       <button
         type="button"
         className="dv-iconbtn sm"
@@ -914,53 +1044,98 @@ const RoomCard: React.FC<{
   /** Bumped after a password change so the card forgets the old one. */
   passwordRev: number
   onSettings: () => void
-}> = ({ room, passwordRev, onSettings }) => (
-  <article className="dv-room-card">
-    {/* Stretched button: the whole card opens the room; the password buttons sit above it. */}
-    <button
-      type="button"
-      className="dv-room-card-open"
-      aria-label={`Open ${room.roomName}`}
-      onClick={() => goToRoom(room.roomId)}
-    />
-    <div
-      className="dv-room-cover"
-      style={{ '--room': colorFor(room.roomId) } as React.CSSProperties}
-    >
-      <span className="dv-room-initial" aria-hidden>
-        {room.roomName.slice(0, 1).toUpperCase()}
-      </span>
-      {room.isOwner && (
-        <>
-          <span className="dv-room-owner">Owner</span>
-          <button
-            type="button"
-            className="dv-room-settings"
-            aria-label={`Settings for ${room.roomName}`}
-            title="Rename, change password or delete"
-            onClick={onSettings}
+  /** Owners only: inline rename / password change. */
+  actions?: RoomSettingsActions
+}> = ({ room, passwordRev, onSettings, actions }) => {
+  const [renaming, setRenaming] = useState(false)
+  // The name opens the room on a single click, but waits a moment in case it's a double-click.
+  const clickTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(clickTimer.current), [])
+
+  return (
+    <article className="dv-room-card">
+      {/* Stretched button: the whole card opens the room; in-card controls sit above it. */}
+      <button
+        type="button"
+        className="dv-room-card-open"
+        aria-label={`Open ${room.roomName}`}
+        onClick={() => goToRoom(room.roomId)}
+      />
+      <div
+        className="dv-room-cover"
+        style={{ '--room': colorFor(room.roomId) } as React.CSSProperties}
+      >
+        <span className="dv-room-initial" aria-hidden>
+          {room.roomName.slice(0, 1).toUpperCase()}
+        </span>
+        {room.isOwner && (
+          <>
+            <span className="dv-room-owner">Owner</span>
+            <button
+              type="button"
+              className="dv-room-settings"
+              aria-label={`Settings for ${room.roomName}`}
+              title="Room settings"
+              onClick={onSettings}
+            >
+              <Settings size={15} />
+            </button>
+          </>
+        )}
+      </div>
+      <div className="dv-room-body">
+        {renaming && actions ? (
+          <InlineEdit
+            initial={room.roomName}
+            label="Room name"
+            minLength={2}
+            maxLength={48}
+            saveOnBlur
+            onSave={async (name) => {
+              await actions.rename(name)
+              setRenaming(false)
+            }}
+            onCancel={() => setRenaming(false)}
+          />
+        ) : actions ? (
+          <h3
+            className="dv-room-name editable"
+            title="Double-click to rename"
+            onClick={() => {
+              window.clearTimeout(clickTimer.current)
+              clickTimer.current = window.setTimeout(() => goToRoom(room.roomId), 220)
+            }}
+            onDoubleClick={() => {
+              window.clearTimeout(clickTimer.current)
+              setRenaming(true)
+            }}
           >
-            <Settings size={15} />
-          </button>
-        </>
-      )}
-    </div>
-    <div className="dv-room-body">
-      <h3 className="dv-room-name" title={room.roomName}>
-        {room.roomName}
-      </h3>
-      <p className="dv-room-meta">
-        <Clock size={12} aria-hidden />
-        Edited{' '}
-        <time dateTime={room.lastEditedAt} title={fullDate(room.lastEditedAt)}>
-          {relative(room.lastEditedAt)}
-        </time>
-        {!room.allowGuests && <span title="Guests can't join this room"> · Accounts only</span>}
-      </p>
-      <CardPassword key={passwordRev} roomId={room.roomId} isOwner={room.isOwner} />
-    </div>
-  </article>
-)
+            <span className="truncate">{room.roomName}</span>
+            <Pencil size={12} className="dv-edit-hint" aria-hidden />
+          </h3>
+        ) : (
+          <h3 className="dv-room-name" title={room.roomName}>
+            {room.roomName}
+          </h3>
+        )}
+        <p className="dv-room-meta">
+          <Clock size={12} aria-hidden />
+          Edited{' '}
+          <time dateTime={room.lastEditedAt} title={fullDate(room.lastEditedAt)}>
+            {relative(room.lastEditedAt)}
+          </time>
+          {!room.allowGuests && <span title="Guests can't join this room"> · Accounts only</span>}
+        </p>
+        <CardPassword
+          key={passwordRev}
+          roomId={room.roomId}
+          isOwner={room.isOwner}
+          onChange={actions?.changePassword}
+        />
+      </div>
+    </article>
+  )
+}
 
 const RoomCardSkeleton: React.FC = () => (
   <div className="dv-room-card dv-skeleton" aria-hidden>
@@ -1147,6 +1322,7 @@ export const RoomsHome: React.FC = () => {
                     key={r.roomId}
                     room={r}
                     passwordRev={passwordRevs[r.roomId] ?? 0}
+                    actions={r.isOwner ? settingsActions(r) : undefined}
                     onSettings={() => {
                       setNotice(null)
                       setSettingsId(r.roomId)

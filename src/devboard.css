@@ -822,6 +822,52 @@ textarea.dv-input {
   opacity: 0.5;
 }
 
+/* Owner-editable name / password on room cards (raised above the card's open button). */
+.dv-room-name.editable {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.dv-edit-hint {
+  flex-shrink: 0;
+  color: var(--dv-muted);
+  opacity: 0;
+  transition: opacity var(--dv-dur-fast);
+}
+.dv-room-card:hover .dv-edit-hint {
+  opacity: 1;
+}
+.dv-room-pw-value.editable {
+  cursor: text;
+}
+.dv-room-pw-missing.editable {
+  position: relative;
+  z-index: 2;
+  cursor: pointer;
+}
+.dv-inline-edit {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dv-inline-input {
+  height: var(--dv-size-control-sm);
+  font-size: var(--dv-text-md);
+}
+.dv-inline-input.mono {
+  font-family: var(--dv-mono);
+}
+.dv-inline-error {
+  margin: 0;
+  color: var(--dv-danger);
+  font-size: var(--dv-text-xs);
+}
+
 .dv-iconbtn.sm {
   width: 26px;
   height: 26px;
