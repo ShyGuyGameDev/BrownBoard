@@ -22,7 +22,7 @@ import {
   UserRound,
   X,
 } from 'lucide-react'
-import { MIN_PASSWORD, USERNAME_RE, isElectron, useAuth } from './lib/auth'
+import { EMAIL_RE, MIN_PASSWORD, isElectron, useAuth, usernameFromEmail } from './lib/auth'
 import {
   RoomRpcError,
   type RoomSession,
@@ -401,14 +401,16 @@ const AccountForm: React.FC<{ initialTab?: 'signin' | 'signup'; onForgot: () => 
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [emailTouched, setEmailTouched] = useState(false)
+  /** Set after sign-up when Supabase wants the emailed link clicked first. */
+  const [sentTo, setSentTo] = useState<string | null>(null)
 
   const signup = tab === 'signup'
-  const username = login.trim().toLowerCase()
-  const usernameBad = signup && login.length > 0 && !USERNAME_RE.test(username)
+  const email = login.trim()
+  const emailOk = EMAIL_RE.test(email)
+  const emailBad = signup && emailTouched && email.length > 0 && !emailOk
   const passwordShort = signup && password.length > 0 && password.length < MIN_PASSWORD
-  const canSubmit = signup
-    ? USERNAME_RE.test(username) && password.length >= MIN_PASSWORD
-    : !!login.trim() && !!password
+  const canSubmit = signup ? emailOk && password.length >= MIN_PASSWORD : !!email && !!password
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -416,12 +418,47 @@ const AccountForm: React.FC<{ initialTab?: 'signin' | 'signup'; onForgot: () => 
     setBusy(true)
     setError(null)
     try {
-      if (signup) await signUp(username, password)
-      else await signInWithPassword(login, password)
+      if (signup) {
+        if ((await signUp(email, password)) === 'confirm') {
+          setSentTo(email)
+          setBusy(false)
+        }
+      } else {
+        // Older username-only accounts still sign in by typing their username here.
+        await signInWithPassword(login, password)
+      }
     } catch (err) {
       setError(errorText(err))
       setBusy(false)
     }
+  }
+
+  if (sentTo) {
+    return (
+      <div className="flex flex-col gap-4">
+        <span className="dv-choice-icon">
+          <Mail size={18} />
+        </span>
+        <div className="flex flex-col gap-2">
+          <h2>Check your inbox</h2>
+          <p className="dv-sub">
+            We sent a link to <strong>{sentTo}</strong>. Open it on this device to finish creating
+            your account. If it doesn't arrive in a few minutes, check your spam folder.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="dv-btn lg block"
+          onClick={() => {
+            setSentTo(null)
+            setTab('signin')
+            setPassword('')
+          }}
+        >
+          Back to sign in
+        </button>
+      </div>
+    )
   }
 
   return (
@@ -469,29 +506,35 @@ const AccountForm: React.FC<{ initialTab?: 'signin' | 'signup'; onForgot: () => 
 
       <form className="flex flex-col gap-4" onSubmit={submit} noValidate>
         <Field
-          label={signup ? 'Username' : 'Username or email'}
+          label="Email"
           hint={
-            signup
-              ? usernameBad
-                ? '3–24 characters: lowercase letters, numbers and underscores.'
-                : 'This is the name people see in your rooms.'
-              : undefined
+            !signup
+              ? undefined
+              : emailBad
+                ? 'Enter a valid email address, like you@example.com.'
+                : emailOk
+                  ? `In rooms, you'll appear as “${usernameFromEmail(email)}” (or similar, if that's taken).`
+                  : 'In rooms, you appear with a name based on your email.'
           }
         >
           {(id) => (
             <input
               id={id}
               className="dv-input lg"
+              type="email"
+              inputMode="email"
               value={login}
               autoFocus
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
-              maxLength={signup ? 24 : 254}
-              autoComplete="username"
-              aria-invalid={usernameBad}
+              maxLength={254}
+              autoComplete={signup ? 'email' : 'username'}
+              placeholder="you@example.com"
+              aria-invalid={emailBad}
+              onBlur={() => setEmailTouched(true)}
               onChange={(e) => {
-                setLogin(signup ? e.target.value.toLowerCase() : e.target.value)
+                setLogin(e.target.value)
                 setError(null)
               }}
             />
@@ -536,11 +579,6 @@ const AccountForm: React.FC<{ initialTab?: 'signin' | 'signup'; onForgot: () => 
         <Submit busy={busy} disabled={!canSubmit}>
           {signup ? 'Create account' : 'Sign in'}
         </Submit>
-        {signup && (
-          <p className="dv-sub text-center" style={{ fontSize: 'var(--dv-text-xs)' }}>
-            No email needed. You can add one later so you can recover your account.
-          </p>
-        )}
       </form>
     </div>
   )

@@ -4,23 +4,34 @@ import { supabase } from './supabase'
 import { rememberReturnRoom } from './room'
 
 /**
- * Username accounts are Supabase email accounts with a placeholder address (see the SQL migration).
- * Use a domain you control so the address can never belong to a real inbox.
+ * Older username-only accounts are Supabase email accounts with a placeholder address (see the
+ * SQL migrations). New accounts sign up with a real email; this only keeps the old ones working.
  */
 const USERNAME_DOMAIN =
   (import.meta.env.VITE_USERNAME_EMAIL_DOMAIN as string | undefined) || 'users.brownboard.app'
 
 export const isElectron = navigator.userAgent.includes('Electron')
 
-export const USERNAME_RE = /^[a-z0-9_]{3,24}$/
+export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 export const MIN_PASSWORD = 8
+
+/** Rough preview of the room name an email account gets (the server makes it unique). */
+export const usernameFromEmail = (email: string) => {
+  let base = email
+    .split('@')[0]
+    .replace(/[^a-zA-Z0-9_]/g, '')
+    .toLowerCase()
+    .slice(0, 19)
+  if (base.length < 3) base += 'user'
+  return base
+}
 
 const usernameEmail = (username: string) => `${username.trim().toLowerCase()}@${USERNAME_DOMAIN}`
 
 export interface Profile {
   id: string
   username: string
-  signup_method: 'username' | 'oauth'
+  signup_method: 'username' | 'oauth' | 'email'
 }
 
 interface AuthContextValue {
@@ -35,7 +46,8 @@ interface AuthContextValue {
   /** Set after following a password-reset link; the app should ask for a new password. */
   recovering: boolean
   signInWithPassword: (login: string, password: string) => Promise<void>
-  signUp: (username: string, password: string) => Promise<void>
+  /** 'signed_in', or 'confirm' when Supabase requires clicking the emailed link first. */
+  signUp: (email: string, password: string) => Promise<'signed_in' | 'confirm'>
   signInWithGoogle: () => Promise<void>
   signInAsGuest: () => Promise<void>
   signOut: () => Promise<void>
@@ -48,14 +60,17 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 
 /** Turns Supabase's error messages into something a person can act on. */
 const friendly = (message: string) => {
-  if (/invalid login credentials/i.test(message)) return 'That username or password is incorrect.'
-  if (/already registered/i.test(message)) return 'That username is taken.'
+  if (/invalid login credentials/i.test(message)) return 'That email or password is incorrect.'
+  if (/already registered/i.test(message))
+    return 'An account with that email already exists. Sign in instead.'
+  if (/email not confirmed/i.test(message))
+    return 'Confirm your email first: open the link we sent to your inbox.'
   if (/rate limit|too many/i.test(message)) return 'Too many attempts. Wait a minute and try again.'
   // Project-wide Supabase setting, not a room's "Guest access" switch.
   if (/anonymous sign-ins are disabled/i.test(message))
     return "Guest sign-in isn't set up for this app yet, so you'll need an account to join. (Admin: turn on Anonymous sign-ins in Supabase → Authentication.)"
   if (/database error saving new user/i.test(message))
-    return 'That username is taken or not allowed.'
+    return 'Could not create your account. Try again in a moment.'
   return message
 }
 const fail = (message: string): never => {
@@ -129,23 +144,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     fail(error.message)
   }, [])
 
-  const signUp = useCallback(async (username: string, password: string) => {
-    const name = username.trim().toLowerCase()
-    if (!USERNAME_RE.test(name))
-      fail('Usernames are 3–24 characters: letters, numbers and underscores.')
+  const signUp = useCallback(async (email: string, password: string) => {
+    const address = email.trim()
+    if (!EMAIL_RE.test(address)) fail('Enter a valid email address.')
     if (password.length < MIN_PASSWORD) fail(`Passwords need at least ${MIN_PASSWORD} characters.`)
-    const { data: available } = await supabase.rpc('username_available', { p_username: name })
-    if (available === false) fail('That username is taken.')
+    // If confirmation is on, the emailed link returns to the bare site URL: remember the room.
+    rememberReturnRoom()
     const { data, error } = await supabase.auth.signUp({
-      email: usernameEmail(name),
+      email: address,
       password,
-      options: { data: { username: name } },
+      options: { emailRedirectTo: siteUrl() },
     })
     if (error) fail(error.message)
-    if (!data.session)
-      fail(
-        'Account created, but email confirmation is on in Supabase. Turn it off to use usernames.',
-      )
+    // No session means "Confirm email" is on. (Supabase answers the same way for an address that
+    // already has an account, so this never reveals which emails are registered.)
+    return data.session ? ('signed_in' as const) : ('confirm' as const)
   }, [])
 
   const signInWithGoogle = useCallback(async () => {
