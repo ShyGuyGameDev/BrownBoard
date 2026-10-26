@@ -28,6 +28,7 @@ import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room'
 import { bus, isTyping, setLinkCounts, toast } from './lib/bus'
 import { useRoomTasks } from './lib/tasks'
+import { canvas, font, noteColors, noteInk, swatches } from './design/tokens'
 
 /* ================================================================== */
 /* Types                                                               */
@@ -83,47 +84,13 @@ type Act =
 /* Constants + pure helpers                                            */
 /* ================================================================== */
 
-const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif'
-const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+const FONT = font.sans
+const MONO = font.mono
 
-const PAL = {
-  light: {
-    bg: '#f7f7f5',
-    dot: 'rgba(21,23,28,0.18)',
-    line: 'rgba(21,23,28,0.07)',
-    ink: '#15171c',
-    panel: '#ffffff',
-    border: '#d9dce3',
-    muted: '#6b7280',
-    accent: '#4a62f0',
-    link: '#5b6272',
-  },
-  dark: {
-    bg: '#0d0e11',
-    dot: 'rgba(255,255,255,0.15)',
-    line: 'rgba(255,255,255,0.06)',
-    ink: '#e8e9ee',
-    panel: '#1b1d23',
-    border: '#343843',
-    muted: '#9499a6',
-    accent: '#7d8cff',
-    link: '#a0a5b3',
-  },
-}
+const PAL = canvas
 
-const NOTE_COLORS = ['#fde68a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#ddd6fe', '#fed7aa']
-const SWATCHES = [
-  'auto',
-  '#ef4444',
-  '#f97316',
-  '#eab308',
-  '#22c55e',
-  '#06b6d4',
-  '#3b82f6',
-  '#8b5cf6',
-  '#ec4899',
-  '#64748b',
-]
+const NOTE_COLORS = noteColors
+const SWATCHES = ['auto', ...swatches]
 const HANDLE = 8
 const PAD = 10
 
@@ -653,7 +620,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           ctx.shadowColor = 'transparent'
         }
         if (el.id !== editId) {
-          ctx.fillStyle = el.note ? '#27272a' : resolveColor(el.color, pal.ink)
+          ctx.fillStyle = el.note ? noteInk : resolveColor(el.color, pal.ink)
           ctx.font = `${fs}px ${FONT}`
           ctx.textBaseline = 'top'
           wrapLines(ctx, el.text ?? '', w - pad * 2).forEach((line, i) =>
@@ -2165,7 +2132,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             fontSize: (edEl.fontSize ?? 18) * st.view.k,
             lineHeight: 1.35,
             fontFamily: FONT,
-            color: edEl.note ? '#27272a' : resolveColor(edEl.color, ink),
+            color: edEl.note ? noteInk : resolveColor(edEl.color, ink),
             boxShadow: edEl.note ? undefined : `0 0 0 1.5px ${PAL[theme].accent}`,
             borderRadius: 6,
             zIndex: 15,

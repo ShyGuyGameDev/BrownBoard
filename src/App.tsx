@@ -1,22 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, Copy, Kanban, Moon, PenTool, Plus, Share2, Sun } from 'lucide-react'
+import { ArrowLeft, Check, Copy, Kanban, LogOut, Moon, PenTool, Share2, Sun } from 'lucide-react'
 import { Whiteboard } from './whiteboard'
 import { KanbanBoard } from './kanban'
-import {
-  RoomProvider,
-  buildShareLink,
-  getRoomIdFromLocation,
-  goToRoom,
-  parseRoomId,
-  randomRoomId,
-  useRoom,
-} from './lib/room.tsx'
+import { RoomProvider, buildShareLink, getRoomIdFromLocation, goHome, useRoom } from './lib/room.tsx'
 import { bus, isTyping, toast } from './lib/bus.ts'
+import { AuthProvider, isElectron, useAuth } from './lib/auth.tsx'
+import { type RoomSession, enterRoom, roomInviteName } from './lib/rooms.ts'
+import { useTheme } from './lib/theme.ts'
+import { JoinRoomScreen, NewPasswordScreen, Onboarding, RoomsHome } from './onboarding.tsx'
 
 type Page = 'board' | 'canvas'
-type Theme = 'light' | 'dark'
 
-const isElectron = navigator.userAgent.includes('Electron')
 const isMac = /Mac/i.test(navigator.platform)
 
 const initials = (name: string) => name.trim().slice(0, 2).toUpperCase() || '?'
@@ -26,12 +20,9 @@ const initials = (name: string) => name.trim().slice(0, 2).toUpperCase() || '?'
 /* ------------------------------------------------------------------ */
 
 const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { roomId, me, setName } = useRoom()
+  const { roomId, roomName, me } = useRoom()
   const [copied, setCopied] = useState(false)
-  const [joinInput, setJoinInput] = useState('')
-  const [nameInput, setNameInput] = useState(me.name)
   const link = buildShareLink(roomId)
-  const joinId = parseRoomId(joinInput)
 
   const copy = async () => {
     try {
@@ -50,7 +41,8 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         <div className="flex flex-col gap-2">
           <span className="text-[13px] font-semibold">Invite your team</span>
           <p className="text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
-            Anyone with this link can edit the board and canvas live. Both stay in sync for everyone in the room.
+            Send this link along with the room password. Or they can enter the room name,{' '}
+            <strong style={{ color: 'var(--dv-text)' }}>{roomName}</strong>, and the password from the start screen.
           </p>
           <div className="flex gap-2">
             <input readOnly value={link} className="dv-input" onFocus={(e) => e.currentTarget.select()} />
@@ -66,56 +58,10 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           )}
         </div>
 
-        <div className="flex flex-col gap-2 border-t pt-3" style={{ borderColor: 'var(--dv-border)' }}>
-          <span className="text-[13px] font-semibold">Join another room</span>
-          <div className="flex gap-2">
-            <input
-              className="dv-input"
-              placeholder="Paste a link or room code"
-              value={joinInput}
-              onChange={(e) => setJoinInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && joinId) {
-                  goToRoom(joinId)
-                  onClose()
-                }
-              }}
-            />
-            <button
-              className="dv-btn shrink-0"
-              disabled={!joinId}
-              onClick={() => {
-                if (joinId) {
-                  goToRoom(joinId)
-                  onClose()
-                }
-              }}
-            >
-              Join
-            </button>
-          </div>
-          <button
-            className="dv-btn self-start"
-            onClick={() => {
-              goToRoom(randomRoomId())
-              onClose()
-            }}
-          >
-            <Plus size={14} />
-            Start a new private room
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-2 border-t pt-3" style={{ borderColor: 'var(--dv-border)' }}>
-          <span className="text-[13px] font-semibold">Your name</span>
-          <input
-            className="dv-input"
-            value={nameInput}
-            maxLength={24}
-            onChange={(e) => setNameInput(e.target.value)}
-            onBlur={() => setName(nameInput)}
-            onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-          />
+        <div className="flex flex-col gap-1 border-t pt-3 text-xs" style={{ borderColor: 'var(--dv-border)', color: 'var(--dv-muted)' }}>
+          <span>
+            You appear as <strong style={{ color: 'var(--dv-text)' }}>{me.name}</strong>.
+          </span>
         </div>
       </div>
     </>
@@ -127,12 +73,10 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 /* ------------------------------------------------------------------ */
 
 const Shell: React.FC = () => {
-  const { roomId, peers, status, me } = useRoom()
+  const { roomId, roomName, peers, status, me } = useRoom()
+  const { isGuest, signOut } = useAuth()
   const [page, setPage] = useState<Page>(() => (localStorage.getItem('devboard.page') as Page) || 'board')
-  const [theme, setTheme] = useState<Theme>(() => {
-    const saved = localStorage.getItem('devboard.theme') as Theme | null
-    return saved ?? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-  })
+  const { theme, toggle: toggleTheme } = useTheme()
   const [shareOpen, setShareOpen] = useState(false)
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
@@ -141,11 +85,6 @@ const Shell: React.FC = () => {
     setPage(p)
     localStorage.setItem('devboard.page', p)
   }, [])
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme
-    localStorage.setItem('devboard.theme', theme)
-  }, [theme])
 
   // Navigation: 1 / 2 (when not typing), Ctrl/Cmd+1 / 2 anywhere, plus bus + Electron menu events.
   useEffect(() => {
@@ -207,20 +146,25 @@ const Shell: React.FC = () => {
           paddingLeft: isElectron && isMac ? 84 : undefined,
         }}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          {isGuest ? (
+            <button className="dv-btn ghost dv-no-drag" title="Leave this room" onClick={() => signOut().then(goHome)}>
+              <LogOut size={14} />
+              Leave
+            </button>
+          ) : (
+            <button className="dv-iconbtn dv-no-drag" title="All rooms" onClick={goHome}>
+              <ArrowLeft size={16} />
+            </button>
+          )}
           <div
-            className="flex h-6 w-6 items-center justify-center rounded-md text-[13px] font-bold"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[13px] font-bold"
             style={{ background: 'var(--dv-accent)', color: 'var(--dv-accent-fg)' }}
           >
             d
           </div>
-          <span className="text-[14px] font-semibold tracking-tight">devboard</span>
-          <span
-            className="rounded-md px-1.5 py-0.5 text-[11px]"
-            style={{ background: 'var(--dv-panel-2)', color: 'var(--dv-muted)', fontFamily: 'var(--dv-mono)' }}
-            title="Room id"
-          >
-            {roomId}
+          <span className="max-w-[220px] truncate text-[14px] font-semibold tracking-tight" title={`Room id: ${roomId}`}>
+            {roomName}
           </span>
         </div>
 
@@ -289,7 +233,7 @@ const Shell: React.FC = () => {
           <button
             className="dv-iconbtn"
             title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-            onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+            onClick={toggleTheme}
           >
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
           </button>
@@ -315,24 +259,86 @@ const Shell: React.FC = () => {
   )
 }
 
-function App() {
+/* ------------------------------------------------------------------ */
+/* Routing                                                             */
+/* ------------------------------------------------------------------ */
+
+const Splash: React.FC = () => (
+  <div className="dv-auth">
+    <span className="dv-spinner" style={{ color: 'var(--dv-muted)' }} />
+  </div>
+)
+
+type Gate = { state: 'checking' } | { state: 'in'; room: RoomSession } | { state: 'join'; name: string | null }
+
+/** Lets you into `roomId` if you're a member, otherwise asks for its password. */
+const RoomGate: React.FC<{ roomId: string; userId: string }> = ({ roomId, userId }) => {
+  const [gate, setGate] = useState<Gate>({ state: 'checking' })
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    enterRoom(roomId)
+      .then((room) => !cancelled && setGate({ state: 'in', room }))
+      .catch(async () => {
+        const name = await roomInviteName(roomId)
+        if (!cancelled) setGate({ state: 'join', name })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [roomId, attempt])
+
+  if (gate.state === 'checking') return <Splash />
+  if (gate.state === 'join') return <JoinRoomScreen roomName={gate.name} onJoined={() => setAttempt((n) => n + 1)} />
+  return (
+    // key => switching rooms remounts both views with fresh data and a fresh channel.
+    <RoomProvider
+      key={roomId}
+      roomId={roomId}
+      roomName={gate.room.roomName}
+      displayName={gate.room.displayName}
+      userId={userId}
+    >
+      <Shell />
+    </RoomProvider>
+  )
+}
+
+const InviteOnboarding: React.FC<{ roomId: string }> = ({ roomId }) => {
+  const [name, setName] = useState<string | null>(null)
+  useEffect(() => {
+    roomInviteName(roomId).then(setName)
+  }, [roomId])
+  return <Onboarding inviteName={name} />
+}
+
+const Router: React.FC = () => {
+  const { ready, session, isGuest, recovering } = useAuth()
   const [roomId, setRoomId] = useState(getRoomIdFromLocation)
 
   useEffect(() => {
-    // Make sure the URL always carries the room so "copy the address bar" works as a share link.
-    if (!parseRoomId(window.location.hash)) {
-      window.history.replaceState(null, '', `#/r/${roomId}`)
-    }
     const onHash = () => setRoomId(getRoomIdFromLocation())
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
-  }, [roomId])
+  }, [])
 
-  // key => switching rooms remounts both views with fresh data and a fresh channel.
+  if (!ready) return <Splash />
+  if (recovering) return <NewPasswordScreen />
+  if (roomId) {
+    if (!session) return <InviteOnboarding roomId={roomId} />
+    return <RoomGate key={`${roomId}:${session.user.id}`} roomId={roomId} userId={session.user.id} />
+  }
+  // Guests don't have a rooms list; they go back to the start screen.
+  if (session && !isGuest) return <RoomsHome />
+  return <Onboarding />
+}
+
+function App() {
   return (
-    <RoomProvider roomId={roomId} key={roomId}>
-      <Shell />
-    </RoomProvider>
+    <AuthProvider>
+      <Router />
+    </AuthProvider>
   )
 }
 

@@ -2,9 +2,6 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 
-/** Rows created before rooms existed live in this room (see the SQL migration). */
-export const LEGACY_ROOM = 'room_1'
-
 export interface Peer {
   id: string
   name: string
@@ -18,10 +15,10 @@ type Handler = (payload: any, fromSelf: boolean) => void
 
 interface RoomContextValue {
   roomId: string
+  roomName: string
   me: Peer
   peers: Peer[]
   status: RoomStatus
-  setName: (name: string) => void
   /** Broadcast to everyone else in the room. Pass `local = true` to also notify handlers in this window. */
   send: (event: string, payload?: any, local?: boolean) => void
   on: (event: string, handler: Handler) => () => void
@@ -37,15 +34,18 @@ export const parseRoomId = (input: string): string | null => {
   return m ? m[1] : null
 }
 
-export const getRoomIdFromLocation = () =>
-  parseRoomId(window.location.hash) ?? (localStorage.getItem('devboard.room') || LEGACY_ROOM)
-
-export const randomRoomId = () =>
-  Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36]).join('')
+/** The room in the URL (`#/r/<id>`), or null on the home / onboarding screens. */
+export const getRoomIdFromLocation = () => {
+  const m = window.location.hash.match(/^#\/r\/([A-Za-z0-9_-]{3,64})\/?$/)
+  return m ? m[1] : null
+}
 
 export const goToRoom = (id: string) => {
-  localStorage.setItem('devboard.room', id)
   window.location.hash = `/r/${id}`
+}
+
+export const goHome = () => {
+  window.location.hash = '/'
 }
 
 /**
@@ -60,7 +60,7 @@ export const buildShareLink = (roomId: string) => {
   return base ? `${base}#/r/${roomId}` : `devboard://r/${roomId}`
 }
 
-const colorFor = (id: string) => {
+export const colorFor = (id: string) => {
   let h = 0
   for (const c of id) h = (h * 31 + c.charCodeAt(0)) % 360
   return `hsl(${h} 70% 52%)`
@@ -68,12 +68,22 @@ const colorFor = (id: string) => {
 
 // ---------- provider ----------
 
-export const RoomProvider: React.FC<{ roomId: string; children: React.ReactNode }> = ({ roomId, children }) => {
+interface RoomProviderProps {
+  roomId: string
+  roomName: string
+  /** Username for accounts, "Anonymous <Animal>" for guests. Assigned by the server on join. */
+  displayName: string
+  userId: string
+  children: React.ReactNode
+}
+
+export const RoomProvider: React.FC<RoomProviderProps> = ({ roomId, roomName, displayName, userId, children }) => {
+  // Presence is per tab (so two tabs don't fight over one cursor); colour follows the person.
   const idRef = useRef(crypto.randomUUID())
-  const [name, setNameState] = useState(
-    () => localStorage.getItem('devboard.name') || `dev-${idRef.current.slice(0, 4)}`,
+  const me = useMemo<Peer>(
+    () => ({ id: idRef.current, name: displayName, color: colorFor(userId) }),
+    [displayName, userId],
   )
-  const me = useMemo<Peer>(() => ({ id: idRef.current, name, color: colorFor(idRef.current) }), [name])
   const meRef = useRef(me)
   meRef.current = me
 
@@ -89,9 +99,9 @@ export const RoomProvider: React.FC<{ roomId: string; children: React.ReactNode 
   }
 
   useEffect(() => {
-    localStorage.setItem('devboard.room', roomId)
+    // Private channel: Realtime checks room membership against the policies on realtime.messages.
     const channel = supabase.channel(`devboard:${roomId}`, {
-      config: { presence: { key: idRef.current }, broadcast: { self: false } },
+      config: { private: true, presence: { key: idRef.current }, broadcast: { self: false } },
     })
 
     channel
@@ -108,17 +118,23 @@ export const RoomProvider: React.FC<{ roomId: string; children: React.ReactNode 
           })
         setPeers([...seen.values()])
       })
-      .subscribe((s) => {
-        if (s === 'SUBSCRIBED') {
-          updateStatus('live')
-          channel.track(meRef.current)
-        } else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') {
-          updateStatus('offline')
-        }
-      })
+    const onStatus = (s: string) => {
+      if (s === 'SUBSCRIBED') {
+        updateStatus('live')
+        channel.track(meRef.current)
+      } else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') {
+        updateStatus('offline')
+      }
+    }
 
     channelRef.current = channel
+    let cancelled = false
+    // Make sure the socket carries this user's JWT before joining a private channel.
+    supabase.realtime.setAuth().then(() => {
+      if (!cancelled) channel.subscribe(onStatus)
+    })
     return () => {
+      cancelled = true
       channelRef.current = null
       supabase.removeChannel(channel)
     }
@@ -128,13 +144,6 @@ export const RoomProvider: React.FC<{ roomId: string; children: React.ReactNode 
   useEffect(() => {
     if (statusRef.current === 'live') channelRef.current?.track(me)
   }, [me])
-
-  const setName = useCallback((n: string) => {
-    const clean = n.trim().slice(0, 24)
-    if (!clean) return
-    localStorage.setItem('devboard.name', clean)
-    setNameState(clean)
-  }, [])
 
   const on = useCallback((event: string, handler: Handler) => {
     if (!handlers.current.has(event)) handlers.current.set(event, new Set())
@@ -151,8 +160,8 @@ export const RoomProvider: React.FC<{ roomId: string; children: React.ReactNode 
   }, [])
 
   const value = useMemo(
-    () => ({ roomId, me, peers, status, setName, send, on }),
-    [roomId, me, peers, status, setName, send, on],
+    () => ({ roomId, roomName, me, peers, status, send, on }),
+    [roomId, roomName, me, peers, status, send, on],
   )
 
   return <RoomContext.Provider value={value}>{children}</RoomContext.Provider>
