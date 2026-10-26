@@ -569,6 +569,15 @@ revoke all on public.profiles, public.rooms, public.room_members,
   public.categories, public.tasks, public.task_options, public.strokes from anon;
 revoke all on all tables in schema private from anon, authenticated;
 
+-- Signed-in users need table access before RLS can decide which rows they get.
+-- (Some projects don't grant this automatically.) The policies below narrow it down.
+grant usage on schema public to authenticated;
+grant select on public.profiles to authenticated;
+grant select, delete on public.room_members to authenticated;
+grant select, insert, update, delete on
+  public.categories, public.tasks, public.task_options, public.strokes
+to authenticated;
+
 -- profiles: read your own. Created only by the trigger.
 revoke insert, update, delete on public.profiles from authenticated;
 drop policy if exists "read own profile" on public.profiles;

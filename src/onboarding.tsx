@@ -212,8 +212,10 @@ export const RoomForm: React.FC<{
   prepare?: () => Promise<void>
   onEntered: (room: RoomSession) => void
   guest?: boolean
-}> = ({ initialName = '', lockName, roomId, prepare, onEntered, guest }) => {
-  const [mode, setMode] = useState<'join' | 'create'>('join')
+  /** Fix the form to joining or creating, with no switch between the two. */
+  only?: 'join' | 'create'
+}> = ({ initialName = '', lockName, roomId, prepare, onEntered, guest, only }) => {
+  const [mode, setMode] = useState<'join' | 'create'>(only ?? 'join')
   const [name, setName] = useState(initialName)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
@@ -236,7 +238,7 @@ export const RoomForm: React.FC<{
       onEntered(room)
     } catch (e) {
       const code = e instanceof RoomRpcError ? e.code : null
-      if ((code === 'not_found' || code === 'deleted') && !lockName) {
+      if ((code === 'not_found' || code === 'deleted') && !lockName && only !== 'join') {
         setWasDeleted(code === 'deleted')
         setOfferCreate(true)
       } else setError(errorText(e))
@@ -337,7 +339,7 @@ export const RoomForm: React.FC<{
         {mode === 'create' ? 'Create room' : 'Enter room'}
       </Submit>
 
-      {!lockName && (
+      {!lockName && !only && (
         <p className="dv-sub text-center">
           {mode === 'join' ? 'Starting something new? ' : 'Have a room already? '}
           <button
@@ -810,15 +812,12 @@ export const RoomsHome: React.FC = () => {
   const { user, profile, needsEmail, signOut } = useAuth()
   const [rooms, setRooms] = useState<RoomSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [showForm, setShowForm] = useState(false)
+  const [panel, setPanel] = useState<'join' | 'create' | null>(null)
 
   useEffect(() => {
     if (!user) return
     myRooms(user.id)
-      .then((r) => {
-        setRooms(r)
-        if (r.length === 0) setShowForm(true)
-      })
+      .then(setRooms)
       .catch((e) => setError(errorText(e)))
   }, [user])
 
@@ -849,7 +848,7 @@ export const RoomsHome: React.FC = () => {
     >
       {needsEmail && <AddEmailBanner />}
 
-      <div className="flex items-end justify-between gap-3">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-col gap-1">
           <h1>Your rooms</h1>
           <p className="dv-sub">
@@ -857,28 +856,35 @@ export const RoomsHome: React.FC = () => {
             room.
           </p>
         </div>
-        {rooms && rooms.length > 0 && !showForm && (
-          <button className="dv-btn primary shrink-0" onClick={() => setShowForm(true)}>
-            <Plus size={14} />
-            Join or create
-          </button>
+        {!panel && (
+          <div className="flex shrink-0 gap-2">
+            <button className="dv-btn" onClick={() => setPanel('create')}>
+              <Plus size={14} />
+              New room
+            </button>
+            <button className="dv-btn primary" onClick={() => setPanel('join')}>
+              <DoorOpen size={14} />
+              Join room
+            </button>
+          </div>
         )}
       </div>
 
-      {showForm && (
+      {panel && (
         <div
           className="flex flex-col gap-3 rounded-[10px] border p-4"
           style={{ borderColor: 'var(--dv-border)' }}
         >
           <div className="flex items-center justify-between">
-            <span className="text-[14px] font-semibold">Join or create a room</span>
-            {rooms && rooms.length > 0 && (
-              <button className="dv-btn ghost" onClick={() => setShowForm(false)}>
-                Cancel
-              </button>
-            )}
+            <span className="text-[14px] font-semibold">
+              {panel === 'join' ? 'Join a room' : 'Create a room'}
+            </span>
+            <button className="dv-btn ghost" onClick={() => setPanel(null)}>
+              Cancel
+            </button>
           </div>
-          <RoomForm onEntered={(room) => goToRoom(room.roomId)} />
+          {/* key: switching panels starts a fresh form */}
+          <RoomForm key={panel} only={panel} onEntered={(room) => goToRoom(room.roomId)} />
         </div>
       )}
 
@@ -921,10 +927,17 @@ export const RoomsHome: React.FC = () => {
         </ul>
       )}
 
-      {rooms && rooms.length === 0 && (
-        <p className="dv-sub text-center">
-          You haven't joined any rooms yet. Join one above, or create your own.
-        </p>
+      {rooms && rooms.length === 0 && !panel && (
+        <div
+          className="flex flex-col items-center gap-2 rounded-[10px] border border-dashed px-4 py-10 text-center"
+          style={{ borderColor: 'var(--dv-border)' }}
+        >
+          <span className="text-[14px] font-semibold">No rooms yet</span>
+          <p className="dv-sub">
+            Rooms you join or create will show up here. Use <strong>Join room</strong> for one
+            someone shared with you, or <strong>New room</strong> to start your own.
+          </p>
+        </div>
       )}
     </AuthLayout>
   )
