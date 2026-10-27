@@ -9,6 +9,11 @@
 -- Run after 20261026_guest_access.sql. Safe to re-run.
 -- =====================================================================
 
+-- Room names can repeat (a room is found by name + password together), and every unnamed room
+-- shares the placeholder name. Some databases picked up a unique constraint on the name; drop it.
+alter table public.rooms drop constraint if exists rooms_name_key_unique;
+drop index if exists public.rooms_name_key_unique;
+
 alter table public.rooms add column if not exists unnamed boolean not null default false;
 grant select (unnamed) on public.rooms to authenticated;
 
