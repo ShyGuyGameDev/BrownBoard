@@ -30,6 +30,9 @@ interface RoomContextValue {
   setRoomName: (name: string) => void
   allowGuests: boolean
   setAllowGuests: (allow: boolean) => void
+  /** No name or password yet: only its creator is in it, and it isn't kept. */
+  unnamed: boolean
+  setUnnamed: (unnamed: boolean) => void
   me: Peer
   peers: Peer[]
   status: RoomStatus
@@ -125,6 +128,7 @@ interface RoomProviderProps {
   userId: string
   isOwner: boolean
   allowGuests: boolean
+  unnamed: boolean
   children: React.ReactNode
 }
 
@@ -135,10 +139,12 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   userId,
   isOwner,
   allowGuests: initialAllowGuests,
+  unnamed: initialUnnamed,
   children,
 }) => {
   const [roomName, setRoomName] = useState(initialRoomName)
   const [allowGuests, setAllowGuests] = useState(initialAllowGuests)
+  const [unnamed, setUnnamed] = useState(initialUnnamed)
   // Presence is per tab (so two tabs don't fight over one cursor); colour follows the person.
   const idRef = useRef(crypto.randomUUID())
   const me = useMemo<Peer>(
@@ -229,13 +235,15 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       setRoomName,
       allowGuests,
       setAllowGuests,
+      unnamed,
+      setUnnamed,
       me,
       peers,
       status,
       send,
       on,
     }),
-    [roomId, roomName, isOwner, allowGuests, me, peers, status, send, on],
+    [roomId, roomName, isOwner, allowGuests, unnamed, me, peers, status, send, on],
   )
 
   return <RoomContext.Provider value={value}>{children}</RoomContext.Provider>

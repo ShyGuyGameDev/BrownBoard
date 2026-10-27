@@ -27,7 +27,7 @@ import {
   RoomRpcError,
   type RoomSession,
   type RoomSummary,
-  createRoom,
+  createQuickRoom,
   clearFlash,
   joinRoom,
   myRooms,
@@ -214,10 +214,7 @@ const errorText = (e: unknown) =>
 /* Room form (guests and signed-in users)                              */
 /* ------------------------------------------------------------------ */
 
-/**
- * Join a room by name + password. If the name doesn't exist yet, offers to create it with the
- * password already typed, so nobody has to fill the form in twice.
- */
+/** Join a room by name + password. */
 export const RoomForm: React.FC<{
   initialName?: string
   lockName?: boolean
@@ -227,57 +224,39 @@ export const RoomForm: React.FC<{
   prepare?: () => Promise<void>
   onEntered: (room: RoomSession) => void
   guest?: boolean
-  /** Fix the form to joining or creating, with no switch between the two. */
-  only?: 'join' | 'create'
-  /** Told when the user switches between joining and creating (so a heading can follow). */
-  onModeChange?: (mode: 'join' | 'create') => void
-}> = ({ initialName = '', lockName, roomId, prepare, onEntered, guest, only, onModeChange }) => {
-  const [mode, setMode] = useState<'join' | 'create'>(only ?? 'join')
+}> = ({ initialName = '', lockName, roomId, prepare, onEntered, guest }) => {
   const [name, setName] = useState(initialName)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [offerCreate, setOfferCreate] = useState(false)
-  const [wasDeleted, setWasDeleted] = useState(false)
 
   useEffect(() => setName(initialName), [initialName])
-  // Report the mode on mount too, so a heading outside the form can never show the other one.
-  useEffect(() => onModeChange?.(mode), [mode, onModeChange])
 
-  const run = async (action: 'join' | 'create') => {
+  const run = async () => {
     setBusy(true)
     setError(null)
-    setOfferCreate(false)
     try {
       await prepare?.()
-      const room =
-        action === 'join'
-          ? await joinRoom(name, password, roomId)
-          : await createRoom(name, password)
-      onEntered(room)
+      onEntered(await joinRoom(name, password, roomId))
     } catch (e) {
-      const code = e instanceof RoomRpcError ? e.code : null
-      if ((code === 'not_found' || code === 'deleted') && !lockName && only !== 'join') {
-        setWasDeleted(code === 'deleted')
-        setOfferCreate(true)
-      } else setError(errorText(e))
+      setError(errorText(e))
     } finally {
       setBusy(false)
     }
   }
 
   const clean = name.trim()
-  const canSubmit = clean.length >= 2 && password.length >= (mode === 'create' ? 4 : 1)
+  const canSubmit = clean.length >= 2 && password.length >= 1
 
   return (
     <form
       className="flex flex-col gap-4"
       onSubmit={(e) => {
         e.preventDefault()
-        if (canSubmit) run(mode)
+        if (canSubmit) run()
       }}
     >
-      <Field label={mode === 'create' ? 'What do you want to call your room?' : 'Room name'}>
+      <Field label="Room name">
         {(id) => (
           <input
             id={id}
@@ -288,22 +267,12 @@ export const RoomForm: React.FC<{
             autoFocus={!lockName}
             autoComplete="off"
             spellCheck={false}
-            placeholder={mode === 'create' ? 'e.g. Design sprint' : 'The room you were invited to'}
-            onChange={(e) => {
-              setName(e.target.value)
-              setOfferCreate(false)
-            }}
+            placeholder="The room you were invited to"
+            onChange={(e) => setName(e.target.value)}
           />
         )}
       </Field>
-      <Field
-        label={mode === 'create' ? 'Choose a room password' : 'Room password'}
-        hint={
-          mode === 'create'
-            ? 'Share it with the people you want to invite. At least 4 characters.'
-            : undefined
-        }
-      >
+      <Field label="Room password">
         {(id) => (
           <PasswordInput
             id={id}
@@ -314,67 +283,17 @@ export const RoomForm: React.FC<{
             }}
             autoFocus={lockName}
             maxLength={72}
-            autoComplete={mode === 'create' ? 'new-password' : 'current-password'}
+            autoComplete="current-password"
           />
         )}
       </Field>
 
-      {guest && (mode === 'create' || offerCreate) && (
-        <Alert tone="warn">
-          As a guest, you won't be able to rename this room, change its password, delete it or clear
-          its canvas later. Sign in first if you want to manage it.
-        </Alert>
-      )}
       {error && <Alert>{error}</Alert>}
-      {offerCreate && (
-        <Alert tone="info">
-          <div className="flex flex-col gap-2">
-            {wasDeleted ? (
-              <span>
-                <strong>{clean}</strong> was deleted by its owner. Create a new room with this name?
-              </span>
-            ) : (
-              <span>
-                There's no room called <strong>{clean}</strong> yet. Create it with this password?
-              </span>
-            )}
-            <button
-              type="button"
-              className="dv-btn primary self-start"
-              disabled={busy || password.length < 4}
-              onClick={() => run('create')}
-            >
-              <Plus size={14} />
-              Create “{clean}”
-            </button>
-            {password.length < 4 && (
-              <span className="dv-hint">Room passwords need at least 4 characters.</span>
-            )}
-          </div>
-        </Alert>
-      )}
 
       <Submit busy={busy} disabled={!canSubmit}>
-        {mode === 'create' ? 'Create room' : 'Enter room'}
+        Enter room
       </Submit>
 
-      {!lockName && !only && (
-        <p className="dv-sub text-center">
-          {mode === 'join' ? 'Starting something new? ' : 'Have a room already? '}
-          <button
-            type="button"
-            className="dv-link"
-            onClick={() => {
-              const next = mode === 'join' ? 'create' : 'join'
-              setMode(next)
-              setError(null)
-              setOfferCreate(false)
-            }}
-          >
-            {mode === 'join' ? 'Create a room' : 'Join a room'}
-          </button>
-        </p>
-      )}
       {guest && (
         <p
           className="dv-hint text-center"
@@ -655,7 +574,20 @@ type Step = 'choose' | 'account' | 'guest' | 'forgot'
 export const Onboarding: React.FC = () => {
   const { signInAsGuest } = useAuth()
   const [step, setStep] = useState<Step>('choose')
-  const [guestMode, setGuestMode] = useState<'join' | 'create'>('join')
+  const [starting, setStarting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const startRoom = async () => {
+    setStarting(true)
+    setError(null)
+    try {
+      await signInAsGuest()
+      goToRoom((await createQuickRoom()).roomId)
+    } catch (e) {
+      setError(errorText(e))
+      setStarting(false)
+    }
+  }
 
   return (
     <AuthLayout>
@@ -685,14 +617,31 @@ export const Onboarding: React.FC = () => {
                 <DoorOpen size={18} />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="dv-choice-title block">Work in a room as a guest</span>
+                <span className="dv-choice-title block">Join a room as a guest</span>
                 <span className="dv-choice-desc block">
                   Just the room name and password. No account needed.
                 </span>
               </span>
               <ChevronRight size={16} style={{ color: 'var(--dv-muted)' }} />
             </button>
+            <button className="dv-choice" disabled={starting} onClick={startRoom}>
+              <span className="dv-choice-icon">
+                <Plus size={18} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="dv-choice-title block">Start a blank room</span>
+                <span className="dv-choice-desc block">
+                  Jump straight in as a guest. Name it later to keep it and invite people.
+                </span>
+              </span>
+              {starting ? (
+                <span className="dv-spinner" style={{ color: 'var(--dv-muted)' }} />
+              ) : (
+                <ChevronRight size={16} style={{ color: 'var(--dv-muted)' }} />
+              )}
+            </button>
           </div>
+          {error && <Alert>{error}</Alert>}
         </>
       )}
 
@@ -709,17 +658,10 @@ export const Onboarding: React.FC = () => {
         <>
           <BackButton onClick={() => setStep('choose')} />
           <div className="flex flex-col gap-2">
-            <h2>{guestMode === 'create' ? 'Create a room' : 'Enter a room'}</h2>
-            {guestMode === 'join' && (
-              <p className="dv-sub">Ask whoever invited you for the room's name and password.</p>
-            )}
+            <h2>Enter a room</h2>
+            <p className="dv-sub">Ask whoever invited you for the room's name and password.</p>
           </div>
-          <RoomForm
-            guest
-            prepare={signInAsGuest}
-            onModeChange={setGuestMode}
-            onEntered={(room) => goToRoom(room.roomId)}
-          />
+          <RoomForm guest prepare={signInAsGuest} onEntered={(room) => goToRoom(room.roomId)} />
         </>
       )}
     </AuthLayout>
@@ -1350,7 +1292,9 @@ export const RoomsHome: React.FC = () => {
   const { user, profile, needsEmail, signOut } = useAuth()
   const [rooms, setRooms] = useState<RoomSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [panel, setPanel] = useState<'join' | 'create' | null>(null)
+  const [joinOpen, setJoinOpen] = useState(false)
+  const [starting, setStarting] = useState(false)
+  const [startError, setStartError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [settingsId, setSettingsId] = useState<string | null>(null)
   const [passwordRevs, setPasswordRevs] = useState<Record<string, number>>({})
@@ -1464,11 +1408,24 @@ export const RoomsHome: React.FC = () => {
                 />
               </label>
             )}
-            <button className="dv-btn" onClick={() => setPanel('create')}>
-              <Plus size={14} />
+            <button
+              className="dv-btn"
+              disabled={starting}
+              onClick={async () => {
+                setStarting(true)
+                setStartError(null)
+                try {
+                  goToRoom((await createQuickRoom()).roomId)
+                } catch (e) {
+                  setStartError(errorText(e))
+                  setStarting(false)
+                }
+              }}
+            >
+              {starting ? <span className="dv-spinner" /> : <Plus size={14} />}
               New room
             </button>
-            <button className="dv-btn primary" onClick={() => setPanel('join')}>
+            <button className="dv-btn primary" onClick={() => setJoinOpen(true)}>
               <DoorOpen size={14} />
               Join room
             </button>
@@ -1476,6 +1433,7 @@ export const RoomsHome: React.FC = () => {
         </div>
 
         {error && <Alert>{error}</Alert>}
+        {startError && <Alert>{startError}</Alert>}
 
         {!error && (shown === null || shown.length > 0) && (
           <div className="dv-room-grid">
@@ -1514,12 +1472,9 @@ export const RoomsHome: React.FC = () => {
         )}
       </main>
 
-      {panel && (
-        <Modal
-          title={panel === 'join' ? 'Join a room' : 'Create a room'}
-          onClose={() => setPanel(null)}
-        >
-          <RoomForm key={panel} only={panel} onEntered={(room) => goToRoom(room.roomId)} />
+      {joinOpen && (
+        <Modal title="Join a room" onClose={() => setJoinOpen(false)}>
+          <RoomForm onEntered={(room) => goToRoom(room.roomId)} />
         </Modal>
       )}
 

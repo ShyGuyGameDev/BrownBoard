@@ -29,9 +29,11 @@ import {
   type RoomSession,
   changeRoomPassword,
   deleteRoom,
+  discardRoom,
   enterRoom,
   renameRoom,
   roomInviteInfo,
+  saveRoom,
   setFlash,
   setGuestAccess,
 } from './lib/rooms.ts'
@@ -43,18 +45,30 @@ import {
   Onboarding,
   RoomsHome,
 } from './onboarding.tsx'
-import { type RoomSettingsActions, RoomSettingsForm } from './room-settings.tsx'
+import { type RoomSettingsActions, RoomSettingsForm, SaveRoomForm } from './room-settings.tsx'
 
 type Page = 'board' | 'canvas'
 
 const isMac = /Mac/i.test(navigator.platform)
+
+const UNSAVED_WARNING = "This room has no name, so it won't be saved."
+
+/** Names an unnamed room and sets its password. Its creator is the only one in it, so no broadcast. */
+const useSaveRoom = () => {
+  const { roomId, setRoomName, setUnnamed } = useRoom()
+  return async (name: string, password: string) => {
+    setRoomName(await saveRoom(roomId, name, password))
+    setUnnamed(false)
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* Share popover                                                       */
 /* ------------------------------------------------------------------ */
 
 const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { roomId, roomName, me } = useRoom()
+  const { roomId, roomName, me, unnamed, isOwner } = useRoom()
+  const save = useSaveRoom()
   const [copied, setCopied] = useState(false)
   const link = buildShareLink(roomId)
 
@@ -67,6 +81,23 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       toast('Could not copy. Select the link and copy it manually.')
     }
   }
+
+  // People join with the name and password, so an unnamed room gets both before its link.
+  if (unnamed)
+    return (
+      <>
+        <div className="fixed inset-0 z-40" onPointerDown={onClose} />
+        <div className="dv-floating dv-no-drag absolute right-0 top-full z-50 mt-2 flex w-[340px] flex-col gap-4 p-4">
+          <div className="flex flex-col gap-1">
+            <span className="text-[13px] font-semibold">Name this room to invite people</span>
+            <p className="m-0 text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
+              Give it a name and password first. {UNSAVED_WARNING}
+            </p>
+          </div>
+          <SaveRoomForm save={save} submitLabel="Save and get link" guest={!isOwner} />
+        </div>
+      </>
+    )
 
   return (
     <>
@@ -117,7 +148,9 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 /* ------------------------------------------------------------------ */
 
 const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { roomId, roomName, setRoomName, allowGuests, setAllowGuests, send } = useRoom()
+  const { roomId, roomName, setRoomName, allowGuests, setAllowGuests, send, unnamed, isOwner } =
+    useRoom()
+  const save = useSaveRoom()
 
   // Inside the room we already have its live channel, so just broadcast on it.
   const actions: RoomSettingsActions = {
@@ -141,6 +174,29 @@ const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => 
     },
   }
 
+  if (unnamed)
+    return (
+      <>
+        <div className="fixed inset-0 z-40" onPointerDown={onClose} />
+        <div className="dv-floating dv-no-drag absolute right-0 top-full z-50 mt-2 flex w-[340px] flex-col gap-4 p-4">
+          <div className="flex flex-col gap-1">
+            <span className="text-[13px] font-semibold">Save this room</span>
+            <p className="m-0 text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
+              {UNSAVED_WARNING} Give it a name and password to keep it and invite people.
+            </p>
+          </div>
+          <SaveRoomForm
+            guest={!isOwner}
+            save={async (name, password) => {
+              await save(name, password)
+              toast('Room saved.')
+              onClose()
+            }}
+          />
+        </div>
+      </>
+    )
+
   return (
     <>
       <div className="fixed inset-0 z-40" onPointerDown={onClose} />
@@ -162,7 +218,7 @@ const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => 
 /* ------------------------------------------------------------------ */
 
 const Shell: React.FC = () => {
-  const { roomId, roomName, isOwner, setRoomName, setAllowGuests, peers, status, me, on } =
+  const { roomId, roomName, isOwner, setRoomName, setAllowGuests, unnamed, peers, status, me, on } =
     useRoom()
   const { isGuest, signOut } = useAuth()
   // Every visit to a room starts on the board (Shell remounts per room, so this resets on entry).
@@ -196,6 +252,27 @@ const Shell: React.FC = () => {
   }, [on, setRoomName, setAllowGuests, roomName, isGuest, signOut])
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
+
+  // Closing or reloading the tab with an unnamed room: the browser's "leave site?" prompt.
+  useEffect(() => {
+    if (!unnamed) return
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = UNSAVED_WARNING
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [unnamed])
+
+  /** Back to the rooms page (or, for guests, out). An unnamed room is confirmed, then discarded. */
+  const leave = async () => {
+    if (unnamed) {
+      if (!window.confirm(`${UNSAVED_WARNING} Leave and discard it?`)) return
+      await discardRoom(roomId)
+    }
+    if (isGuest) await signOut()
+    goHome()
+  }
 
   const go = useCallback((p: Page) => setPage(p), [])
 
@@ -264,16 +341,12 @@ const Shell: React.FC = () => {
       >
         <div className="flex min-w-0 items-center gap-2">
           {isGuest ? (
-            <button
-              className="dv-btn ghost dv-no-drag"
-              title="Leave this room"
-              onClick={() => signOut().then(goHome)}
-            >
+            <button className="dv-btn ghost dv-no-drag" title="Leave this room" onClick={leave}>
               <LogOut size={14} />
               Leave
             </button>
           ) : (
-            <button className="dv-iconbtn dv-no-drag" title="All rooms" onClick={goHome}>
+            <button className="dv-iconbtn dv-no-drag" title="All rooms" onClick={leave}>
               <ArrowLeft size={16} />
             </button>
           )}
@@ -289,6 +362,16 @@ const Shell: React.FC = () => {
           >
             {roomName}
           </span>
+          {unnamed && (
+            <button
+              className="dv-btn ghost dv-no-drag shrink-0 text-xs"
+              style={{ color: 'var(--dv-warning)' }}
+              title={`${UNSAVED_WARNING} Name it to keep it.`}
+              onClick={() => setSettingsOpen(true)}
+            >
+              Not saved
+            </button>
+          )}
         </div>
 
         <div className="dv-seg dv-no-drag ml-2" role="tablist">
@@ -371,7 +454,7 @@ const Shell: React.FC = () => {
             )}
           </div>
 
-          {isOwner && (
+          {(isOwner || unnamed) && (
             <div className="relative">
               <button
                 className="dv-iconbtn"
@@ -474,6 +557,7 @@ const RoomGate: React.FC<{ roomId: string; userId: string }> = ({ roomId, userId
       userId={userId}
       isOwner={gate.room.isOwner}
       allowGuests={gate.room.allowGuests}
+      unnamed={gate.room.unnamed}
     >
       <Shell />
     </RoomProvider>

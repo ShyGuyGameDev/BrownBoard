@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, dialog, Menu, nativeTheme, shell } from 'electron'
 import path from 'path'
 
 // __dirname is available in CommonJS output.
@@ -57,6 +57,20 @@ function createWindow() {
       joinRoom(pendingRoom)
       pendingRoom = null
     }
+  })
+
+  // The page blocks closing while its room is unnamed (beforeunload). Electron would just
+  // ignore the close, so ask here instead, like a browser's "leave site?" prompt.
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(mainWindow!, {
+      type: 'warning',
+      buttons: ['Leave', 'Stay'],
+      defaultId: 1,
+      cancelId: 1,
+      message: "This room has no name, so it won't be saved.",
+      detail: 'Name it from Room settings to keep it.',
+    })
+    if (choice === 0) event.preventDefault()
   })
 
   // Links inside the app (e.g. in task descriptions) open in the real browser.

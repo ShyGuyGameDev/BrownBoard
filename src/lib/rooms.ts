@@ -11,6 +11,8 @@ export interface RoomSession {
   isOwner: boolean
   /** Whether people without an account can join. On by default; the owner can turn it off. */
   allowGuests: boolean
+  /** Started without a name or password: nobody else can join, and it's discarded on leaving. */
+  unnamed: boolean
 }
 
 export interface RoomSummary {
@@ -76,6 +78,7 @@ async function call(fn: string, args: Record<string, string>): Promise<RoomSessi
     displayName: data.display_name,
     isOwner: !!data.is_owner,
     allowGuests: data.allow_guests ?? true,
+    unnamed: !!data.unnamed,
   }
 }
 
@@ -89,6 +92,19 @@ export const joinRoom = (name: string, password: string, roomId?: string) =>
 
 export const createRoom = (name: string, password: string) =>
   call('create_room', { p_name: cleanRoomName(name), p_password: password })
+
+/** A room with no name or password yet, to get going right away. Name it with saveRoom. */
+export const createQuickRoom = () => call('create_quick_room', {})
+
+/** Names an unnamed room and sets its password, so it's kept and others can join. */
+export const saveRoom = async (roomId: string, name: string, password: string): Promise<string> =>
+  (
+    await rpc('save_room', {
+      p_room_id: roomId,
+      p_name: cleanRoomName(name),
+      p_password: password,
+    })
+  ).room_name
 
 /** Re-enter a room you're already a member of. */
 export const enterRoom = (roomId: string) => call('enter_room', { p_room_id: roomId })
@@ -174,15 +190,29 @@ export const clearCanvas = async (roomId: string) => {
   await rpc('clear_canvas', { p_room_id: roomId })
 }
 
-/** Removes the room's uploaded images (best effort), then the room and everything in it. */
-export async function deleteRoom(roomId: string) {
+async function removeRoomImages(roomId: string) {
   const bucket = supabase.storage.from('board-assets')
   for (const folder of [roomId, `${roomId}/tasks`]) {
     const { data } = await bucket.list(folder, { limit: 1000 })
     const files = (data ?? []).filter((f) => f.id).map((f) => `${folder}/${f.name}`)
     if (files.length) await bucket.remove(files)
   }
+}
+
+/** Removes the room's uploaded images (best effort), then the room and everything in it. */
+export async function deleteRoom(roomId: string) {
+  await removeRoomImages(roomId)
   await rpc('delete_room', { p_room_id: roomId })
+}
+
+/** Throws away an unnamed room (its creator only). Best effort: leftovers are pruned later. */
+export async function discardRoom(roomId: string) {
+  try {
+    await removeRoomImages(roomId)
+    await rpc('discard_room', { p_room_id: roomId })
+  } catch {
+    /* pruned the next time they start a room, or after a day */
+  }
 }
 
 export interface InviteInfo {
@@ -199,16 +229,23 @@ export async function roomInviteInfo(roomId: string): Promise<InviteInfo> {
 export async function myRooms(userId: string): Promise<RoomSummary[]> {
   const { data, error } = await supabase
     .from('room_members')
-    .select('room_id,last_active_at,rooms(name,created_by,last_edited_at,allow_guests)')
+    .select('room_id,last_active_at,rooms(name,created_by,last_edited_at,allow_guests,unnamed)')
     .eq('user_id', userId)
     .order('last_active_at', { ascending: false })
   if (error) throw new Error(error.message)
-  return (data ?? []).map((r: any) => ({
-    roomId: r.room_id,
-    roomName: r.rooms?.name ?? r.room_id,
-    lastActiveAt: r.last_active_at,
-    lastEditedAt: r.rooms?.last_edited_at ?? r.last_active_at,
-    isOwner: r.rooms?.created_by === userId,
-    allowGuests: r.rooms?.allow_guests ?? true,
-  }))
+  // Unnamed rooms aren't kept, so they don't show up in the list.
+  return (data ?? []).flatMap((r: any) =>
+    r.rooms?.unnamed
+      ? []
+      : [
+          {
+            roomId: r.room_id,
+            roomName: r.rooms?.name ?? r.room_id,
+            lastActiveAt: r.last_active_at,
+            lastEditedAt: r.rooms?.last_edited_at ?? r.last_active_at,
+            isOwner: r.rooms?.created_by === userId,
+            allowGuests: r.rooms?.allow_guests ?? true,
+          },
+        ],
+  )
 }

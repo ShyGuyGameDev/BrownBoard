@@ -12,6 +12,74 @@ export interface RoomSettingsActions {
 }
 
 /**
+ * Name and password for an unnamed room, set together: that's what saves it and lets others in.
+ * Shown in the room's settings and before sharing it.
+ */
+export const SaveRoomForm: React.FC<{
+  save: (name: string, password: string) => Promise<void>
+  submitLabel?: string
+  /** Guests can save a room but can't manage it afterwards. */
+  guest?: boolean
+}> = ({ save, submitLabel = 'Save room', guest }) => {
+  const [name, setName] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const canSave = name.trim().length >= 2 && password.length >= 4
+
+  return (
+    <form
+      className="flex flex-col gap-2"
+      onSubmit={async (e) => {
+        e.preventDefault()
+        if (!canSave) return
+        setBusy(true)
+        setError(null)
+        try {
+          await save(name, password)
+        } catch (err) {
+          setError(errorText(err))
+          setBusy(false)
+        }
+      }}
+    >
+      <span className="dv-label">Name</span>
+      <input
+        className="dv-input"
+        value={name}
+        maxLength={48}
+        autoFocus
+        autoComplete="off"
+        placeholder="e.g. Design sprint"
+        onChange={(e) => setName(e.target.value)}
+      />
+      <span className="dv-label mt-1">Password</span>
+      <input
+        className="dv-input"
+        type="password"
+        autoComplete="new-password"
+        placeholder="At least 4 characters"
+        maxLength={72}
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+      <p className="m-0 text-[11px] leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
+        People join with the name and password.
+        {guest && " As a guest, you won't be able to change them or delete the room later."}
+      </p>
+      {error && (
+        <p className="m-0 text-xs" role="alert" style={{ color: 'var(--dv-danger)' }}>
+          {error}
+        </p>
+      )}
+      <button className="dv-btn primary self-start" disabled={!canSave || busy}>
+        {busy ? <span className="dv-spinner" /> : submitLabel}
+      </button>
+    </form>
+  )
+}
+
+/**
  * Owner-only room settings: rename, change password, delete. Used in the room header popover
  * and on the rooms page, which supply their own actions (each tells people in the room).
  */
