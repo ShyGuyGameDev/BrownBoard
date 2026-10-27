@@ -106,9 +106,8 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         <div className="flex flex-col gap-2">
           <span className="text-[13px] font-semibold">Invite your team</span>
           <p className="text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
-            Send this link along with the room password. Or they can enter the room name,{' '}
-            <strong style={{ color: 'var(--dv-text)' }}>{roomName}</strong>, and the password from
-            the start screen.
+            Send this link along with the room password. It's the only way into{' '}
+            <strong style={{ color: 'var(--dv-text)' }}>{roomName}</strong>.
           </p>
           <div className="flex gap-2">
             <input

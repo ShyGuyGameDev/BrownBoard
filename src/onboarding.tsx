@@ -214,17 +214,15 @@ const errorText = (e: unknown) =>
 /* Room form (guests and signed-in users)                              */
 /* ------------------------------------------------------------------ */
 
-/** Join a room by name + password. */
+/** Join the room a share link points to, with its password. */
 export const RoomForm: React.FC<{
   initialName?: string
   lockName?: boolean
-  /** Join this exact room (invite links), since several rooms can share a name. */
-  roomId?: string
-  /** Runs before any RPC (guests use it to start an anonymous session). */
-  prepare?: () => Promise<void>
+  /** The room from the share link: the only way to join one. */
+  roomId: string
   onEntered: (room: RoomSession) => void
   guest?: boolean
-}> = ({ initialName = '', lockName, roomId, prepare, onEntered, guest }) => {
+}> = ({ initialName = '', lockName, roomId, onEntered, guest }) => {
   const [name, setName] = useState(initialName)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
@@ -236,7 +234,6 @@ export const RoomForm: React.FC<{
     setBusy(true)
     setError(null)
     try {
-      await prepare?.()
       onEntered(await joinRoom(name, password, roomId))
     } catch (e) {
       setError(errorText(e))
@@ -568,7 +565,7 @@ const ForgotForm: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 /* Onboarding                                                          */
 /* ------------------------------------------------------------------ */
 
-type Step = 'choose' | 'account' | 'guest' | 'forgot'
+type Step = 'choose' | 'account' | 'forgot'
 
 /** First screen for anyone without an account session (opened without a room link). */
 export const Onboarding: React.FC = () => {
@@ -612,18 +609,6 @@ export const Onboarding: React.FC = () => {
               </span>
               <ChevronRight size={16} style={{ color: 'var(--dv-muted)' }} />
             </button>
-            <button className="dv-choice" onClick={() => setStep('guest')}>
-              <span className="dv-choice-icon">
-                <DoorOpen size={18} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="dv-choice-title block">Join a room as a guest</span>
-                <span className="dv-choice-desc block">
-                  Just the room name and password. No account needed.
-                </span>
-              </span>
-              <ChevronRight size={16} style={{ color: 'var(--dv-muted)' }} />
-            </button>
             <button className="dv-choice" disabled={starting} onClick={startRoom}>
               <span className="dv-choice-icon">
                 <Plus size={18} />
@@ -653,17 +638,6 @@ export const Onboarding: React.FC = () => {
       )}
 
       {step === 'forgot' && <ForgotForm onBack={() => setStep('account')} />}
-
-      {step === 'guest' && (
-        <>
-          <BackButton onClick={() => setStep('choose')} />
-          <div className="flex flex-col gap-2">
-            <h2>Enter a room</h2>
-            <p className="dv-sub">Ask whoever invited you for the room's name and password.</p>
-          </div>
-          <RoomForm guest prepare={signInAsGuest} onEntered={(room) => goToRoom(room.roomId)} />
-        </>
-      )}
     </AuthLayout>
   )
 }
@@ -1292,7 +1266,6 @@ export const RoomsHome: React.FC = () => {
   const { user, profile, needsEmail, signOut } = useAuth()
   const [rooms, setRooms] = useState<RoomSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [joinOpen, setJoinOpen] = useState(false)
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
@@ -1409,7 +1382,7 @@ export const RoomsHome: React.FC = () => {
               </label>
             )}
             <button
-              className="dv-btn"
+              className="dv-btn primary"
               disabled={starting}
               onClick={async () => {
                 setStarting(true)
@@ -1424,10 +1397,6 @@ export const RoomsHome: React.FC = () => {
             >
               {starting ? <span className="dv-spinner" /> : <Plus size={14} />}
               New room
-            </button>
-            <button className="dv-btn primary" onClick={() => setJoinOpen(true)}>
-              <DoorOpen size={14} />
-              Join room
             </button>
           </div>
         </div>
@@ -1465,18 +1434,12 @@ export const RoomsHome: React.FC = () => {
             </span>
             <span className="text-[15px] font-semibold">No rooms yet</span>
             <p className="dv-sub max-w-[360px]">
-              Rooms you join or create will show up here. Use <strong>Join room</strong> for one
-              someone shared with you, or <strong>New room</strong> to start your own.
+              Rooms you join or create will show up here. Open a link someone shared with you, or
+              use <strong>New room</strong> to start your own.
             </p>
           </div>
         )}
       </main>
-
-      {joinOpen && (
-        <Modal title="Join a room" onClose={() => setJoinOpen(false)}>
-          <RoomForm onEntered={(room) => goToRoom(room.roomId)} />
-        </Modal>
-      )}
 
       {settingsRoom && (
         <Modal title="Room settings" onClose={() => setSettingsId(null)}>
