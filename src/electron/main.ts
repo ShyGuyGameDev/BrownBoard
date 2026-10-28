@@ -59,7 +59,7 @@ function createWindow() {
     }
   })
 
-  // The page blocks closing while its room is unnamed (beforeunload). Electron would just
+  // The page blocks closing while a guest's room is untitled (beforeunload). Electron would just
   // ignore the close, so ask here instead, like a browser's "leave site?" prompt.
   mainWindow.webContents.on('will-prevent-unload', (event) => {
     const choice = dialog.showMessageBoxSync(mainWindow!, {
@@ -68,7 +68,7 @@ function createWindow() {
       defaultId: 1,
       cancelId: 1,
       message: "This room has no name, so it won't be saved.",
-      detail: 'Name it from Room settings to keep it.',
+      detail: 'Sign in to keep it.',
     })
     if (choice === 0) event.preventDefault()
   })

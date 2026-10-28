@@ -48,6 +48,7 @@ import {
 } from './lib/rooms.ts'
 import { useTheme } from './lib/theme.ts'
 import {
+  InlineEdit,
   InviteScreen,
   JoinRoomScreen,
   NewPasswordScreen,
@@ -62,6 +63,7 @@ type Page = 'board' | 'canvas'
 
 const isMac = /Mac/i.test(navigator.platform)
 
+/** A guest's untitled room isn't kept (an account's is, as "Untitled room <n>"). */
 const UNSAVED_WARNING = "This room has no name, so it won't be saved."
 
 /** Names an unnamed room. Its creator is the only one in it, so no broadcast. */
@@ -102,10 +104,10 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           <div className="flex flex-col gap-1">
             <span className="text-[13px] font-semibold">Name this room to invite people</span>
             <p className="m-0 text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
-              Give it a name first. {UNSAVED_WARNING}
+              Give it a name first, so people know what they're joining.
             </p>
           </div>
-          <SaveRoomForm save={save} submitLabel="Save and get link" />
+          <SaveRoomForm save={save} submitLabel="Name it and get link" />
         </div>
       </>
     )
@@ -203,15 +205,15 @@ const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => 
         <div className="fixed inset-0 z-40" onPointerDown={onClose} />
         <div className="dv-floating dv-no-drag absolute right-0 top-full z-50 mt-2 flex w-[340px] flex-col gap-4 p-4">
           <div className="flex flex-col gap-1">
-            <span className="text-[13px] font-semibold">Save this room</span>
+            <span className="text-[13px] font-semibold">Name this room</span>
             <p className="m-0 text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
-              {UNSAVED_WARNING} Give it a name to keep it and invite people.
+              It needs a name before you can invite people.
             </p>
           </div>
           <SaveRoomForm
             save={async (name) => {
               await save(name)
-              toast('Room saved.')
+              toast('Room named.')
               onClose()
             }}
           />
@@ -254,6 +256,7 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
     status,
     me,
     on,
+    send,
   } = useRoom()
   const { isGuest, signOut } = useAuth()
   // Every visit to a room starts on the board (Shell remounts per room, so this resets on entry).
@@ -262,6 +265,20 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
   const [shareOpen, setShareOpen] = useState(openOnEnter === 'share')
   const [settingsOpen, setSettingsOpen] = useState(openOnEnter === 'settings')
   const [signIn, setSignIn] = useState<SignInReason | null>(null)
+  const [renaming, setRenaming] = useState(false)
+  const save = useSaveRoom()
+
+  /** Owner renaming from the header. An unnamed room is named (saved) instead. */
+  const rename = async (name: string) => {
+    if (unnamed) {
+      await save(name)
+      toast('Room named.')
+      return
+    }
+    const saved = await renameRoom(roomId, name)
+    setRoomName(saved)
+    send('room:renamed', { name: saved })
+  }
   // A guest's own room needs an account before it can be shared or saved.
   const mustSignIn = isGuest && isCreator && !hasOwner
 
@@ -297,9 +314,11 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
 
-  // Closing or reloading the tab with an unnamed room: the browser's "leave site?" prompt.
+  // A guest's untitled room isn't kept: closing or reloading the tab gets the browser's
+  // "leave site?" prompt.
+  const temporary = unnamed && isGuest
   useEffect(() => {
-    if (!unnamed) return
+    if (!temporary) return
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (leavingToSignIn) return // Google sign-in; they come straight back
       e.preventDefault()
@@ -307,11 +326,11 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [unnamed])
+  }, [temporary])
 
-  /** Back to the rooms page (or, for guests, out). An unnamed room is confirmed, then discarded. */
+  /** Back to the rooms page (or, for guests, out). A guest's untitled room is confirmed, then discarded. */
   const leave = async () => {
-    if (unnamed) {
+    if (temporary) {
       if (!window.confirm(`${UNSAVED_WARNING} Leave and discard it?`)) return
       await discardRoom(roomId)
     }
@@ -401,17 +420,43 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
           >
             d
           </div>
-          <span
-            className="max-w-[220px] truncate text-[14px] font-semibold tracking-tight"
-            title={`Room id: ${roomId}`}
-          >
-            {roomName}
-          </span>
-          {unnamed && (
+          {renaming ? (
+            <div className="dv-header-rename dv-no-drag">
+              <InlineEdit
+                initial={unnamed ? '' : roomName}
+                label="Room name"
+                placeholder="Name this room"
+                minLength={2}
+                maxLength={48}
+                saveOnBlur
+                onSave={async (name) => {
+                  await rename(name)
+                  setRenaming(false)
+                }}
+                onCancel={() => setRenaming(false)}
+              />
+            </div>
+          ) : isOwner ? (
+            <span
+              className="dv-header-name editable dv-no-drag max-w-[220px] truncate text-[14px] font-semibold tracking-tight"
+              title="Double-click to rename"
+              onDoubleClick={() => setRenaming(true)}
+            >
+              {roomName}
+            </span>
+          ) : (
+            <span
+              className="max-w-[220px] truncate text-[14px] font-semibold tracking-tight"
+              title={`Room id: ${roomId}`}
+            >
+              {roomName}
+            </span>
+          )}
+          {temporary && (
             <button
               className="dv-btn ghost dv-no-drag shrink-0 text-xs"
               style={{ color: 'var(--dv-warning)' }}
-              title={`${UNSAVED_WARNING} Name it to keep it.`}
+              title={`${UNSAVED_WARNING} Sign in to keep it.`}
               onClick={openSettings}
             >
               Not saved

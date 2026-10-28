@@ -32,6 +32,7 @@ import {
   actAndNotify,
   deleteRoom,
   renameRoom,
+  saveRoom,
   setGuestAccess,
 } from './lib/rooms'
 import { type RoomSettingsActions, RoomSettingsForm } from './room-settings'
@@ -852,7 +853,7 @@ const fullDate = (iso: string) =>
  * Text field that edits in place: Enter saves, Escape cancels. Blur saves when `saveOnBlur`,
  * otherwise cancels, so clicking away never changes anything by accident.
  */
-const InlineEdit: React.FC<{
+export const InlineEdit: React.FC<{
   initial: string
   label: string
   placeholder?: string
@@ -1137,18 +1138,21 @@ export const RoomsHome: React.FC = () => {
 
   // From here we're not in the room, so each action briefly joins its channel to tell members.
   const settingsActions = (room: RoomSummary): RoomSettingsActions => ({
+    // An untitled room is named instead. Only its owner is in it, so there's nobody to tell.
     rename: async (newName) => {
-      const saved = await actAndNotify(
-        room.roomId,
-        () => renameRoom(room.roomId, newName),
-        'room:renamed',
-        (n) => ({ name: n }),
-      )
+      const saved = room.unnamed
+        ? await saveRoom(room.roomId, newName)
+        : await actAndNotify(
+            room.roomId,
+            () => renameRoom(room.roomId, newName),
+            'room:renamed',
+            (n) => ({ name: n }),
+          )
       setRooms(
         (rs) =>
           rs?.map((r) =>
             r.roomId === room.roomId
-              ? { ...r, roomName: saved, lastEditedAt: new Date().toISOString() }
+              ? { ...r, roomName: saved, unnamed: false, lastEditedAt: new Date().toISOString() }
               : r,
           ) ?? rs,
       )

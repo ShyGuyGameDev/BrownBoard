@@ -17,7 +17,7 @@ export interface RoomSettingsActions {
 export const SaveRoomForm: React.FC<{
   save: (name: string) => Promise<void>
   submitLabel?: string
-}> = ({ save, submitLabel = 'Save room' }) => {
+}> = ({ save, submitLabel = 'Save name' }) => {
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)

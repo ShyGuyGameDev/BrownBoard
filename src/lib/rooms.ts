@@ -11,7 +11,10 @@ export interface RoomSession {
   isOwner: boolean
   /** Whether people without an account can join. On by default; the owner can turn it off. */
   allowGuests: boolean
-  /** Started without a name: nobody else can join, and it's discarded on leaving. */
+  /**
+   * Started without a name ("Untitled room 2"): nobody else can join until it's named. Kept for
+   * accounts; a guest's is discarded when they leave.
+   */
   unnamed: boolean
   /** You made it, even as a guest (a guest creator can sign in to claim it). */
   isCreator: boolean
@@ -27,6 +30,8 @@ export interface RoomSummary {
   lastEditedAt: string
   isOwner: boolean
   allowGuests: boolean
+  /** Untitled: renaming it names it (saveRoom) instead. */
+  unnamed: boolean
 }
 
 export type RoomError =
@@ -192,7 +197,7 @@ export async function deleteRoom(roomId: string) {
   await rpc('delete_room', { p_room_id: roomId })
 }
 
-/** Throws away an unnamed room (its creator only). Best effort: leftovers are pruned later. */
+/** Throws away a guest's untitled room as they leave. Best effort: leftovers are pruned later. */
 export async function discardRoom(roomId: string) {
   try {
     await removeRoomImages(roomId)
@@ -220,19 +225,13 @@ export async function myRooms(userId: string): Promise<RoomSummary[]> {
     .eq('user_id', userId)
     .order('last_active_at', { ascending: false })
   if (error) throw new Error(error.message)
-  // Unnamed rooms aren't kept, so they don't show up in the list.
-  return (data ?? []).flatMap((r: any) =>
-    r.rooms?.unnamed
-      ? []
-      : [
-          {
-            roomId: r.room_id,
-            roomName: r.rooms?.name ?? r.room_id,
-            lastActiveAt: r.last_active_at,
-            lastEditedAt: r.rooms?.last_edited_at ?? r.last_active_at,
-            isOwner: r.rooms?.created_by === userId,
-            allowGuests: r.rooms?.allow_guests ?? true,
-          },
-        ],
-  )
+  return (data ?? []).map((r: any) => ({
+    roomId: r.room_id,
+    roomName: r.rooms?.name ?? r.room_id,
+    lastActiveAt: r.last_active_at,
+    lastEditedAt: r.rooms?.last_edited_at ?? r.last_active_at,
+    isOwner: r.rooms?.created_by === userId,
+    allowGuests: r.rooms?.allow_guests ?? true,
+    unnamed: !!r.rooms?.unnamed,
+  }))
 }

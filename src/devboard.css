@@ -875,6 +875,27 @@ textarea.dv-input {
   color: var(--dv-danger);
   font-size: var(--dv-text-xs);
 }
+/* Room name in the room header: owners double-click it to rename. */
+.dv-header-name.editable {
+  margin: 0 -6px;
+  padding: 2px 6px;
+  cursor: text;
+  border-radius: var(--dv-radius-sm);
+}
+.dv-header-name.editable:hover {
+  background: var(--dv-panel-2);
+}
+.dv-header-rename {
+  position: relative;
+  width: 220px;
+}
+/* The header is one row tall, so the error floats under the field. */
+.dv-header-rename .dv-inline-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  white-space: nowrap;
+}
 
 .dv-iconbtn.sm {
   width: 26px;
