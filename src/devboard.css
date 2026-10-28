@@ -334,6 +334,43 @@ textarea.dv-input {
 .dv-avatar:focus-visible {
   z-index: 1;
 }
+/* Picture or initials. Not clipped, so the hover tooltip on .dv-avatar can show. */
+.dv-avatar-circle {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  color: #fff;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+}
+.dv-avatar-circle img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+/* Your own avatar (and name) as a button that opens your profile. */
+.dv-me-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px 2px 2px;
+  border-radius: 9999px;
+  color: var(--dv-text);
+  font-size: var(--dv-text-sm);
+  transition: background var(--dv-dur-fast);
+}
+.dv-me-btn:hover,
+.dv-me-btn:focus-visible {
+  background: var(--dv-panel-2);
+}
+.dv-me-btn.compact {
+  padding: 0;
+}
 .dv-avatar[data-tip]::after {
   content: attr(data-tip);
   position: absolute;

@@ -14,6 +14,8 @@ export interface Peer {
   id: string
   name: string
   color: string
+  /** Profile picture URL, for accounts that set one. */
+  avatar?: string | null
 }
 
 export type RoomStatus = 'connecting' | 'live' | 'offline'
@@ -129,6 +131,7 @@ interface RoomProviderProps {
   roomName: string
   /** Username for accounts, "Anonymous <Animal>" for guests. Assigned by the server on join. */
   displayName: string
+  avatar?: string | null
   userId: string
   isOwner: boolean
   allowGuests: boolean
@@ -142,6 +145,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   roomId,
   roomName: initialRoomName,
   displayName,
+  avatar,
   userId,
   isOwner,
   allowGuests: initialAllowGuests,
@@ -156,8 +160,13 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   // Presence is per tab (so two tabs don't fight over one cursor); colour follows the person.
   const idRef = useRef(crypto.randomUUID())
   const me = useMemo<Peer>(
-    () => ({ id: idRef.current, name: displayName, color: colorFor(userId) }),
-    [displayName, userId],
+    () => ({
+      id: idRef.current,
+      name: displayName,
+      color: colorFor(userId),
+      avatar: avatar ?? null,
+    }),
+    [displayName, avatar, userId],
   )
   const meRef = useRef(me)
   meRef.current = me
@@ -190,7 +199,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
           .flat()
           .forEach((p) => {
             if (p.id && p.id !== idRef.current)
-              seen.set(p.id, { id: p.id, name: p.name, color: p.color })
+              seen.set(p.id, { id: p.id, name: p.name, color: p.color, avatar: p.avatar ?? null })
           })
         setPeers([...seen.values()])
       })
@@ -216,7 +225,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
     }
   }, [roomId])
 
-  // Re-announce when the display name changes.
+  // Re-announce when the display name or picture changes.
   useEffect(() => {
     if (statusRef.current === 'live') channelRef.current?.track(me)
   }, [me])

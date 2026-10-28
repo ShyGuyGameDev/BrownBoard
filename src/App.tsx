@@ -20,7 +20,6 @@ import {
   getRoomIdFromLocation,
   goHome,
   goToRoom,
-  initials,
   takeReturnRoom,
   useRoom,
 } from './lib/room.tsx'
@@ -47,12 +46,14 @@ import {
   setGuestAccess,
 } from './lib/rooms.ts'
 import { useTheme } from './lib/theme.ts'
+import { Avatar } from './avatar.tsx'
 import {
   InlineEdit,
   InviteScreen,
   JoinRoomScreen,
   NewPasswordScreen,
   Onboarding,
+  ProfileSettings,
   RoomsHome,
   type SignInReason,
   SignInPanel,
@@ -266,6 +267,7 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
   const [settingsOpen, setSettingsOpen] = useState(openOnEnter === 'settings')
   const [signIn, setSignIn] = useState<SignInReason | null>(null)
   const [renaming, setRenaming] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
   const save = useSaveRoom()
 
   /** Owner renaming from the header. An unnamed room is named (saved) instead. */
@@ -500,26 +502,34 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
           </div>
 
           <div className="flex items-center">
-            <div
-              className="dv-avatar -ml-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 text-[10px] font-bold text-white first:ml-0"
-              style={{ background: me.color, borderColor: 'var(--dv-panel)' }}
-              data-tip={`${me.name} (you)`}
-              aria-label={`${me.name} (you)`}
-              tabIndex={0}
+            {/* You: opens your profile (guests: sign in, since a guest has no profile). */}
+            <button
+              type="button"
+              className="dv-avatar dv-me-btn compact"
+              data-tip={isGuest ? `${me.name} (you) · Sign in` : `${me.name} (you) · Your profile`}
+              aria-label={isGuest ? `${me.name} (you). Sign in` : `${me.name} (you). Your profile`}
+              onClick={() => (isGuest ? setSignIn('header') : setProfileOpen(true))}
             >
-              {initials(me.name)}
-            </div>
+              <Avatar
+                name={me.name}
+                color={me.color}
+                src={me.avatar}
+                className="border-2"
+                style={{ borderColor: 'var(--dv-panel)' }}
+              />
+            </button>
             {shown.map((p) => (
-              <div
+              <Avatar
                 key={p.id}
-                className="dv-avatar -ml-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 text-[10px] font-bold text-white"
-                style={{ background: p.color, borderColor: 'var(--dv-panel)' }}
+                name={p.name}
+                color={p.color}
+                src={p.avatar}
+                className="dv-avatar -ml-1.5 border-2"
+                style={{ borderColor: 'var(--dv-panel)' }}
                 data-tip={p.name}
                 aria-label={p.name}
                 tabIndex={0}
-              >
-                {initials(p.name)}
-              </div>
+              />
             ))}
             {peers.length > shown.length && (
               <div
@@ -595,6 +605,8 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
         </div>
       </main>
 
+      {profileOpen && <ProfileSettings onClose={() => setProfileOpen(false)} />}
+
       {signIn && (
         <SignInPanel
           roomId={roomId}
@@ -641,6 +653,8 @@ const RoomGate: React.FC<{ roomId: string; userId: string; isGuest: boolean }> =
   userId,
   isGuest,
 }) => {
+  // Your current name and picture, so editing your profile in the room shows up right away.
+  const { profile } = useAuth()
   const [gate, setGate] = useState<Gate>({ state: 'checking' })
   // Read once per mount: the intent is cleared once used, and effects can run twice in dev.
   const [intent] = useState(() => {
@@ -686,7 +700,8 @@ const RoomGate: React.FC<{ roomId: string; userId: string; isGuest: boolean }> =
       key={roomId}
       roomId={roomId}
       roomName={gate.room.roomName}
-      displayName={gate.room.displayName}
+      displayName={(!isGuest && profile?.username) || gate.room.displayName}
+      avatar={isGuest ? null : profile?.avatar_url}
       userId={userId}
       isOwner={gate.room.isOwner}
       allowGuests={gate.room.allowGuests}

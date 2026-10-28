@@ -3,6 +3,7 @@ import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 import { rememberReturnRoom } from './room'
 import { markLeavingToSignIn, rememberLastAccount } from './sign-in-intent'
+import { removeOldAvatars, uploadAvatar } from './upload'
 
 /**
  * Older username-only accounts are Supabase email accounts with a placeholder address (see the
@@ -33,6 +34,8 @@ export interface Profile {
   id: string
   username: string
   signup_method: 'username' | 'oauth' | 'email'
+  /** Profile picture, or null to show initials. */
+  avatar_url?: string | null
 }
 
 interface AuthContextValue {
@@ -55,6 +58,8 @@ interface AuthContextValue {
   signOut: () => Promise<void>
   updateProfileName: (name: string) => Promise<void>
   updateEmail: (email: string) => Promise<void>
+  /** New profile picture from a file, or null to remove it. */
+  updateAvatar: (file: File | null) => Promise<void>
   sendPasswordReset: (email: string) => Promise<void>
   setNewPassword: (password: string) => Promise<void>
 }
@@ -112,7 +117,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let cancelled = false
     supabase
       .from('profiles')
-      .select('id,username,signup_method')
+      // All columns, so this still works before the avatar_url migration has run.
+      .select('*')
       .eq('id', userId)
       .maybeSingle()
       .then(({ data }) => {
@@ -214,10 +220,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       fail(error.message)
     }
     if (typeof data !== 'string') fail('Could not update your profile name. Try again.')
-    setProfile((current) =>
-      current ? { ...current, username: data } : current,
-    )
+    setProfile((current) => (current ? { ...current, username: data } : current))
   }, [])
+
+  const updateAvatar = useCallback(
+    async (file: File | null) => {
+      if (!userId) fail('Sign in to set a profile picture.')
+      const url = file ? await uploadAvatar(file, userId!) : null
+      const { error } = await supabase.rpc('update_profile_avatar', { p_url: url })
+      if (error) fail(error.message)
+      setProfile((current) => (current ? { ...current, avatar_url: url } : current))
+      removeOldAvatars(userId!, url).catch(() => undefined)
+    },
+    [userId],
+  )
 
   const sendPasswordReset = useCallback(async (email: string) => {
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
@@ -262,6 +278,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       signOut,
       updateProfileName,
       updateEmail,
+      updateAvatar,
       sendPasswordReset,
       setNewPassword,
     }),
@@ -280,6 +297,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       signOut,
       updateProfileName,
       updateEmail,
+      updateAvatar,
       sendPasswordReset,
       setNewPassword,
     ],

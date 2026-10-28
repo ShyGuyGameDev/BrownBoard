@@ -8,6 +8,7 @@ import {
   Eye,
   EyeOff,
   Info,
+  KeyRound,
   LogOut,
   Mail,
   Moon,
@@ -36,7 +37,8 @@ import {
   setGuestAccess,
 } from './lib/rooms'
 import { type RoomSettingsActions, RoomSettingsForm } from './room-settings'
-import { colorFor, goHome, goToRoom, initials } from './lib/room'
+import { colorFor, goHome, goToRoom } from './lib/room'
+import { Avatar } from './avatar'
 import { getLastAccount, setSignInIntent, setStartRoomAfterSignIn } from './lib/sign-in-intent'
 import { useTheme } from './lib/theme'
 
@@ -1055,137 +1057,303 @@ const Modal: React.FC<{ title: string; onClose: () => void; children: React.Reac
   )
 }
 
-const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { user, profile, needsEmail, updateProfileName, updateEmail, setNewPassword } = useAuth()
+type Status = { tone: 'ok' | 'error'; text: string } | null
+
+/** One titled part of the profile dialog, with its own result message. */
+const ProfileSection: React.FC<{
+  title: string
+  status?: Status
+  children: React.ReactNode
+}> = ({ title, status, children }) => (
+  <section
+    className="flex flex-col gap-2 border-t pt-4"
+    style={{ borderColor: 'var(--dv-border)' }}
+  >
+    <h3 className="dv-label m-0">{title}</h3>
+    {children}
+    {status && (
+      <p
+        className="m-0 text-xs"
+        role={status.tone === 'error' ? 'alert' : 'status'}
+        style={{ color: status.tone === 'error' ? 'var(--dv-danger)' : 'var(--dv-success)' }}
+      >
+        {status.text}
+      </p>
+    )}
+  </section>
+)
+
+/**
+ * Your profile: picture, the name others see, and how you sign in. Opened by clicking your
+ * name or picture, on the rooms page or inside a room.
+ */
+export const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const {
+    user,
+    profile,
+    needsEmail,
+    updateProfileName,
+    updateEmail,
+    updateAvatar,
+    setNewPassword,
+    signOut,
+  } = useAuth()
+  const google = user?.app_metadata?.provider === 'google'
+  const currentEmail = needsEmail ? '' : (user?.email ?? '')
   const [name, setName] = useState(profile?.username ?? '')
-  const [email, setEmail] = useState(needsEmail ? '' : (user?.email ?? ''))
+  const [email, setEmail] = useState(currentEmail)
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
-  const [busy, setBusy] = useState<'name' | 'email' | 'password' | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [changingPassword, setChangingPassword] = useState(false)
+  const [busy, setBusy] = useState<'picture' | 'name' | 'email' | 'password' | null>(null)
+  const [status, setStatus] = useState<Record<string, Status>>({})
+  const fileInput = useRef<HTMLInputElement>(null)
 
-  const submit = async (
-    section: 'name' | 'email' | 'password',
-    action: () => Promise<void>,
-    success: string,
+  const run = async (
+    section: 'picture' | 'name' | 'email' | 'password',
+    action: () => Promise<string>,
   ) => {
     setBusy(section)
-    setError(null)
-    setNotice(null)
+    setStatus((s) => ({ ...s, [section]: null }))
     try {
-      await action()
-      setNotice(success)
-      if (section === 'password') {
-        setPassword('')
-        setConfirmPassword('')
-      }
+      const text = await action()
+      setStatus((s) => ({ ...s, [section]: { tone: 'ok', text } }))
     } catch (e) {
-      setError(errorText(e))
+      setStatus((s) => ({ ...s, [section]: { tone: 'error', text: errorText(e) } }))
     } finally {
       setBusy(null)
     }
   }
 
+  const nameOk = /^[a-zA-Z0-9_]{3,24}$/.test(name.trim())
+  const nameChanged = name.trim().toLowerCase() !== profile?.username
+  const emailChanged = email.trim().toLowerCase() !== currentEmail.toLowerCase()
+  const mismatch = confirmPassword.length > 0 && password !== confirmPassword
+  const displayName = profile?.username ?? user?.email ?? ''
+
   return (
-    <Modal title="Edit profile" onClose={onClose}>
-      <p className="dv-sub -mt-2">
-        Your name is how you appear to others in rooms. Names use 3–24 letters, numbers, or
-        underscores.
-      </p>
-      <form
-        className="flex flex-col gap-3"
-        onSubmit={(e) => {
-          e.preventDefault()
-          void submit('name', () => updateProfileName(name), 'Your name has been updated.')
-        }}
-      >
-        <Field label="Name">
-          {(id) => (
-            <input
-              id={id}
-              className="dv-input lg"
-              autoComplete="username"
-              maxLength={24}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          )}
-        </Field>
-        <Submit
-          busy={busy === 'name'}
-          disabled={!profile || !/^[a-zA-Z0-9_]{3,24}$/.test(name.trim())}
+    <Modal title="Your profile" onClose={onClose}>
+      <div className="flex items-center gap-4">
+        <Avatar
+          name={displayName}
+          color={user ? colorFor(user.id) : 'var(--dv-muted)'}
+          src={profile?.avatar_url}
+          size={64}
+        />
+        <div className="flex min-w-0 flex-col gap-2">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="dv-btn"
+              disabled={busy !== null || !profile}
+              onClick={() => fileInput.current?.click()}
+            >
+              {busy === 'picture' ? <span className="dv-spinner" /> : null}
+              {profile?.avatar_url ? 'Change picture' : 'Add a picture'}
+            </button>
+            {profile?.avatar_url && (
+              <button
+                type="button"
+                className="dv-btn ghost"
+                disabled={busy !== null}
+                onClick={() =>
+                  run('picture', async () => {
+                    await updateAvatar(null)
+                    return 'Picture removed. Your initials show instead.'
+                  })
+                }
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          <span className="dv-hint">Any image up to 8 MB. It's cropped to a square.</span>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              e.target.value = ''
+              if (file)
+                run('picture', async () => {
+                  await updateAvatar(file)
+                  return 'Picture updated.'
+                })
+            }}
+          />
+        </div>
+      </div>
+      {status.picture && (
+        <p
+          className="m-0 -mt-2 text-xs"
+          role={status.picture.tone === 'error' ? 'alert' : 'status'}
+          style={{
+            color: status.picture.tone === 'error' ? 'var(--dv-danger)' : 'var(--dv-success)',
+          }}
         >
-          Save name
-        </Submit>
-      </form>
+          {status.picture.text}
+        </p>
+      )}
 
-      <form
-        className="flex flex-col gap-3 border-t pt-4"
-        style={{ borderColor: 'var(--dv-border)' }}
-        onSubmit={(e) => {
-          e.preventDefault()
-          void submit(
-            'email',
-            () => updateEmail(email),
-            'Email update requested. Check your inbox if confirmation is required.',
-          )
-        }}
-      >
-        <Field label="Linked email">
-          {(id) => (
-            <input
-              id={id}
-              className="dv-input lg"
-              type="email"
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          )}
-        </Field>
-        <Submit busy={busy === 'email'} disabled={!EMAIL_RE.test(email.trim())}>
-          Save email
-        </Submit>
-      </form>
-
-      <form
-        className="flex flex-col gap-3 border-t pt-4"
-        style={{ borderColor: 'var(--dv-border)' }}
-        onSubmit={(e) => {
-          e.preventDefault()
-          void submit('password', () => setNewPassword(password), 'Your password has been updated.')
-        }}
-      >
-        <Field label="New password" hint={`At least ${MIN_PASSWORD} characters.`}>
-          {(id) => (
-            <PasswordInput
-              id={id}
-              value={password}
-              onChange={setPassword}
-              autoComplete="new-password"
-            />
-          )}
-        </Field>
-        <Field label="Confirm new password">
-          {(id) => (
-            <PasswordInput
-              id={id}
-              value={confirmPassword}
-              onChange={setConfirmPassword}
-              autoComplete="new-password"
-            />
-          )}
-        </Field>
-        <Submit
-          busy={busy === 'password'}
-          disabled={password.length < MIN_PASSWORD || password !== confirmPassword}
+      <ProfileSection title="Display name" status={status.name}>
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (!nameOk || !nameChanged) return
+            run('name', async () => {
+              await updateProfileName(name)
+              setName(name.trim().toLowerCase())
+              return 'Name updated. Rooms show it from now on.'
+            })
+          }}
         >
-          Save password
-        </Submit>
-      </form>
-      {error && <Alert>{error}</Alert>}
-      {notice && <Alert tone="info">{notice}</Alert>}
+          <input
+            className="dv-input"
+            aria-label="Display name"
+            autoComplete="username"
+            maxLength={24}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <button
+            className="dv-btn shrink-0"
+            disabled={!profile || !nameOk || !nameChanged || busy !== null}
+          >
+            {busy === 'name' ? <span className="dv-spinner" /> : 'Save'}
+          </button>
+        </form>
+        <span className="dv-hint">
+          How others see you in rooms. 3–24 letters, numbers or underscores.
+        </span>
+      </ProfileSection>
+
+      <ProfileSection title="Email" status={status.email}>
+        {google ? (
+          <p className="dv-sub m-0">
+            You sign in with Google as <strong>{user?.email}</strong>. To change it, use your Google
+            account.
+          </p>
+        ) : (
+          <>
+            <form
+              className="flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (!EMAIL_RE.test(email.trim()) || !emailChanged) return
+                run('email', async () => {
+                  await updateEmail(email)
+                  return `Check ${email.trim()} for a link to confirm the change.`
+                })
+              }}
+            >
+              <input
+                className="dv-input"
+                aria-label="Email"
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <button
+                className="dv-btn shrink-0"
+                disabled={!EMAIL_RE.test(email.trim()) || !emailChanged || busy !== null}
+              >
+                {busy === 'email' ? <span className="dv-spinner" /> : 'Save'}
+              </button>
+            </form>
+            <span className="dv-hint">
+              {user?.new_email
+                ? `Waiting for you to confirm ${user.new_email}.`
+                : 'You sign in with it, and it lets you reset a forgotten password.'}
+            </span>
+          </>
+        )}
+      </ProfileSection>
+
+      {!google && (
+        <ProfileSection title="Password" status={status.password}>
+          {changingPassword ? (
+            <form
+              className="flex flex-col gap-2"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (password.length < MIN_PASSWORD || password !== confirmPassword) return
+                run('password', async () => {
+                  await setNewPassword(password)
+                  setPassword('')
+                  setConfirmPassword('')
+                  setChangingPassword(false)
+                  return 'Password changed.'
+                })
+              }}
+            >
+              <PasswordInput
+                id="profile-new-password"
+                aria-label="New password"
+                placeholder={`New password (at least ${MIN_PASSWORD} characters)`}
+                value={password}
+                onChange={setPassword}
+                autoComplete="new-password"
+                autoFocus
+              />
+              <PasswordInput
+                id="profile-confirm-password"
+                aria-label="Confirm new password"
+                placeholder="Type it again"
+                value={confirmPassword}
+                onChange={setConfirmPassword}
+                autoComplete="new-password"
+                aria-invalid={mismatch}
+              />
+              {mismatch && <span className="dv-hint">The two passwords don't match yet.</span>}
+              <div className="flex gap-2">
+                <button
+                  className="dv-btn primary"
+                  disabled={
+                    password.length < MIN_PASSWORD || password !== confirmPassword || busy !== null
+                  }
+                >
+                  {busy === 'password' ? <span className="dv-spinner" /> : 'Save password'}
+                </button>
+                <button
+                  type="button"
+                  className="dv-btn ghost"
+                  onClick={() => {
+                    setChangingPassword(false)
+                    setPassword('')
+                    setConfirmPassword('')
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <button
+              type="button"
+              className="dv-btn self-start"
+              onClick={() => {
+                setStatus((s) => ({ ...s, password: null }))
+                setChangingPassword(true)
+              }}
+            >
+              <KeyRound size={14} />
+              Change password
+            </button>
+          )}
+        </ProfileSection>
+      )}
+
+      <div className="flex border-t pt-4" style={{ borderColor: 'var(--dv-border)' }}>
+        <button type="button" className="dv-btn ghost -ml-2" onClick={() => signOut().then(goHome)}>
+          <LogOut size={14} />
+          Sign out
+        </button>
+      </div>
     </Modal>
   )
 }
@@ -1336,22 +1504,19 @@ export const RoomsHome: React.FC = () => {
       >
         <Brand />
         <div className="flex-1" />
-        <div className="flex items-center gap-2 text-[13px]" style={{ color: 'var(--dv-muted)' }}>
-          <div
-            className="flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold text-white"
-            style={{ background: user ? colorFor(user.id) : 'var(--dv-muted)' }}
-          >
-            {initials(name)}
-          </div>
-          <span className="max-sm:hidden">{name}</span>
-        </div>
         <button
-          className="dv-btn ghost"
-          title="Edit profile"
+          type="button"
+          className="dv-me-btn"
+          title="Your profile"
+          aria-label={`Your profile (${name})`}
           onClick={() => setProfileSettingsOpen(true)}
         >
-          <Pencil size={14} />
-          <span className="max-sm:hidden">Profile</span>
+          <Avatar
+            name={name}
+            color={user ? colorFor(user.id) : 'var(--dv-muted)'}
+            src={profile?.avatar_url}
+          />
+          <span className="max-sm:hidden">{name}</span>
         </button>
         <button className="dv-btn ghost" onClick={signOut}>
           <LogOut size={14} />
