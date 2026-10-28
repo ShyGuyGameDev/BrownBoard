@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import {
   Crosshair,
   GripVertical,
-  ImagePlus,
+  Paperclip,
   Pencil,
   PenTool,
   Plus,
@@ -13,8 +13,9 @@ import {
 import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room'
 import { bus, getLinkCounts, isTyping, toast } from './lib/bus'
-import { uploadTaskImage } from './lib/upload.ts'
-import { LIMITS, cleanHexColor, cleanLine, cleanMultiline, isSafeImageSrc } from './lib/sanitize'
+import { type Attachment, cleanAttachment, fileKind, uploadRoomFile } from './lib/files'
+import { LIMITS, cleanHexColor, cleanLine, cleanMultiline } from './lib/sanitize'
+import { FileChip, FileIcon, FileViewer } from './file-viewer'
 import {
   DEFAULT_STATUS,
   DEFAULT_URGENCY,
@@ -35,6 +36,7 @@ type DbTask = {
   status: string
   urgency?: string | null
   images?: unknown
+  attachments?: unknown
   category_id: string
   position: number | null
 }
@@ -45,7 +47,7 @@ interface Task {
   description: string
   status: string
   urgency: string
-  images: string[]
+  files: Attachment[]
   categoryId: string
   position: number
 }
@@ -57,13 +59,45 @@ interface Category {
   tasks: Task[]
 }
 
+/** attachments, plus any images from the older `images` column that haven't been moved over yet. */
+const readFiles = (t: DbTask): Attachment[] => {
+  const list = (v: unknown) =>
+    (Array.isArray(v) ? v : []).map(cleanAttachment).filter((a): a is Attachment => !!a)
+  const files = list(t.attachments)
+  const seen = new Set(files.map((f) => f.url))
+  return [...list(t.images).filter((f) => !seen.has(f.url)), ...files]
+}
+
+/** List widths in px. The default matches .dv-col in devboard.css. */
+const COL_WIDTH = { min: 220, max: 720, default: 304, step: 16 }
+const colWidthsKey = (roomId: string) => `brownboard:col-widths:${roomId}`
+
+/** Widths this viewer gave the room's lists. Kept in this browser only: resizing is a personal layout choice. */
+const readColWidths = (roomId: string): Record<string, number> => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(colWidthsKey(roomId)) ?? '{}')
+    return Object.fromEntries(
+      Object.entries(raw ?? {}).filter(
+        (e): e is [string, number] =>
+          typeof e[1] === 'number' && e[1] >= COL_WIDTH.min && e[1] <= COL_WIDTH.max,
+      ),
+    )
+  } catch {
+    return {}
+  }
+}
+
+const clampColWidth = (w: number) => Math.round(Math.min(COL_WIDTH.max, Math.max(COL_WIDTH.min, w)))
+
+const isImage = (f: Attachment) => fileKind(f.type, f.name) === 'image'
+
 const mapTask = (t: DbTask): Task => ({
   id: t.id,
   title: t.title,
   description: t.description || '',
   status: t.status,
   urgency: t.urgency ?? 'medium',
-  images: Array.isArray(t.images) ? (t.images as unknown[]).filter(isSafeImageSrc) : [],
+  files: readFiles(t),
   categoryId: t.category_id,
   position: t.position ?? 0,
 })
@@ -150,13 +184,16 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const colEls = useRef(new Map<string, HTMLElement>())
   const colDragRef = useRef<ColDrag | null>(null)
   const [colDragId, setColDragId] = useState<string | null>(null)
+  const [colWidths, setColWidths] = useState(() => readColWidths(roomId))
+  const colResize = useRef<{ id: string; startX: number; startW: number } | null>(null)
+  const [resizingId, setResizingId] = useState<string | null>(null)
   /** Where each list was drawn just before a reorder, so it can glide from there to its new slot. */
   const flipFrom = useRef<Map<string, number> | null>(null)
   const [dropAt, setDropAt] = useState<{ cat: string; index: number } | null>(null)
   const dropAtRef = useRef<{ cat: string; index: number } | null>(null)
   const [flashId, setFlashId] = useState<string | null>(null)
   const [links, setLinks] = useState<Map<string, number>>(getLinkCounts)
-  const [lightbox, setLightbox] = useState<{ images: string[]; index: number } | null>(null)
+  const [viewer, setViewer] = useState<{ files: Attachment[]; index: number } | null>(null)
   const [fileOverId, setFileOverId] = useState<string | null>(null)
   const [uploadingId, setUploadingId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -167,6 +204,22 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   /** Tell everyone else (and the canvas in this window) that board data changed. */
   const sync = useCallback(() => send('board', {}, true), [send])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(colWidthsKey(roomId), JSON.stringify(colWidths))
+    } catch {
+      /* private window or storage blocked: widths just aren't remembered */
+    }
+  }, [roomId, colWidths])
+
+  const setColWidth = (id: string, width: number | null) =>
+    setColWidths((prev) => {
+      const next = { ...prev }
+      if (width === null) delete next[id]
+      else next[id] = clampColWidth(width)
+      return next
+    })
 
   const fail = useCallback((message: string) => {
     setError(message)
@@ -248,19 +301,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   // Canvas link counts, so cards can show "3 linked" and jump into focus mode.
   useEffect(() => bus.on('canvas:links', (m: Map<string, number>) => setLinks(new Map(m))), [])
-
-  useEffect(() => {
-    if (!lightbox) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setLightbox(null)
-      else if (e.key === 'ArrowRight')
-        setLightbox((l) => l && { ...l, index: (l.index + 1) % l.images.length })
-      else if (e.key === 'ArrowLeft')
-        setLightbox((l) => l && { ...l, index: (l.index - 1 + l.images.length) % l.images.length })
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [lightbox])
 
   // "/" focuses search.
   useEffect(() => {
@@ -367,7 +407,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const patchTask = async (
     taskId: string,
-    patch: Partial<Pick<Task, 'status' | 'urgency' | 'title' | 'description' | 'images'>>,
+    patch: Partial<Pick<Task, 'status' | 'urgency' | 'title' | 'description' | 'files'>>,
   ) => {
     setCategories((prev) =>
       prev.map((c) => ({
@@ -375,11 +415,16 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         tasks: c.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)),
       })),
     )
-    const dbPatch: Record<string, unknown> = { ...patch }
+    const { files, ...rest } = patch
+    const dbPatch: Record<string, unknown> = { ...rest }
     if ('title' in patch) dbPatch.title = cleanLine(patch.title ?? '', LIMITS.taskTitle)
     if ('description' in patch)
       dbPatch.description = cleanMultiline(patch.description ?? '', LIMITS.taskDescription) || null
-    if ('images' in patch) dbPatch.images = (patch.images ?? []).filter(isSafeImageSrc)
+    if (files) {
+      // Writing attachments also retires the old images column for this task.
+      dbPatch.attachments = files.map(cleanAttachment).filter(Boolean)
+      dbPatch.images = []
+    }
     const { error: err } = await supabase.from('tasks').update(dbPatch).eq('id', taskId)
     if (err) {
       fail(err.message)
@@ -409,24 +454,22 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const findTask = (taskId: string) =>
     categoriesRef.current.flatMap((c) => c.tasks).find((t) => t.id === taskId)
 
-  const addImages = async (taskId: string, files: File[]) => {
-    const imgs = files.filter((f) => f.type.startsWith('image/'))
-    if (!imgs.length) return
+  const addFiles = async (taskId: string, files: File[]) => {
+    if (!files.length) return
     setUploadingId(taskId)
-    try {
-      const urls = await Promise.all(imgs.map((f) => uploadTaskImage(f, roomId)))
-      const current = findTask(taskId)
-      if (current) await patchTask(taskId, { images: [...current.images, ...urls] })
-    } catch (e: any) {
-      fail(e?.message || 'Upload failed')
-    } finally {
-      setUploadingId(null)
-    }
+    // Keep whatever uploaded even if one file fails.
+    const results = await Promise.allSettled(files.map((f) => uploadRoomFile(f, roomId, 'tasks')))
+    const added = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+    const current = findTask(taskId)
+    if (current && added.length) await patchTask(taskId, { files: [...current.files, ...added] })
+    if (failed) fail(failed.reason?.message || 'Upload failed')
+    setUploadingId(null)
   }
 
-  const removeImage = (taskId: string, url: string) => {
+  const removeFile = (taskId: string, url: string) => {
     const current = findTask(taskId)
-    if (current) patchTask(taskId, { images: current.images.filter((u) => u !== url) })
+    if (current) patchTask(taskId, { files: current.files.filter((f) => f.url !== url) })
   }
 
   const pickFiles = (taskId: string) => {
@@ -889,16 +932,55 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
               }}
               className="dv-col"
               data-lifted={colDragId === cat.id}
-              style={
-                isDropCol
-                  ? {
-                      borderColor: 'var(--dv-accent-soft)',
-                      background: 'color-mix(in srgb, var(--dv-accent) 6%, var(--dv-panel-2))',
-                    }
-                  : undefined
-              }
+              style={{
+                width: colWidths[cat.id],
+                ...(isDropCol && {
+                  borderColor: 'var(--dv-accent-soft)',
+                  background: 'color-mix(in srgb, var(--dv-accent) 6%, var(--dv-panel-2))',
+                }),
+              }}
               onDragOver={(e) => onColumnDragOver(e, cat)}
             >
+              <div
+                className="dv-col-resize"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={`Resize ${cat.name}`}
+                aria-valuemin={COL_WIDTH.min}
+                aria-valuemax={COL_WIDTH.max}
+                aria-valuenow={colWidths[cat.id] ?? COL_WIDTH.default}
+                tabIndex={0}
+                title="Drag to resize · double-click to reset"
+                data-active={resizingId === cat.id}
+                onPointerDown={(e) => {
+                  if (e.button !== 0) return
+                  e.preventDefault()
+                  e.stopPropagation()
+                  e.currentTarget.setPointerCapture(e.pointerId)
+                  colResize.current = {
+                    id: cat.id,
+                    startX: e.clientX,
+                    startW: colEls.current.get(cat.id)?.offsetWidth ?? COL_WIDTH.default,
+                  }
+                  setResizingId(cat.id)
+                }}
+                onPointerMove={(e) => {
+                  const r = colResize.current
+                  if (r) setColWidth(r.id, r.startW + e.clientX - r.startX)
+                }}
+                onLostPointerCapture={() => {
+                  colResize.current = null
+                  setResizingId(null)
+                }}
+                onDoubleClick={() => setColWidth(cat.id, null)}
+                onKeyDown={(e) => {
+                  const cur = colWidths[cat.id] ?? COL_WIDTH.default
+                  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                    e.preventDefault()
+                    setColWidth(cat.id, cur + (e.key === 'ArrowRight' ? 1 : -1) * COL_WIDTH.step)
+                  }
+                }}
+              />
               <header
                 className="dv-col-head group flex items-center gap-2 pb-2 pl-1.5 pr-3 pt-3"
                 onPointerDown={(e) => onColumnPointerDown(e, cat.id)}
@@ -986,7 +1068,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                           e.preventDefault()
                           e.stopPropagation()
                           setFileOverId(null)
-                          addImages(task.id, [...e.dataTransfer.files])
+                          addFiles(task.id, [...e.dataTransfer.files])
                         }
                       }}
                     >
@@ -1045,14 +1127,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               className="dv-input"
                               rows={3}
                               value={editingTask.description}
-                              placeholder="Notes, links, context… (paste images here)"
+                              placeholder="Notes, links, context… (paste or drop files here)"
                               onPaste={(e) => {
-                                const files = [...e.clipboardData.files].filter((f) =>
-                                  f.type.startsWith('image/'),
-                                )
+                                const files = [...e.clipboardData.files]
                                 if (files.length) {
                                   e.preventDefault()
-                                  addImages(task.id, files)
+                                  addFiles(task.id, files)
                                 }
                               }}
                               onChange={(e) =>
@@ -1064,22 +1144,35 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               }}
                             />
                             <div className="flex flex-wrap gap-1.5">
-                              {task.images.map((src) => (
+                              {task.files.map((f) => (
                                 <div
-                                  key={src}
+                                  key={f.url}
                                   className="relative h-14 w-16 overflow-hidden rounded-md border"
                                   style={{ borderColor: 'var(--dv-border)' }}
+                                  title={f.name}
                                 >
-                                  <img
-                                    src={src}
-                                    alt=""
-                                    draggable={false}
-                                    className="h-full w-full object-cover"
-                                  />
+                                  {isImage(f) ? (
+                                    <img
+                                      src={f.url}
+                                      alt=""
+                                      draggable={false}
+                                      className="h-full w-full object-cover"
+                                    />
+                                  ) : (
+                                    <div
+                                      className="flex h-full w-full flex-col items-center justify-center gap-1 px-1"
+                                      style={{ background: 'var(--dv-panel-2)', color: 'var(--dv-muted)' }}
+                                    >
+                                      <FileIcon file={f} size={16} />
+                                      <span className="w-full truncate text-center text-[9px]">
+                                        {f.name}
+                                      </span>
+                                    </div>
+                                  )}
                                   <button
                                     className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/65 text-white"
-                                    title="Remove image"
-                                    onClick={() => removeImage(task.id, src)}
+                                    title="Remove file"
+                                    onClick={() => removeFile(task.id, f.url)}
                                   >
                                     <X size={10} />
                                   </button>
@@ -1087,10 +1180,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               ))}
                               <button
                                 className="dv-btn !h-14 w-16 justify-center"
-                                title="Attach image"
+                                title="Attach files"
                                 onClick={() => pickFiles(task.id)}
                               >
-                                <ImagePlus size={16} />
+                                <Paperclip size={16} />
                               </button>
                             </div>
                             <div className="flex justify-end gap-2">
@@ -1121,40 +1214,59 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                 {task.description}
                               </p>
                             )}
-                            {task.images.length > 0 && (
-                              <div
-                                className="mt-2 grid gap-1.5"
-                                style={{
-                                  gridTemplateColumns: `repeat(${Math.min(3, task.images.length)}, 1fr)`,
-                                }}
-                              >
-                                {task.images.slice(0, 3).map((src, i) => (
-                                  <button
-                                    key={src}
-                                    className="relative overflow-hidden rounded-md border"
-                                    style={{
-                                      borderColor: 'var(--dv-border)',
-                                      aspectRatio: task.images.length === 1 ? '16 / 9' : '4 / 3',
-                                    }}
-                                    title="View image"
-                                    onClick={() => setLightbox({ images: task.images, index: i })}
-                                  >
-                                    <img
-                                      src={src}
-                                      alt=""
-                                      draggable={false}
-                                      loading="lazy"
-                                      className="h-full w-full object-cover"
-                                    />
-                                    {i === 2 && task.images.length > 3 && (
-                                      <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-xs font-semibold text-white">
-                                        +{task.images.length - 3}
-                                      </span>
-                                    )}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
+                            {(() => {
+                              // Images as thumbnails, everything else as chips; one viewer for all, in this order.
+                              const images = task.files.filter(isImage)
+                              const others = task.files.filter((f) => !isImage(f))
+                              const ordered = [...images, ...others]
+                              const open = (f: Attachment) =>
+                                setViewer({ files: ordered, index: ordered.indexOf(f) })
+                              return (
+                                <>
+                                  {images.length > 0 && (
+                                    <div
+                                      className="mt-2 grid gap-1.5"
+                                      style={{
+                                        gridTemplateColumns: `repeat(${Math.min(3, images.length)}, 1fr)`,
+                                      }}
+                                    >
+                                      {images.slice(0, 3).map((f, i) => (
+                                        <button
+                                          key={f.url}
+                                          className="relative overflow-hidden rounded-md border"
+                                          style={{
+                                            borderColor: 'var(--dv-border)',
+                                            aspectRatio: images.length === 1 ? '16 / 9' : '4 / 3',
+                                          }}
+                                          title="View image"
+                                          onClick={() => open(f)}
+                                        >
+                                          <img
+                                            src={f.url}
+                                            alt=""
+                                            draggable={false}
+                                            loading="lazy"
+                                            className="h-full w-full object-cover"
+                                          />
+                                          {i === 2 && images.length > 3 && (
+                                            <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-xs font-semibold text-white">
+                                              +{images.length - 3}
+                                            </span>
+                                          )}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {others.length > 0 && (
+                                    <div className="mt-2 flex flex-col gap-1">
+                                      {others.map((f) => (
+                                        <FileChip key={f.url} file={f} onClick={() => open(f)} />
+                                      ))}
+                                    </div>
+                                  )}
+                                </>
+                              )
+                            })()}
                             {uploadingId === task.id && (
                               <p
                                 className="mt-1.5 text-[11px]"
@@ -1184,10 +1296,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               <div className="dv-actions ml-auto flex items-center">
                                 <button
                                   className="dv-iconbtn !h-6 !w-6"
-                                  title="Attach image"
+                                  title="Attach files"
                                   onClick={() => pickFiles(task.id)}
                                 >
-                                  <ImagePlus size={13} />
+                                  <Paperclip size={13} />
                                 </button>
                                 <button
                                   className="dv-iconbtn !h-6 !w-6"
@@ -1338,40 +1450,22 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
         multiple
         className="hidden"
         onChange={(e) => {
           const id = uploadTarget.current
-          if (id && e.target.files) addImages(id, [...e.target.files])
+          if (id && e.target.files) addFiles(id, [...e.target.files])
           e.target.value = ''
         }}
       />
 
-      {lightbox && (
-        <div
-          className="fixed inset-0 z-[90] flex items-center justify-center bg-black/80"
-          onClick={() => setLightbox(null)}
-        >
-          <img
-            src={lightbox.images[lightbox.index]}
-            alt=""
-            className="max-h-[88vh] max-w-[88vw] rounded-lg shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          />
-          {lightbox.images.length > 1 && (
-            <span className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-md bg-black/60 px-2 py-1 text-xs text-white">
-              {lightbox.index + 1} / {lightbox.images.length} · use arrow keys
-            </span>
-          )}
-          <button
-            className="absolute right-5 top-5 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white"
-            onClick={() => setLightbox(null)}
-            title="Close (Esc)"
-          >
-            <X size={18} />
-          </button>
-        </div>
+      {viewer && (
+        <FileViewer
+          files={viewer.files}
+          index={viewer.index}
+          onIndex={(index) => setViewer((v) => v && { ...v, index })}
+          onClose={() => setViewer(null)}
+        />
       )}
 
       {/* Status / urgency menu (fixed so column scrolling can't clip it) */}

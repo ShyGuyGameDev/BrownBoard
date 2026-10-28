@@ -3,6 +3,8 @@ import {
   ArrowUpRight,
   Circle,
   Crosshair,
+  Download,
+  Eye,
   Heart,
   ImageIcon,
   Kanban,
@@ -30,7 +32,18 @@ import { bus, isTyping, setLinkCounts, toast } from './lib/bus'
 import { useRoomTasks } from './lib/tasks'
 import { clearCanvas as clearRoomCanvas } from './lib/rooms'
 import { canvas, font, noteColors, noteInk, swatches } from './design/tokens'
-import { LIMITS, cleanInk, cleanMultiline, isSafeImageSrc, safeExtension } from './lib/sanitize'
+import { LIMITS, cleanInk, cleanLine, cleanMultiline, isSafeImageSrc, safeExtension } from './lib/sanitize'
+import {
+  type Attachment,
+  type FileKind,
+  MAX_FILE_BYTES,
+  fileBadge,
+  fileKind,
+  downloadHref,
+  formatBytes,
+  uploadRoomFile,
+} from './lib/files'
+import { FileViewer } from './file-viewer'
 
 /* ================================================================== */
 /* Types                                                               */
@@ -43,16 +56,21 @@ type Tool = 'select' | 'pen' | 'shape' | 'text' | 'note' | 'connect'
 
 interface El {
   id: string
-  type: 'stroke' | 'shape' | 'image' | 'text' | 'task' | 'connector'
+  type: 'stroke' | 'shape' | 'image' | 'file' | 'text' | 'task' | 'connector'
   userId?: string
-  /** stroke: polyline. shape / image / text / task: [topLeft, bottomRight]. connector: unused (derived from from/to). */
+  /** stroke: polyline. shape / image / file / text / task: [topLeft, bottomRight]. connector: unused (derived from from/to). */
   points: Pt[]
   lineWidth?: number
   /** a hex colour, or 'auto' = the theme's ink colour */
   color?: string
   shapeKind?: ShapeKind
   fill?: 'outline' | 'fill'
+  /** image / file: where it's stored */
   src?: string
+  /** image / file: original file name, MIME type and size in bytes (absent on older images) */
+  name?: string
+  mime?: string
+  size?: number
   text?: string
   fontSize?: number
   /** background colour; present => sticky note, absent => plain text box */
@@ -118,7 +136,35 @@ const intersects = (a: BBox, b: BBox) =>
   a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY
 const inBox = (p: Pt, b: BBox, pad = 0) =>
   p.x >= b.minX - pad && p.x <= b.maxX + pad && p.y >= b.minY - pad && p.y <= b.maxY + pad
-const isBoxEl = (e: El) => e.type === 'image' || e.type === 'text' || e.type === 'task'
+const isBoxEl = (e: El) =>
+  e.type === 'image' || e.type === 'file' || e.type === 'text' || e.type === 'task'
+
+/** An image or file item as something the file viewer can show. */
+const toAttachment = (el: El): Attachment => ({
+  url: el.src ?? '',
+  name: el.name || (el.type === 'image' ? 'image' : 'file'),
+  type: el.mime || (el.type === 'image' ? 'image/*' : ''),
+  size: el.size ?? 0,
+})
+
+const FILE_CARD = { w: 260, h: 64 }
+const KIND_COLORS: Record<FileKind, string> = {
+  image: '#0d9488',
+  video: '#7c3aed',
+  audio: '#ea580c',
+  pdf: '#dc2626',
+  text: '#2563eb',
+  table: '#16a34a',
+  other: '#64748b',
+}
+
+/** One line of text, cut with an ellipsis to fit `maxW`. */
+const ellipsize = (ctx: CanvasRenderingContext2D, text: string, maxW: number) => {
+  if (ctx.measureText(text).width <= maxW) return text
+  const chars = [...text]
+  while (chars.length && ctx.measureText(chars.join('') + '…').width > maxW) chars.pop()
+  return chars.join('') + '…'
+}
 const resolveColor = (c: string | undefined, ink: string) => (!c || c === 'auto' ? ink : c)
 
 const segDist = (p: Pt, a: Pt, b: Pt) => {
@@ -265,6 +311,10 @@ const normalize = (raw: any): El => {
   const el = { ...rest, color: cleanInk(color), fill: rest.fill ?? shapeFill } as El
   if (src !== undefined) el.src = isSafeImageSrc(src) ? src : undefined
   if (typeof el.text === 'string') el.text = cleanMultiline(el.text, LIMITS.canvasText)
+  if (el.name !== undefined) el.name = cleanLine(String(el.name), 200)
+  if (el.mime !== undefined)
+    el.mime = typeof el.mime === 'string' && /^[\w.+-]+\/[\w.+*-]+$/.test(el.mime) ? el.mime : ''
+  if (el.size !== undefined) el.size = typeof el.size === 'number' && el.size >= 0 ? el.size : 0
   return el
 }
 
@@ -404,6 +454,9 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   })
   const [editing, setEditing] = useState<{ id: string; isNew: boolean } | null>(null)
   const [editText, setEditText] = useState('')
+  const [viewing, setViewing] = useState<Attachment | null>(null)
+  const viewingRef = useRef(false)
+  viewingRef.current = !!viewing
   const [, force] = useState(0)
 
   // ---------- refs that mirror state for event handlers ----------
@@ -614,6 +667,46 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           ctx.fillStyle = pal.border
           ctx.fillRect(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY)
         }
+      } else if (el.type === 'file' && el.points.length >= 2) {
+        const b = getBBox(el, st.map)
+        const w = b.maxX - b.minX
+        const h = b.maxY - b.minY
+        const file = toAttachment(el)
+        ctx.shadowColor = 'rgba(0,0,0,0.16)'
+        ctx.shadowBlur = 10
+        ctx.shadowOffsetY = 3
+        ctx.fillStyle = pal.panel
+        ctx.beginPath()
+        ctx.roundRect(b.minX, b.minY, w, h, 10)
+        ctx.fill()
+        ctx.shadowColor = 'transparent'
+        ctx.strokeStyle = pal.border
+        ctx.lineWidth = 1 / k
+        ctx.stroke()
+        const side = Math.min(40, h - 16)
+        const bx = b.minX + 12
+        const by = b.minY + (h - side) / 2
+        ctx.fillStyle = KIND_COLORS[fileKind(file.type, file.name)]
+        ctx.beginPath()
+        ctx.roundRect(bx, by, side, side, 8)
+        ctx.fill()
+        ctx.fillStyle = '#ffffff'
+        ctx.font = `600 10px ${MONO}`
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(ellipsize(ctx, fileBadge(file), side - 4), bx + side / 2, by + side / 2)
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'top'
+        const tx = bx + side + 12
+        const tw = b.maxX - tx - 12
+        const ty = b.minY + h / 2
+        ctx.fillStyle = pal.ink
+        ctx.font = `600 14px ${FONT}`
+        ctx.fillText(ellipsize(ctx, file.name, tw), tx, ty - 18)
+        ctx.fillStyle = pal.muted
+        ctx.font = `12px ${FONT}`
+        const meta = [formatBytes(file.size), 'double-click to open'].filter(Boolean).join(' · ')
+        ctx.fillText(ellipsize(ctx, meta, tw), tx, ty + 2)
       } else if (el.type === 'text' && el.points.length >= 2) {
         const b = getBBox(el, st.map)
         const w = b.maxX - b.minX
@@ -864,7 +957,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     const out: El[] = []
     for (const e of items) {
       out.push({ ...e, tag: f })
-      if ((e.type === 'text' || e.type === 'image' || e.type === 'task') && e.id !== f) {
+      if (isBoxEl(e) && e.id !== f) {
         out.push({
           id: uid(),
           type: 'connector',
@@ -1270,16 +1363,53 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     })
   }
 
-  const addImage = async (file: File, at?: Pt) => {
-    if (!file.type.startsWith('image/')) return
+  /** Adds any file: pictures the browser can draw go on the canvas as images, everything else as a file card. */
+  const addFile = async (file: File, at?: Pt) => {
+    if (file.size > MAX_FILE_BYTES)
+      return toast(`"${file.name}" is ${formatBytes(file.size)}. Files must be under 50 MB.`)
+    if (file.type.startsWith('image/') && (await addImage(file, at))) return
+    let a: Attachment
+    try {
+      a = await uploadRoomFile(file, roomId)
+    } catch (e) {
+      return toast(e instanceof Error ? e.message : 'Could not add that file.')
+    }
+    const c = at ?? viewCenter()
+    const el: El = {
+      id: uid(),
+      type: 'file',
+      userId: me.id,
+      points: [
+        { x: c.x - FILE_CARD.w / 2, y: c.y - FILE_CARD.h / 2 },
+        { x: c.x + FILE_CARD.w / 2, y: c.y + FILE_CARD.h / 2 },
+      ],
+      src: a.url,
+      name: a.name,
+      mime: a.type,
+      size: a.size,
+    }
+    const added = withFocus([el])
+    commit({ added, removed: [], before: [], after: [] })
+    opAdd(added)
+    setSel(new Set([el.id]))
+    setTool('select')
+  }
+
+  /** Several files at once (a drop), fanned out a little so they don't stack exactly. */
+  const addFiles = (files: File[], at?: Pt) =>
+    files.forEach((f, i) => addFile(f, at && { x: at.x + i * 28, y: at.y + i * 28 }))
+
+  /** Returns false (adding nothing) if the browser can't decode this picture, so it becomes a file card instead. */
+  const addImage = async (file: File, at?: Pt): Promise<boolean> => {
     const local = URL.createObjectURL(file)
-    const dims = await new Promise<{ w: number; h: number }>((res) => {
+    const dims = await new Promise<{ w: number; h: number } | null>((res) => {
       const img = new Image()
-      img.onload = () => res({ w: img.naturalWidth, h: img.naturalHeight })
-      img.onerror = () => res({ w: 400, h: 300 })
+      img.onload = () => res({ w: img.naturalWidth || 400, h: img.naturalHeight || 300 })
+      img.onerror = () => res(null)
       img.src = local
     })
     URL.revokeObjectURL(local)
+    if (!dims) return false
     const scale = Math.min(1, 420 / dims.w, 420 / dims.h)
     const w = dims.w * scale
     const h = dims.h * scale
@@ -1288,7 +1418,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     try {
       src = await uploadImage(file)
     } catch {
-      return toast('Could not add that image.')
+      toast('Could not add that image.')
+      return true
     }
     const el: El = {
       id: uid(),
@@ -1299,12 +1430,16 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         { x: c.x + w / 2, y: c.y + h / 2 },
       ],
       src,
+      name: cleanLine(file.name, 200),
+      mime: file.type,
+      size: file.size,
     }
     const added = withFocus([el])
     commit({ added, removed: [], before: [], after: [] })
     opAdd(added)
     setSel(new Set([el.id]))
     setTool('select')
+    return true
   }
 
   const addTaskCard = (taskId: string) => {
@@ -1721,6 +1856,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     if (!hit) return createText(p, false)
     if (hit.type === 'text') beginEdit(hit, false)
     else if (hit.type === 'task') enterFocus(hit.id)
+    else if ((hit.type === 'file' || hit.type === 'image') && hit.src) setViewing(toAttachment(hit))
   }
 
   /* ================================================================== */
@@ -1733,7 +1869,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     redo,
     deleteSelection,
     duplicateSelection,
-    addImage,
+    addFile,
     addTaskCard,
     setTool,
     fitContent,
@@ -1885,7 +2021,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   // keyboard
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!activeRef.current) return
+      // The file viewer handles its own keys; Delete there mustn't remove the selected item.
+      if (!activeRef.current || viewingRef.current) return
       const typing = isTyping(e)
       const mod = e.metaKey || e.ctrlKey
       if (e.key === 'Escape') {
@@ -1971,12 +2108,10 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     }
     const onPaste = (e: ClipboardEvent) => {
       if (!activeRef.current || isTyping(e)) return
-      const items = [...(e.clipboardData?.items ?? [])]
-      const img = items.find((i) => i.type.startsWith('image/'))
-      const file = img?.getAsFile()
-      if (file) {
+      const files = [...(e.clipboardData?.files ?? [])]
+      if (files.length) {
         e.preventDefault()
-        api.current.addImage(file)
+        files.forEach((f) => api.current.addFile(f))
         return
       }
       const text = e.clipboardData?.getData('text/plain')
@@ -2043,7 +2178,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     tool === 'shape' ||
     tool === 'text' ||
     tool === 'note' ||
-    selEls.some((e) => e.type !== 'task' && e.type !== 'image')
+    selEls.some((e) => e.type !== 'task' && e.type !== 'image' && e.type !== 'file')
   const ink = PAL[theme].ink
   const pickerColor = resolveColor(color, ink)
 
@@ -2058,6 +2193,10 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     t.title.toLowerCase().includes(taskQuery.trim().toLowerCase()),
   )
   const ShapeIcon = shapeIcons[shapeKind]
+  const singleFile =
+    selEls.length === 1 && (selEls[0].type === 'file' || selEls[0].type === 'image') && selEls[0].src
+      ? toAttachment(selEls[0])
+      : null
   const singleTask =
     selEls.length === 1 && selEls[0].type === 'task' && selEls[0].id !== focus ? selEls[0] : null
   const focusCard = focus ? st.map.get(focus) : undefined
@@ -2083,18 +2222,17 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       onDrop={(e) => {
         e.preventDefault()
         setIsDragOver(false)
-        const file = e.dataTransfer.files[0]
-        if (file) addImage(file, toWorld(e))
+        const files = [...e.dataTransfer.files]
+        if (files.length) addFiles(files, toWorld(e))
       }}
     >
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        multiple
         className="hidden"
         onChange={(e) => {
-          const f = e.target.files?.[0]
-          if (f) addImage(f)
+          addFiles([...(e.target.files ?? [])])
           e.target.value = ''
         }}
       />
@@ -2162,7 +2300,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         >
           <div className="dv-floating flex items-center gap-2 px-5 py-3 text-sm font-medium">
             <ImageIcon size={18} />
-            Drop to add image
+            Drop to add files
           </div>
         </div>
       )}
@@ -2215,6 +2353,35 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             </button>
           </div>
         </div>
+      )}
+
+      {singleFile && (
+        <div className="dv-floating absolute left-4 top-1/2 z-20 flex w-[196px] -translate-y-1/2 flex-col gap-2 p-3.5">
+          <span className="dv-label truncate" title={singleFile.name}>
+            {singleFile.name}
+          </span>
+          <button className="dv-btn primary justify-center" onClick={() => setViewing(singleFile)}>
+            <Eye size={14} />
+            Open
+          </button>
+          <a
+            className="dv-btn justify-center"
+            href={downloadHref(singleFile)}
+            download={singleFile.name}
+          >
+            <Download size={14} />
+            Download
+          </a>
+        </div>
+      )}
+
+      {viewing && (
+        <FileViewer
+          files={[viewing]}
+          index={0}
+          onIndex={() => {}}
+          onClose={() => setViewing(null)}
+        />
       )}
 
       {singleTask && (
@@ -2421,7 +2588,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           />
           <ToolBtn
             icon={<ImageIcon size={16} />}
-            label="Add image"
+            label="Add image or file"
             kbd="I"
             onClick={() => fileInputRef.current?.click()}
           />

@@ -50,6 +50,7 @@ CREATE TABLE public.profiles (
   signup_method text NOT NULL CHECK (signup_method = ANY (ARRAY['username'::text, 'oauth'::text])),
   placeholder_email text,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
+  avatar_url text,
   CONSTRAINT profiles_pkey PRIMARY KEY (id),
   CONSTRAINT profiles_id_fkey FOREIGN KEY (id) REFERENCES auth.users(id)
 );

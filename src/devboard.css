@@ -292,6 +292,7 @@ textarea.dv-input {
 
 /* ---------- board ---------- */
 .dv-col {
+  position: relative;
   width: 304px;
   flex-shrink: 0;
   display: flex;
@@ -301,6 +302,40 @@ textarea.dv-input {
   border-radius: var(--dv-radius-xl);
   border: 1px solid transparent;
   transition: box-shadow var(--dv-dur-base) var(--dv-ease);
+}
+
+/* ---------- resizing lists ---------- */
+/* A grab strip over the gap to the right of each list; shows an accent line on hover or drag. */
+.dv-col-resize {
+  position: absolute;
+  top: 0;
+  right: -10px;
+  z-index: 2;
+  width: 12px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.dv-col-resize::after {
+  content: '';
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 5px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--dv-accent);
+  opacity: 0;
+  transition: opacity var(--dv-dur-fast);
+}
+.dv-col-resize:hover::after,
+.dv-col-resize:focus-visible::after,
+.dv-col-resize[data-active='true']::after {
+  opacity: 1;
+}
+.dv-cols[data-col-drag='true'] .dv-col-resize {
+  display: none;
 }
 
 /* ---------- reordering lists ---------- */
