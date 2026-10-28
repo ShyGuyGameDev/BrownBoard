@@ -2225,7 +2225,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             onClick={() => enterFocus(singleTask.id)}
           >
             <Crosshair size={14} />
-            Focus on this task
+            Focus
             <span
               className="dv-kbd"
               style={{ background: 'transparent', color: 'inherit', borderColor: 'currentColor' }}
