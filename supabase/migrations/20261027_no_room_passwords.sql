@@ -11,6 +11,26 @@
 -- Run after 20261026_link_only_join.sql. Safe to re-run.
 -- =====================================================================
 
+-- Deleted rooms, so a link to one says it was deleted. From 20261025_rooms_auth.sql; some
+-- databases are missing it, and join_room, delete_room and room_invite_info all use it.
+create schema if not exists private;
+create table if not exists private.deleted_rooms (
+  id text primary key,
+  name_key text not null,
+  deleted_at timestamptz not null default now()
+);
+create index if not exists deleted_rooms_name_key on private.deleted_rooms (name_key);
+revoke all on private.deleted_rooms from public, anon, authenticated;
+
+-- Failed join attempts, for rate limiting. Also from 20261025_rooms_auth.sql.
+create table if not exists private.room_join_attempts (
+  id bigint generated always as identity primary key,
+  user_id uuid not null,
+  at timestamptz not null default now()
+);
+create index if not exists room_join_attempts_user_at on private.room_join_attempts (user_id, at desc);
+revoke all on private.room_join_attempts from public, anon, authenticated;
+
 drop function if exists public.join_room(text, text, text);
 drop function if exists public.create_room(text, text);
 drop function if exists public.save_room(text, text, text);
