@@ -1,5 +1,15 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Crosshair, ImagePlus, Pencil, PenTool, Plus, Search, Trash2, X } from 'lucide-react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  Crosshair,
+  GripVertical,
+  ImagePlus,
+  Pencil,
+  PenTool,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from 'lucide-react'
 import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room'
 import { bus, getLinkCounts, isTyping, toast } from './lib/bus'
@@ -73,6 +83,34 @@ const buildBoard = (categories: DbCategory[], tasks: DbTask[]): Category[] => {
   }))
 }
 
+/** A list being dragged by its header. Positions are in the scroll container's content space. */
+interface ColDrag {
+  id: string
+  pointerId: number
+  startX: number
+  startY: number
+  startScroll: number
+  /** Latest pointer x (the frame loop reads it, so scrolling alone also moves the list). */
+  x: number
+  started: boolean
+  order: string[]
+  from: number
+  lefts: number[]
+  widths: number[]
+  /** How far a neighbour slides to make room: the dragged list's width plus the gap. */
+  step: number
+  target: number
+  dx: number
+  shifts: number[]
+  raf: number
+  /** Escape cancels; kept here so the same listener is removed. */
+  onKey: (e: KeyboardEvent) => void
+}
+
+/** Tilt of a lifted list, so it reads as picked up. */
+const LIFT = 'rotate(1.5deg)'
+const SETTLE = 'transform 260ms var(--dv-ease)'
+
 interface MenuState {
   kind: TaskOptionType
   taskId: string
@@ -110,6 +148,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const [dragId, setDragId] = useState<string | null>(null)
   const dragRef = useRef<{ taskId: string } | null>(null)
+  const colsRef = useRef<HTMLDivElement>(null)
+  const colEls = useRef(new Map<string, HTMLElement>())
+  const colDragRef = useRef<ColDrag | null>(null)
+  const [colDragId, setColDragId] = useState<string | null>(null)
+  /** Where each list was drawn just before a reorder, so it can glide from there to its new slot. */
+  const flipFrom = useRef<{ xs: Map<string, number>; lifted: string | null } | null>(null)
   const [dropAt, setDropAt] = useState<{ cat: string; index: number } | null>(null)
   const dropAtRef = useRef<{ cat: string; index: number } | null>(null)
   const [flashId, setFlashId] = useState<string | null>(null)
@@ -181,7 +225,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       if (fromSelf) return
       window.clearTimeout(timer)
       timer = window.setTimeout(() => {
-        if (!dragRef.current) loadBoard(true)
+        if (!dragRef.current && !colDragRef.current) loadBoard(true)
       }, 150)
     })
     return () => {
@@ -540,6 +584,208 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     })
   }
 
+  // ---------- reordering lists ----------
+  // Pointer-driven rather than HTML drag and drop, so the list follows the cursor exactly and the
+  // others can slide aside. Nothing re-renders mid-drag: transforms are set on the elements, and
+  // the new order is committed on drop.
+
+  const saveColumnOrder = (prev: Category[], next: Category[]) => {
+    const before = new Map(prev.map((c) => [c.id, c.position]))
+    const writes = next
+      .filter((c) => before.get(c.id) !== c.position)
+      .map((c) => supabase.from('categories').update({ position: c.position }).eq('id', c.id))
+    Promise.all(writes).then((results) => {
+      const failed = results.find((r) => r.error)
+      if (failed?.error) {
+        fail(failed.error.message)
+        loadBoard(true)
+      } else sync()
+    })
+  }
+
+  /** Puts list `id` at `index`, remembering where everything was drawn so it animates there. */
+  const commitColumnMove = (
+    id: string,
+    index: number,
+    drawnAt: Map<string, number>,
+    lifted: string | null,
+  ) => {
+    flipFrom.current = { xs: drawnAt, lifted }
+    const prev = categoriesRef.current
+    const from = prev.findIndex((c) => c.id === id)
+    if (from < 0 || from === index) {
+      // Nothing moved, but still re-render so the lifted list settles back.
+      setCategories((c) => [...c])
+      return
+    }
+    const next = [...prev]
+    const [moved] = next.splice(from, 1)
+    next.splice(index, 0, moved)
+    const positioned = next.map((c, i) => ({ ...c, position: i }))
+    setCategories(positioned)
+    saveColumnOrder(prev, positioned)
+  }
+
+  // FLIP: each list starts where it was drawn and glides to its new layout position.
+  useLayoutEffect(() => {
+    const flip = flipFrom.current
+    if (!flip) return
+    flipFrom.current = null
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      for (const el of colEls.current.values()) el.style.transform = ''
+      return
+    }
+    const moving: HTMLElement[] = []
+    for (const [id, x] of flip.xs) {
+      const el = colEls.current.get(id)
+      if (!el) continue
+      const delta = x - el.offsetLeft
+      el.style.transition = 'none'
+      if (delta || id === flip.lifted) {
+        el.style.transform = `translate3d(${delta}px,0,0)${id === flip.lifted ? ` ${LIFT}` : ''}`
+        moving.push(el)
+      } else {
+        el.style.transform = ''
+      }
+    }
+    void colsRef.current?.offsetWidth // apply the start positions before animating
+    for (const el of colEls.current.values()) el.style.transition = ''
+    for (const el of moving) {
+      el.style.transition = SETTLE
+      el.style.transform = ''
+      el.addEventListener('transitionend', () => (el.style.transition = ''), { once: true })
+    }
+  }, [categories])
+
+  const colFrame = () => {
+    const d = colDragRef.current
+    const box = colsRef.current
+    if (!d || !box) return
+
+    // Auto-scroll near the edges, faster the closer the pointer gets.
+    const rect = box.getBoundingClientRect()
+    const edge = 80
+    if (d.x < rect.left + edge) box.scrollLeft -= Math.ceil(((rect.left + edge - d.x) / edge) * 20)
+    else if (d.x > rect.right - edge)
+      box.scrollLeft += Math.ceil(((d.x - (rect.right - edge)) / edge) * 20)
+
+    const first = d.lefts[0]
+    const last = d.lefts[d.lefts.length - 1]
+    const raw = d.x - d.startX + box.scrollLeft - d.startScroll
+    // Stays within the row of lists.
+    d.dx = Math.max(first - d.lefts[d.from], Math.min(last - d.lefts[d.from], raw))
+    colEls.current.get(d.id)!.style.transform = `translate3d(${d.dx}px,0,0) ${LIFT}`
+
+    // Its slot: how many other lists have their middle left of the dragged list's middle.
+    const mid = d.lefts[d.from] + d.dx + d.widths[d.from] / 2
+    let target = 0
+    d.order.forEach((_, i) => {
+      if (i !== d.from && d.lefts[i] + d.widths[i] / 2 < mid) target++
+    })
+    if (target !== d.target) {
+      d.target = target
+      d.order.forEach((oid, i) => {
+        if (i === d.from) return
+        const j = i < d.from ? i : i - 1
+        const shift = ((j < target ? j : j + 1) - i) * d.step
+        d.shifts[i] = shift
+        colEls.current.get(oid)!.style.transform = shift ? `translate3d(${shift}px,0,0)` : ''
+      })
+    }
+    d.raf = requestAnimationFrame(colFrame)
+  }
+
+  const endColumnDrag = (commit: boolean) => {
+    const d = colDragRef.current
+    if (!d) return
+    colDragRef.current = null
+    if (!d.started) return
+    cancelAnimationFrame(d.raf)
+    document.body.classList.remove('dv-grabbing')
+    window.removeEventListener('keydown', d.onKey, true)
+    setColDragId(null)
+    const drawnAt = new Map(
+      d.order.map((id, i) => [id, d.lefts[i] + (i === d.from ? d.dx : d.shifts[i])]),
+    )
+    commitColumnMove(d.id, commit ? d.target : d.from, drawnAt, d.id)
+  }
+
+  const onColumnPointerDown = (e: React.PointerEvent<HTMLElement>, catId: string) => {
+    // A press that never became a drag (released elsewhere) is simply replaced.
+    if (e.button !== 0 || colDragRef.current?.started) return
+    const target = e.target as HTMLElement
+    // The header's own controls keep working; the grip is the exception, it's for dragging.
+    if (target.closest('input, textarea, button:not([data-grip])')) return
+    const box = colsRef.current
+    if (!box) return
+    const order = categoriesRef.current.map((c) => c.id)
+    const els = order.map((id) => colEls.current.get(id)!)
+    const from = order.indexOf(catId)
+    if (from < 0 || els.some((el) => !el)) return
+    const gap = parseFloat(getComputedStyle(box).columnGap) || 16
+    colDragRef.current = {
+      id: catId,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      startScroll: box.scrollLeft,
+      x: e.clientX,
+      started: false,
+      order,
+      from,
+      lefts: els.map((el) => el.offsetLeft),
+      widths: els.map((el) => el.offsetWidth),
+      step: els[from].offsetWidth + gap,
+      target: from,
+      dx: 0,
+      shifts: order.map(() => 0),
+      raf: 0,
+      // Escape puts the list back where it was.
+      onKey: (k) => {
+        if (k.key !== 'Escape') return
+        k.preventDefault()
+        k.stopPropagation()
+        endColumnDrag(false)
+      },
+    }
+  }
+
+  const onColumnPointerMove = (e: React.PointerEvent<HTMLElement>) => {
+    const d = colDragRef.current
+    if (!d || d.pointerId !== e.pointerId) return
+    d.x = e.clientX
+    if (d.started) return
+    // A small threshold, so clicks and double-click-to-rename still work.
+    if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 5) return
+    d.started = true
+    e.currentTarget.setPointerCapture(e.pointerId)
+    window.getSelection()?.removeAllRanges()
+    document.body.classList.add('dv-grabbing')
+    window.addEventListener('keydown', d.onKey, true)
+    setColDragId(d.id)
+    d.raf = requestAnimationFrame(colFrame)
+  }
+
+  const onColumnPointerUp = (e: React.PointerEvent<HTMLElement>) => {
+    if (colDragRef.current?.pointerId === e.pointerId) endColumnDrag(true)
+  }
+
+  // Keyboard: arrow keys on a list's grip move it one place.
+  const moveColumnBy = (catId: string, by: -1 | 1) => {
+    const order = categoriesRef.current.map((c) => c.id)
+    const from = order.indexOf(catId)
+    const to = from + by
+    if (from < 0 || to < 0 || to >= order.length) return
+    const drawnAt = new Map(order.map((id) => [id, colEls.current.get(id)?.offsetLeft ?? 0]))
+    commitColumnMove(catId, to, drawnAt, null)
+    // React may re-insert the moved list's node, which drops focus; keep it on the grip.
+    requestAnimationFrame(() => {
+      const el = colEls.current.get(catId)
+      el?.querySelector<HTMLElement>('[data-grip]')?.focus({ preventScroll: true })
+      el?.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' })
+    })
+  }
+
   // ---------- derived ----------
 
   const q = query.trim().toLowerCase()
@@ -632,15 +878,24 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       </div>
 
       {/* Columns */}
-      <div className="dv-scroll flex min-h-0 flex-1 items-start gap-4 overflow-x-auto px-6 pb-6">
-        {categories.map((cat) => {
+      <div
+        ref={colsRef}
+        className="dv-scroll dv-cols relative flex min-h-0 flex-1 items-start gap-4 overflow-x-auto px-6 pb-6"
+        data-col-drag={colDragId !== null}
+      >
+        {categories.map((cat, catIndex) => {
           const visible = cat.tasks.filter(matches)
           const input = newTaskInputs[cat.id] || ''
           const isDropCol = dropAt?.cat === cat.id
           return (
             <section
               key={cat.id}
+              ref={(el) => {
+                if (el) colEls.current.set(cat.id, el)
+                else colEls.current.delete(cat.id)
+              }}
               className="dv-col"
+              data-lifted={colDragId === cat.id}
               style={
                 isDropCol
                   ? {
@@ -651,7 +906,33 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
               }
               onDragOver={(e) => onColumnDragOver(e, cat)}
             >
-              <header className="group flex items-center gap-2 px-3 pb-2 pt-3">
+              <header
+                className="dv-col-head group flex items-center gap-2 pb-2 pl-1.5 pr-3 pt-3"
+                onPointerDown={(e) => onColumnPointerDown(e, cat.id)}
+                onPointerMove={onColumnPointerMove}
+                onPointerUp={onColumnPointerUp}
+                onPointerCancel={() => endColumnDrag(false)}
+                onLostPointerCapture={() => endColumnDrag(true)}
+              >
+                <button
+                  type="button"
+                  data-grip
+                  className="dv-col-grip"
+                  aria-label={`Move list ${cat.name}. Use the left and right arrow keys.`}
+                  title="Drag to reorder (or focus and use ← →)"
+                  disabled={categories.length < 2}
+                  onKeyDown={(e) => {
+                    if (e.key === 'ArrowLeft' && catIndex > 0) {
+                      e.preventDefault()
+                      moveColumnBy(cat.id, -1)
+                    } else if (e.key === 'ArrowRight' && catIndex < categories.length - 1) {
+                      e.preventDefault()
+                      moveColumnBy(cat.id, 1)
+                    }
+                  }}
+                >
+                  <GripVertical size={14} aria-hidden />
+                </button>
                 {renamingCat?.id === cat.id ? (
                   <input
                     autoFocus
@@ -666,7 +947,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   />
                 ) : (
                   <h2
-                    className="min-w-0 flex-1 cursor-text truncate text-[13.5px] font-semibold"
+                    className="min-w-0 flex-1 truncate text-[13.5px] font-semibold"
                     title="Double-click to rename"
                     onDoubleClick={() => setRenamingCat({ id: cat.id, name: cat.name })}
                   >

@@ -300,6 +300,69 @@ textarea.dv-input {
   background: var(--dv-panel-2);
   border-radius: var(--dv-radius-xl);
   border: 1px solid transparent;
+  transition: box-shadow var(--dv-dur-base) var(--dv-ease);
+}
+
+/* ---------- reordering lists ---------- */
+/* Grab a list by its header. */
+.dv-col-head {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.dv-col-grip {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 24px;
+  margin-right: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dv-radius-sm);
+  background: transparent;
+  color: var(--dv-muted);
+  cursor: grab;
+  opacity: 0;
+  transition:
+    opacity var(--dv-dur-fast),
+    background var(--dv-dur-fast),
+    color var(--dv-dur-fast);
+}
+.dv-col-head:hover .dv-col-grip:not(:disabled),
+.dv-col-grip:focus-visible,
+.dv-col[data-lifted='true'] .dv-col-grip {
+  opacity: 1;
+}
+.dv-col-grip:hover:not(:disabled) {
+  background: var(--dv-panel);
+  color: var(--dv-text);
+}
+.dv-col-grip:disabled {
+  cursor: grab;
+}
+/* While one list is dragged, the others glide out of its way. */
+.dv-cols[data-col-drag='true'] .dv-col:not([data-lifted='true']) {
+  transition: transform 220ms var(--dv-ease);
+}
+/* The picked-up list floats above the rest. */
+.dv-col[data-lifted='true'] {
+  position: relative;
+  z-index: 10;
+  border-color: color-mix(in srgb, var(--dv-accent) 45%, var(--dv-border));
+  box-shadow:
+    var(--dv-shadow),
+    0 18px 40px -12px rgba(0, 0, 0, 0.35);
+  will-change: transform;
+}
+.dv-cols[data-col-drag='true'] .dv-card {
+  pointer-events: none;
+}
+body.dv-grabbing,
+body.dv-grabbing * {
+  cursor: grabbing !important;
+  user-select: none !important;
 }
 
 .dv-card {
@@ -1210,6 +1273,8 @@ textarea.dv-input {
   .dv-auth-card,
   .dv-room-card,
   .dv-room-menu,
+  .dv-col,
+  .dv-cols[data-col-drag='true'] .dv-col:not([data-lifted='true']),
   .dv-confirm,
   .dv-skel-circle,
   .dv-modal,
