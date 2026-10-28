@@ -23,7 +23,9 @@ create policy "avatars: own upload" on storage.objects
   with check (
     bucket_id = 'avatars'
     and (storage.foldername(name))[1] = (select auth.uid())::text
-    and not private.is_guest((select auth.uid()))
+    -- From the token, not private.is_guest(): signed-in users can't execute that, and a policy
+    -- calling it breaks uploads to every bucket (see 20261028_fix_upload_permission.sql).
+    and not coalesce(((select auth.jwt()) ->> 'is_anonymous')::boolean, true)
   );
 
 drop policy if exists "avatars: own update" on storage.objects;
