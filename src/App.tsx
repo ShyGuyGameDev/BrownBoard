@@ -4,6 +4,7 @@ import {
   Check,
   Copy,
   Kanban,
+  LogIn,
   LogOut,
   Moon,
   PenTool,
@@ -24,9 +25,11 @@ import {
   useRoom,
 } from './lib/room.tsx'
 import { bus, isTyping, toast } from './lib/bus.ts'
+import { clearSignInIntent, leavingToSignIn, peekSignInIntent } from './lib/sign-in-intent.ts'
 import { AuthProvider, isElectron, useAuth } from './lib/auth.tsx'
 import {
   type RoomSession,
+  claimRoom,
   deleteRoom,
   discardRoom,
   enterRoom,
@@ -44,6 +47,8 @@ import {
   NewPasswordScreen,
   Onboarding,
   RoomsHome,
+  type SignInReason,
+  SignInPanel,
 } from './onboarding.tsx'
 import { type RoomSettingsActions, RoomSettingsForm, SaveRoomForm } from './room-settings.tsx'
 
@@ -67,7 +72,7 @@ const useSaveRoom = () => {
 /* ------------------------------------------------------------------ */
 
 const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { roomId, roomName, me, unnamed, isOwner } = useRoom()
+  const { roomId, roomName, me, unnamed, hasOwner } = useRoom()
   const save = useSaveRoom()
   const [copied, setCopied] = useState(false)
   const link = buildShareLink(roomId)
@@ -94,7 +99,22 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               Give it a name first. {UNSAVED_WARNING}
             </p>
           </div>
-          <SaveRoomForm save={save} submitLabel="Save and get link" guest={!isOwner} />
+          <SaveRoomForm save={save} submitLabel="Save and get link" />
+        </div>
+      </>
+    )
+
+  // Made by a guest before rooms needed an owner. Its creator gets the sign-in panel instead.
+  if (!hasOwner)
+    return (
+      <>
+        <div className="fixed inset-0 z-40" onPointerDown={onClose} />
+        <div className="dv-floating dv-no-drag absolute right-0 top-full z-50 mt-2 flex w-[340px] flex-col gap-1 p-4">
+          <span className="text-[13px] font-semibold">This room can't be shared yet</span>
+          <p className="m-0 text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
+            Rooms are shared by the account that owns them, and a guest made this one. Whoever made
+            it can sign in from inside it to make it theirs.
+          </p>
         </div>
       </>
     )
@@ -147,8 +167,7 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 /* ------------------------------------------------------------------ */
 
 const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { roomId, roomName, setRoomName, allowGuests, setAllowGuests, send, unnamed, isOwner } =
-    useRoom()
+  const { roomId, roomName, setRoomName, allowGuests, setAllowGuests, send, unnamed } = useRoom()
   const save = useSaveRoom()
 
   // Inside the room we already have its live channel, so just broadcast on it.
@@ -184,7 +203,6 @@ const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => 
             </p>
           </div>
           <SaveRoomForm
-            guest={!isOwner}
             save={async (name) => {
               await save(name)
               toast('Room saved.')
@@ -215,15 +233,37 @@ const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => 
 /* Shell                                                               */
 /* ------------------------------------------------------------------ */
 
-const Shell: React.FC = () => {
-  const { roomId, roomName, isOwner, setRoomName, setAllowGuests, unnamed, peers, status, me, on } =
-    useRoom()
+/** `openOnEnter`: back from signing in to share or save, so pick up where they left off. */
+const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }) => {
+  const {
+    roomId,
+    roomName,
+    isOwner,
+    setRoomName,
+    setAllowGuests,
+    unnamed,
+    isCreator,
+    hasOwner,
+    peers,
+    status,
+    me,
+    on,
+  } = useRoom()
   const { isGuest, signOut } = useAuth()
   // Every visit to a room starts on the board (Shell remounts per room, so this resets on entry).
   const [page, setPage] = useState<Page>('board')
   const { theme, toggle: toggleTheme } = useTheme()
-  const [shareOpen, setShareOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [shareOpen, setShareOpen] = useState(openOnEnter === 'share')
+  const [settingsOpen, setSettingsOpen] = useState(openOnEnter === 'settings')
+  const [signIn, setSignIn] = useState<SignInReason | null>(null)
+  // A guest's own room needs an account before it can be shared or saved.
+  const mustSignIn = isGuest && isCreator && !hasOwner
+
+  const openShare = useCallback(
+    () => (mustSignIn ? setSignIn('share') : setShareOpen(true)),
+    [mustSignIn],
+  )
+  const openSettings = () => (mustSignIn ? setSignIn('save') : setSettingsOpen(true))
 
   // The owner's changes, as seen by everyone else in the room.
   useEffect(() => {
@@ -255,6 +295,7 @@ const Shell: React.FC = () => {
   useEffect(() => {
     if (!unnamed) return
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (leavingToSignIn) return // Google sign-in; they come straight back
       e.preventDefault()
       e.returnValue = UNSAVED_WARNING
     }
@@ -291,7 +332,7 @@ const Shell: React.FC = () => {
       const target = (e as CustomEvent).detail
       if (target === 'board' || target === 'canvas') go(target)
     }
-    const onShare = () => setShareOpen(true)
+    const onShare = () => openShare()
     window.addEventListener('keydown', onKey)
     window.addEventListener('devboard:navigate', onNavigate)
     window.addEventListener('devboard:share', onShare)
@@ -319,7 +360,7 @@ const Shell: React.FC = () => {
       offNav()
       offToast()
     }
-  }, [go])
+  }, [go, openShare])
 
   const statusLabel =
     status === 'live' ? 'Live' : status === 'connecting' ? 'Connecting' : 'Offline'
@@ -365,7 +406,7 @@ const Shell: React.FC = () => {
               className="dv-btn ghost dv-no-drag shrink-0 text-xs"
               style={{ color: 'var(--dv-warning)' }}
               title={`${UNSAVED_WARNING} Name it to keep it.`}
-              onClick={() => setSettingsOpen(true)}
+              onClick={openSettings}
             >
               Not saved
             </button>
@@ -457,7 +498,7 @@ const Shell: React.FC = () => {
               <button
                 className="dv-iconbtn"
                 title="Room settings"
-                onClick={() => setSettingsOpen((v) => !v)}
+                onClick={() => (settingsOpen ? setSettingsOpen(false) : openSettings())}
               >
                 <Settings size={16} />
               </button>
@@ -465,8 +506,18 @@ const Shell: React.FC = () => {
             </div>
           )}
 
+          {isGuest && (
+            <button className="dv-btn" onClick={() => setSignIn('header')}>
+              <LogIn size={14} />
+              Sign in
+            </button>
+          )}
+
           <div className="relative">
-            <button className="dv-btn primary" onClick={() => setShareOpen((v) => !v)}>
+            <button
+              className="dv-btn primary"
+              onClick={() => (shareOpen ? setShareOpen(false) : openShare())}
+            >
               <Share2 size={14} />
               Share
             </button>
@@ -493,6 +544,16 @@ const Shell: React.FC = () => {
         </div>
       </main>
 
+      {signIn && (
+        <SignInPanel
+          roomId={roomId}
+          reason={signIn}
+          claim={isGuest && isCreator && !hasOwner}
+          guestName={me.name}
+          onClose={() => setSignIn(null)}
+        />
+      )}
+
       {toastMsg && (
         <div className="pointer-events-none fixed bottom-6 left-1/2 z-[100] -translate-x-1/2">
           <div className="dv-toast">{toastMsg}</div>
@@ -517,13 +578,36 @@ type Gate =
   | { state: 'in'; room: RoomSession }
   | { state: 'blocked'; name: string | null; deleted: boolean; error: unknown }
 
-/** Lets you into `roomId`, joining it from the link if you're not a member yet. */
-const RoomGate: React.FC<{ roomId: string; userId: string }> = ({ roomId, userId }) => {
+/** How long after signing in a room still reopens Share or settings by itself. */
+const INTENT_FRESH_MS = 15 * 60_000
+
+/**
+ * Lets you into `roomId`, joining it from the link if you're not a member yet. Back from signing
+ * in from inside it, first claims the room if the guest made it.
+ */
+const RoomGate: React.FC<{ roomId: string; userId: string; isGuest: boolean }> = ({
+  roomId,
+  userId,
+  isGuest,
+}) => {
   const [gate, setGate] = useState<Gate>({ state: 'checking' })
+  // Read once per mount: the intent is cleared once used, and effects can run twice in dev.
+  const [intent] = useState(() => {
+    const it = !isGuest ? peekSignInIntent() : null
+    return it?.roomId === roomId ? it : null
+  })
+  const openOnEnter = intent && Date.now() - intent.at < INTENT_FRESH_MS ? intent.then : undefined
+  const claim = useRef<Promise<unknown> | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    enterRoom(roomId)
+    if (intent) clearSignInIntent()
+    // One claim per mount; a failed claim still lets them in (as a member, if the room is named).
+    claim.current ??= intent?.claim
+      ? claimRoom(roomId, intent.claim).catch(() => undefined)
+      : Promise.resolve()
+    claim.current
+      .then(() => enterRoom(roomId))
       .catch(() => joinRoom(roomId))
       .then((room) => !cancelled && setGate({ state: 'in', room }))
       .catch(async (e) => {
@@ -533,7 +617,7 @@ const RoomGate: React.FC<{ roomId: string; userId: string }> = ({ roomId, userId
     return () => {
       cancelled = true
     }
-  }, [roomId])
+  }, [roomId, intent])
 
   if (gate.state === 'checking') return <Splash />
   if (gate.state === 'blocked')
@@ -556,8 +640,10 @@ const RoomGate: React.FC<{ roomId: string; userId: string }> = ({ roomId, userId
       isOwner={gate.room.isOwner}
       allowGuests={gate.room.allowGuests}
       unnamed={gate.room.unnamed}
+      isCreator={gate.room.isCreator}
+      hasOwner={gate.room.hasOwner}
     >
-      <Shell />
+      <Shell openOnEnter={openOnEnter} />
     </RoomProvider>
   )
 }
@@ -585,11 +671,12 @@ const Router: React.FC = () => {
   const [holdInvite, setHoldInvite] = useState(false)
 
   // Back from Google sign-in: OAuth returns to the bare site URL, so reopen the linked room.
+  // A confirmation email can open in a new tab, which only has the sign-in intent to go on.
   useEffect(() => {
     if (!session || roomId) return
-    const pending = takeReturnRoom()
+    const pending = takeReturnRoom() ?? (!isGuest ? peekSignInIntent()?.roomId : null)
     if (pending) goToRoom(pending)
-  }, [session, roomId])
+  }, [session, roomId, isGuest])
 
   useEffect(() => {
     const onHash = () => setRoomId(getRoomIdFromLocation())
@@ -603,7 +690,12 @@ const Router: React.FC = () => {
     if (!session || (holdInvite && isGuest))
       return <InviteOnboarding roomId={roomId} onHold={setHoldInvite} />
     return (
-      <RoomGate key={`${roomId}:${session.user.id}`} roomId={roomId} userId={session.user.id} />
+      <RoomGate
+        key={`${roomId}:${session.user.id}`}
+        roomId={roomId}
+        userId={session.user.id}
+        isGuest={isGuest}
+      />
     )
   }
   // Guests don't have a rooms list; they go back to the start screen.

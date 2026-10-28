@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 import { rememberReturnRoom } from './room'
+import { markLeavingToSignIn } from './sign-in-intent'
 
 /**
  * Older username-only accounts are Supabase email accounts with a placeholder address (see the
@@ -163,11 +164,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signInWithGoogle = useCallback(async () => {
     rememberReturnRoom()
+    markLeavingToSignIn()
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo: siteUrl() },
     })
-    if (error) fail(error.message)
+    if (error) {
+      markLeavingToSignIn(false)
+      fail(error.message)
+    }
   }, [])
 
   const signInAsGuest = useCallback(async () => {

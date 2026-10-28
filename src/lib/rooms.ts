@@ -13,6 +13,10 @@ export interface RoomSession {
   allowGuests: boolean
   /** Started without a name: nobody else can join, and it's discarded on leaving. */
   unnamed: boolean
+  /** You made it, even as a guest (a guest creator can sign in to claim it). */
+  isCreator: boolean
+  /** It belongs to an account. Rooms made by guests have no owner until claimed. */
+  hasOwner: boolean
 }
 
 export interface RoomSummary {
@@ -35,6 +39,7 @@ export type RoomError =
   | 'not_owner'
   | 'deleted'
   | 'guests_disabled'
+  | 'needs_account'
 
 export class RoomRpcError extends Error {
   code: RoomError | string
@@ -54,6 +59,7 @@ const ROOM_ERRORS: Record<RoomError, string> = {
   not_owner: 'Only the signed-in person who created this room can do that.',
   deleted: 'This room was deleted by its owner.',
   guests_disabled: 'This room only lets in signed-in accounts. Sign in to join it.',
+  needs_account: 'Sign in to save this room.',
 }
 
 async function rpc(fn: string, args: Record<string, string | boolean>) {
@@ -72,6 +78,8 @@ async function call(fn: string, args: Record<string, string>): Promise<RoomSessi
     isOwner: !!data.is_owner,
     allowGuests: data.allow_guests ?? true,
     unnamed: !!data.unnamed,
+    isCreator: !!data.is_creator,
+    hasOwner: data.has_owner ?? true,
   }
 }
 
@@ -84,6 +92,15 @@ export const createQuickRoom = () => call('create_quick_room', {})
 /** Names an unnamed room, so it's kept and anyone with its link can join. */
 export const saveRoom = async (roomId: string, name: string): Promise<string> =>
   (await rpc('save_room', { p_room_id: roomId, p_name: cleanRoomName(name) })).room_name
+
+/** Guest creator only, right before signing in: a one-time code the account uses to claim it. */
+export const startRoomClaim = async (roomId: string): Promise<string> =>
+  (await rpc('start_room_claim', { p_room_id: roomId })).token
+
+/** Moves a room a guest made to the account they just signed in to. */
+export const claimRoom = async (roomId: string, token: string) => {
+  await rpc('claim_room', { p_room_id: roomId, p_token: token })
+}
 
 /** Re-enter a room you're already a member of. */
 export const enterRoom = (roomId: string) => call('enter_room', { p_room_id: roomId })

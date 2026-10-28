@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabase'
 import { useRoom } from './room'
-import { DEFAULT_STATUS, DEFAULT_URGENCY, type TaskOption, resolveOption, splitCustom } from './options.ts'
+import {
+  DEFAULT_STATUS,
+  DEFAULT_URGENCY,
+  type TaskOption,
+  resolveOption,
+  splitCustom,
+} from './options.ts'
 
 export interface TaskLite {
   id: string
@@ -17,7 +23,10 @@ export interface TaskLite {
 export function useRoomTasks() {
   const { roomId, on } = useRoom()
   const [list, setList] = useState<TaskLite[]>([])
-  const [custom, setCustom] = useState<{ status: TaskOption[]; urgency: TaskOption[] }>({ status: [], urgency: [] })
+  const [custom, setCustom] = useState<{ status: TaskOption[]; urgency: TaskOption[] }>({
+    status: [],
+    urgency: [],
+  })
 
   const load = useCallback(async () => {
     const [t, o] = await Promise.all([
@@ -25,7 +34,14 @@ export function useRoomTasks() {
       supabase.from('task_options').select('*').eq('room_id', roomId),
     ])
     if (t.data) {
-      setList(t.data.map((r: any) => ({ id: r.id, title: r.title, status: r.status, urgency: r.urgency ?? 'medium' })))
+      setList(
+        t.data.map((r: any) => ({
+          id: r.id,
+          title: r.title,
+          status: r.status,
+          urgency: r.urgency ?? 'medium',
+        })),
+      )
     }
     if (o.data) setCustom(splitCustom(o.data))
   }, [roomId])

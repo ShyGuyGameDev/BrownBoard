@@ -33,6 +33,10 @@ interface RoomContextValue {
   /** No name or password yet: only its creator is in it, and it isn't kept. */
   unnamed: boolean
   setUnnamed: (unnamed: boolean) => void
+  /** You made it, even as a guest. */
+  isCreator: boolean
+  /** It belongs to an account (only those rooms can be shared). */
+  hasOwner: boolean
   me: Peer
   peers: Peer[]
   status: RoomStatus
@@ -129,6 +133,8 @@ interface RoomProviderProps {
   isOwner: boolean
   allowGuests: boolean
   unnamed: boolean
+  isCreator: boolean
+  hasOwner: boolean
   children: React.ReactNode
 }
 
@@ -140,6 +146,8 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   isOwner,
   allowGuests: initialAllowGuests,
   unnamed: initialUnnamed,
+  isCreator,
+  hasOwner,
   children,
 }) => {
   const [roomName, setRoomName] = useState(initialRoomName)
@@ -237,13 +245,28 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       setAllowGuests,
       unnamed,
       setUnnamed,
+      isCreator,
+      hasOwner,
       me,
       peers,
       status,
       send,
       on,
     }),
-    [roomId, roomName, isOwner, allowGuests, unnamed, me, peers, status, send, on],
+    [
+      roomId,
+      roomName,
+      isOwner,
+      allowGuests,
+      unnamed,
+      isCreator,
+      hasOwner,
+      me,
+      peers,
+      status,
+      send,
+      on,
+    ],
   )
 
   return <RoomContext.Provider value={value}>{children}</RoomContext.Provider>

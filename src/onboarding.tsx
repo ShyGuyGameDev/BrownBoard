@@ -25,6 +25,7 @@ import {
   type RoomSummary,
   createQuickRoom,
   clearFlash,
+  startRoomClaim,
   joinRoom,
   myRooms,
   peekFlash,
@@ -35,6 +36,7 @@ import {
 } from './lib/rooms'
 import { type RoomSettingsActions, RoomSettingsForm } from './room-settings'
 import { colorFor, goHome, goToRoom, initials } from './lib/room'
+import { setSignInIntent } from './lib/sign-in-intent'
 import { useTheme } from './lib/theme'
 
 /* ------------------------------------------------------------------ */
@@ -517,7 +519,7 @@ export const Onboarding: React.FC = () => {
               <span className="min-w-0 flex-1">
                 <span className="dv-choice-title block">Start a blank room</span>
                 <span className="dv-choice-desc block">
-                  Jump straight in as a guest. Name it later to keep it and invite people.
+                  Jump straight in as a guest. Sign in when you want to keep or share it.
                 </span>
               </span>
               {starting ? (
@@ -1001,6 +1003,76 @@ const Modal: React.FC<{ title: string; onClose: () => void; children: React.Reac
         {children}
       </div>
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Signing in from inside a room                                       */
+/* ------------------------------------------------------------------ */
+
+export type SignInReason = 'share' | 'save' | 'header'
+
+const SIGN_IN_TITLES: Record<SignInReason, string> = {
+  share: 'Sign in to share this room',
+  save: 'Sign in to save this room',
+  header: 'Sign in',
+}
+
+/**
+ * The start screen's sign-in, over the room. Signing in swaps the guest session for the account,
+ * which reopens the room as that account; a room the guest made moves to it (see claim_room).
+ * Google leaves the page, so what to do afterwards is kept in a sign-in intent.
+ */
+export const SignInPanel: React.FC<{
+  roomId: string
+  reason: SignInReason
+  /** The guest made this room, so it moves to the account. */
+  claim: boolean
+  guestName: string
+  onClose: () => void
+}> = ({ roomId, reason, claim, guestName, onClose }) => {
+  const [step, setStep] = useState<'account' | 'forgot'>('account')
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const then = reason === 'share' ? 'share' : reason === 'save' ? 'settings' : undefined
+    ;(claim ? startRoomClaim(roomId) : Promise.resolve(undefined))
+      .then((token) => {
+        if (cancelled) return
+        setSignInIntent({ roomId, claim: token, then })
+        setReady(true)
+      })
+      .catch((e) => !cancelled && setError(errorText(e)))
+    return () => {
+      cancelled = true
+    }
+  }, [roomId, reason, claim])
+
+  return (
+    <Modal title={SIGN_IN_TITLES[reason]} onClose={onClose}>
+      {step === 'forgot' ? (
+        <ForgotForm onBack={() => setStep('account')} />
+      ) : (
+        <>
+          <p className="dv-sub -mt-2">
+            {claim
+              ? "Rooms belong to an account. Sign in or create one and this room moves to it. You'll come straight back here."
+              : `You'll come straight back to this room, under your own name instead of “${guestName}”.`}
+          </p>
+          {error ? (
+            <Alert>{error}</Alert>
+          ) : ready ? (
+            <AccountForm onForgot={() => setStep('forgot')} />
+          ) : (
+            <div className="flex justify-center py-6">
+              <span className="dv-spinner" style={{ color: 'var(--dv-muted)' }} />
+            </div>
+          )}
+        </>
+      )}
+    </Modal>
   )
 }
 

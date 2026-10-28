@@ -17,9 +17,7 @@ export interface RoomSettingsActions {
 export const SaveRoomForm: React.FC<{
   save: (name: string) => Promise<void>
   submitLabel?: string
-  /** Guests can save a room but can't manage it afterwards. */
-  guest?: boolean
-}> = ({ save, submitLabel = 'Save room', guest }) => {
+}> = ({ save, submitLabel = 'Save room' }) => {
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -51,11 +49,6 @@ export const SaveRoomForm: React.FC<{
         placeholder="e.g. Design sprint"
         onChange={(e) => setName(e.target.value)}
       />
-      {guest && (
-        <p className="m-0 text-[11px] leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
-          As a guest, you won't be able to rename or delete the room later.
-        </p>
-      )}
       {error && (
         <p className="m-0 text-xs" role="alert" style={{ color: 'var(--dv-danger)' }}>
           {error}
