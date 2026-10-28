@@ -29,7 +29,7 @@ import { HexColorPicker } from 'react-colorful'
 import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room'
 import { bus, isTyping, setLinkCounts, toast } from './lib/bus'
-import { useRoomTasks } from './lib/tasks'
+import { type TaskLite, useRoomTasks } from './lib/tasks'
 import { clearCanvas as clearRoomCanvas } from './lib/rooms'
 import { canvas, font, noteColors, noteInk, swatches } from './design/tokens'
 import { LIMITS, cleanInk, cleanLine, cleanMultiline, isSafeImageSrc, safeExtension } from './lib/sanitize'
@@ -41,9 +41,10 @@ import {
   fileKind,
   downloadHref,
   formatBytes,
+  isImageFile,
   uploadRoomFile,
 } from './lib/files'
-import { FileViewer } from './file-viewer'
+import { FileChip, FileViewer } from './file-viewer'
 
 /* ================================================================== */
 /* Types                                                               */
@@ -165,6 +166,150 @@ const ellipsize = (ctx: CanvasRenderingContext2D, text: string, maxW: number) =>
   while (chars.length && ctx.measureText(chars.join('') + '…').width > maxW) chars.pop()
   return chars.join('') + '…'
 }
+
+/* Task cards on the canvas mirror the board card: title, description, images and files. */
+type Rect = { x: number; y: number; w: number; h: number }
+interface TaskCardLayout {
+  title: string[]
+  desc: string[]
+  /** Images (shown whole) and file rows, positioned relative to the card's top-left. */
+  images: (Rect & { file: Attachment })[]
+  rows: (Rect & { file: Attachment })[]
+  /** "+N more …" lines for what didn't fit. */
+  more: { y: number; text: string }[]
+  /** Everything in the order the viewer steps through them. */
+  files: Attachment[]
+  height: number
+}
+
+const TASK_CARD = {
+  w: 260,
+  pad: 16,
+  minH: 92,
+  titleLines: 2,
+  titleLH: 19,
+  descLines: 4,
+  descLH: 17,
+  maxImages: 3,
+  /** Taller images are scaled down to this height, never cropped. */
+  maxImageH: 260,
+  imageGap: 6,
+  maxRows: 3,
+  rowH: 26,
+  moreH: 18,
+  footer: 40,
+}
+
+/**
+ * Set by the mounted canvas so module-level geometry (getBBox, hit tests) can size task cards
+ * from the live task. There's only ever one canvas on screen.
+ */
+let lookupTask: (taskId: string) => TaskLite | undefined = () => undefined
+/** Natural sizes of loaded images, so task cards can give each image its own shape. */
+const imageDims = new Map<string, { w: number; h: number }>()
+/** Bumped whenever an image size becomes known, so cached card layouts are redone. */
+let imageDimsVersion = 0
+const layoutCache = new Map<
+  string,
+  { task: TaskLite | undefined; w: number; version: number; layout: TaskCardLayout }
+>()
+
+const plural = (n: number, word: string) => `+${n} more ${word}${n === 1 ? '' : 's'}`
+
+function layoutTaskCard(el: El, w: number): TaskCardLayout {
+  const task = el.taskId ? lookupTask(el.taskId) : undefined
+  const hit = layoutCache.get(el.id)
+  if (hit && hit.task === task && hit.w === w && hit.version === imageDimsVersion) return hit.layout
+
+  const { pad } = TASK_CARD
+  const inner = Math.max(40, w - pad * 2)
+  let y = 28
+  measureCtx.font = `600 14px ${FONT}`
+  const title = wrapLines(measureCtx, task ? task.title : 'This task was deleted', inner).slice(
+    0,
+    TASK_CARD.titleLines,
+  )
+  y += Math.max(1, title.length) * TASK_CARD.titleLH
+
+  let desc: string[] = []
+  if (task?.description) {
+    measureCtx.font = `12.5px ${FONT}`
+    const all = task.description
+      .split('\n')
+      .flatMap((p) => (p.trim() ? wrapLines(measureCtx, p, inner) : []))
+    desc = all.slice(0, TASK_CARD.descLines)
+    if (all.length > desc.length)
+      desc[desc.length - 1] = ellipsize(measureCtx, `${desc[desc.length - 1]}…`, inner)
+    if (desc.length) y += 4 + desc.length * TASK_CARD.descLH
+  }
+
+  const imageFiles = task?.files.filter(isImageFile) ?? []
+  const others = task?.files.filter((f) => !isImageFile(f)) ?? []
+  const more: TaskCardLayout['more'] = []
+
+  const images: TaskCardLayout['images'] = []
+  if (imageFiles.length) {
+    y += 8
+    imageFiles.slice(0, TASK_CARD.maxImages).forEach((file, i) => {
+      if (i) y += TASK_CARD.imageGap
+      // Full width at the image's own proportions (16:9 until it has loaded).
+      const d = imageDims.get(file.url)
+      const h = Math.min(TASK_CARD.maxImageH, d ? (inner * d.h) / d.w : inner * (9 / 16))
+      images.push({ file, x: pad, y, w: inner, h })
+      y += h
+    })
+    if (imageFiles.length > TASK_CARD.maxImages) {
+      more.push({ y: y + 4, text: plural(imageFiles.length - TASK_CARD.maxImages, 'image') })
+      y += TASK_CARD.moreH
+    }
+  }
+
+  const rows: TaskCardLayout['rows'] = []
+  if (others.length) {
+    y += 8
+    others.slice(0, TASK_CARD.maxRows).forEach((file) => {
+      rows.push({ file, x: pad, y, w: inner, h: TASK_CARD.rowH - 4 })
+      y += TASK_CARD.rowH
+    })
+    if (others.length > TASK_CARD.maxRows) {
+      more.push({ y: y + 2, text: plural(others.length - TASK_CARD.maxRows, 'file') })
+      y += TASK_CARD.moreH
+    }
+  }
+
+  const layout: TaskCardLayout = {
+    title,
+    desc,
+    images,
+    rows,
+    more,
+    files: [...imageFiles, ...others],
+    height: Math.max(TASK_CARD.minH, y + TASK_CARD.footer),
+  }
+  layoutCache.set(el.id, { task, w, version: imageDimsVersion, layout })
+  return layout
+}
+
+/** Which of a task card's files is at world point `p`, if any. */
+const taskFileAt = (el: El, b: BBox, p: Pt) => {
+  const layout = layoutTaskCard(el, b.maxX - b.minX)
+  const at = [...layout.images, ...layout.rows].find(
+    (r) =>
+      p.x >= b.minX + r.x &&
+      p.x <= b.minX + r.x + r.w &&
+      p.y >= b.minY + r.y &&
+      p.y <= b.minY + r.y + r.h,
+  )
+  return at ? { files: layout.files, index: layout.files.indexOf(at.file) } : null
+}
+
+/** Draws all of `img` inside the rect, centred, keeping its proportions. */
+const drawContain = (ctx: CanvasRenderingContext2D, img: HTMLImageElement, r: Rect) => {
+  const iw = img.naturalWidth || r.w
+  const ih = img.naturalHeight || r.h
+  const s = Math.min(r.w / iw, r.h / ih)
+  ctx.drawImage(img, r.x + (r.w - iw * s) / 2, r.y + (r.h - ih * s) / 2, iw * s, ih * s)
+}
 const resolveColor = (c: string | undefined, ink: string) => (!c || c === 'auto' ? ink : c)
 
 const segDist = (p: Pt, a: Pt, b: Pt) => {
@@ -260,6 +405,12 @@ function getBBox(el: El, map: Map<string, El>): BBox {
   if (el.type === 'connector') {
     const p = connPts(el, map)
     return p ? bboxOf(p[0], p[1]) : { minX: 0, minY: 0, maxX: 0, maxY: 0 }
+  }
+  if (el.type === 'task' && el.points.length >= 2) {
+    // Grows to fit the task's description and files; never smaller than its stored size.
+    const b = bboxOf(el.points[0], el.points[1])
+    const need = layoutTaskCard(el, b.maxX - b.minX).height
+    return { ...b, maxY: Math.max(b.maxY, b.minY + need) }
   }
   if ((isBoxEl(el) || el.type === 'shape') && el.points.length >= 2)
     return bboxOf(el.points[0], el.points[1])
@@ -454,7 +605,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   })
   const [editing, setEditing] = useState<{ id: string; isNew: boolean } | null>(null)
   const [editText, setEditText] = useState('')
-  const [viewing, setViewing] = useState<Attachment | null>(null)
+  const [viewing, setViewing] = useState<{ files: Attachment[]; index: number } | null>(null)
   const viewingRef = useRef(false)
   viewingRef.current = !!viewing
   const [, force] = useState(0)
@@ -474,6 +625,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   const editTextRef = useRef('')
   const taskRef = useRef(taskData)
   taskRef.current = taskData
+  lookupTask = (id) => taskRef.current.byId.get(id)
   const undoStack = useRef<Entry[]>([])
   const redoStack = useRef<Entry[]>([])
   const pointers = useRef(new Map<number, Pt>())
@@ -509,6 +661,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       const img = new Image()
       img.onload = () => {
         imageCache.current.set(src, img)
+        imageDims.set(src, { w: img.naturalWidth || 1, h: img.naturalHeight || 1 })
+        imageDimsVersion++
         requestDraw()
       }
       img.onerror = () => imageCache.current.delete(src)
@@ -756,17 +910,66 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         ctx.fillStyle = urg?.color ?? pal.border
         ctx.fillRect(b.minX, b.minY, 5, h)
         ctx.restore()
+        const layout = layoutTaskCard(el, w)
         ctx.textBaseline = 'top'
         ctx.fillStyle = pal.muted
         ctx.font = `11px ${MONO}`
         ctx.fillText('task', b.minX + 16, b.minY + 11)
         ctx.fillStyle = task ? pal.ink : pal.muted
         ctx.font = `600 14px ${FONT}`
-        const lines = wrapLines(ctx, task ? task.title : 'This task was deleted', w - 32).slice(
-          0,
-          2,
+        layout.title.forEach((l, i) =>
+          ctx.fillText(l, b.minX + 16, b.minY + 28 + i * TASK_CARD.titleLH),
         )
-        lines.forEach((l, i) => ctx.fillText(l, b.minX + 16, b.minY + 28 + i * 19))
+        if (layout.desc.length) {
+          ctx.fillStyle = pal.muted
+          ctx.font = `12.5px ${FONT}`
+          const dy = 28 + layout.title.length * TASK_CARD.titleLH + 4
+          layout.desc.forEach((l, i) =>
+            ctx.fillText(l, b.minX + 16, b.minY + dy + i * TASK_CARD.descLH),
+          )
+        }
+        for (const im of layout.images) {
+          const r = { x: b.minX + im.x, y: b.minY + im.y, w: im.w, h: im.h }
+          const img = getImage(im.file.url)
+          if (img) drawContain(ctx, img, r)
+          else {
+            ctx.fillStyle = pal.border
+            ctx.beginPath()
+            ctx.roundRect(r.x, r.y, r.w, r.h, 6)
+            ctx.fill()
+          }
+        }
+        for (const row of layout.rows) {
+          const x = b.minX + row.x
+          const y = b.minY + row.y
+          ctx.strokeStyle = pal.border
+          ctx.lineWidth = 1 / k
+          ctx.beginPath()
+          ctx.roundRect(x, y, row.w, row.h, 6)
+          ctx.stroke()
+          ctx.fillStyle = KIND_COLORS[fileKind(row.file.type, row.file.name)]
+          ctx.beginPath()
+          ctx.roundRect(x + 4, y + 4, 30, row.h - 8, 4)
+          ctx.fill()
+          ctx.fillStyle = '#ffffff'
+          ctx.font = `600 8px ${MONO}`
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(ellipsize(ctx, fileBadge(row.file), 28), x + 19, y + row.h / 2)
+          ctx.textAlign = 'left'
+          const size = formatBytes(row.file.size)
+          ctx.font = `11px ${FONT}`
+          const sizeW = size ? ctx.measureText(size).width + 8 : 0
+          ctx.fillStyle = pal.muted
+          if (size) ctx.fillText(size, x + row.w - sizeW, y + row.h / 2)
+          ctx.fillStyle = pal.ink
+          ctx.font = `12px ${FONT}`
+          ctx.fillText(ellipsize(ctx, row.file.name, row.w - 46 - sizeW), x + 40, y + row.h / 2)
+          ctx.textBaseline = 'top'
+        }
+        ctx.fillStyle = pal.muted
+        ctx.font = `11.5px ${FONT}`
+        for (const m of layout.more) ctx.fillText(m.text, b.minX + 16, b.minY + m.y)
         if (stat) {
           ctx.fillStyle = stat.color
           ctx.beginPath()
@@ -1855,8 +2058,12 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     const hit = hitTest(p)
     if (!hit) return createText(p, false)
     if (hit.type === 'text') beginEdit(hit, false)
-    else if (hit.type === 'task') enterFocus(hit.id)
-    else if ((hit.type === 'file' || hit.type === 'image') && hit.src) setViewing(toAttachment(hit))
+    else if (hit.type === 'task') {
+      const file = taskFileAt(hit, getBBox(hit, st.map), p)
+      if (file) setViewing(file)
+      else enterFocus(hit.id)
+    } else if ((hit.type === 'file' || hit.type === 'image') && hit.src)
+      setViewing({ files: [toAttachment(hit)], index: 0 })
   }
 
   /* ================================================================== */
@@ -2199,6 +2406,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       : null
   const singleTask =
     selEls.length === 1 && selEls[0].type === 'task' && selEls[0].id !== focus ? selEls[0] : null
+  const singleTaskFiles = singleTask?.taskId ? (taskData.byId.get(singleTask.taskId)?.files ?? []) : []
   const focusCard = focus ? st.map.get(focus) : undefined
   const focusTaskInfo = focusCard?.taskId ? taskData.byId.get(focusCard.taskId) : undefined
   const focusLinked = st.focusSet
@@ -2360,7 +2568,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           <span className="dv-label truncate" title={singleFile.name}>
             {singleFile.name}
           </span>
-          <button className="dv-btn primary justify-center" onClick={() => setViewing(singleFile)}>
+          <button className="dv-btn primary justify-center" onClick={() => setViewing({ files: [singleFile], index: 0 })}>
             <Eye size={14} />
             Open
           </button>
@@ -2377,9 +2585,9 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
 
       {viewing && (
         <FileViewer
-          files={[viewing]}
-          index={0}
-          onIndex={() => {}}
+          files={viewing.files}
+          index={viewing.index}
+          onIndex={(index) => setViewing((v) => v && { ...v, index })}
           onClose={() => setViewing(null)}
         />
       )}
@@ -2404,6 +2612,20 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             <Kanban size={14} />
             Open on board
           </button>
+          {singleTaskFiles.length > 0 && (
+            <>
+              <span className="dv-label mt-1.5">Files</span>
+              <div className="dv-scroll flex max-h-48 flex-col gap-1 overflow-y-auto">
+                {singleTaskFiles.map((f, i) => (
+                  <FileChip
+                    key={f.url}
+                    file={f}
+                    onClick={() => setViewing({ files: singleTaskFiles, index: i })}
+                  />
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
 

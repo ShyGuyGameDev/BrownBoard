@@ -13,7 +13,7 @@ import {
 import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room'
 import { bus, getLinkCounts, isTyping, toast } from './lib/bus'
-import { type Attachment, cleanAttachment, fileKind, uploadRoomFile } from './lib/files'
+import { type Attachment, cleanAttachment, isImageFile, taskFiles, uploadRoomFile } from './lib/files'
 import { LIMITS, cleanHexColor, cleanLine, cleanMultiline } from './lib/sanitize'
 import { FileChip, FileIcon, FileViewer } from './file-viewer'
 import {
@@ -59,15 +59,6 @@ interface Category {
   tasks: Task[]
 }
 
-/** attachments, plus any images from the older `images` column that haven't been moved over yet. */
-const readFiles = (t: DbTask): Attachment[] => {
-  const list = (v: unknown) =>
-    (Array.isArray(v) ? v : []).map(cleanAttachment).filter((a): a is Attachment => !!a)
-  const files = list(t.attachments)
-  const seen = new Set(files.map((f) => f.url))
-  return [...list(t.images).filter((f) => !seen.has(f.url)), ...files]
-}
-
 /** List widths in px. The default matches .dv-col in devboard.css. */
 const COL_WIDTH = { min: 220, max: 720, default: 304, step: 16 }
 const colWidthsKey = (roomId: string) => `brownboard:col-widths:${roomId}`
@@ -89,7 +80,7 @@ const readColWidths = (roomId: string): Record<string, number> => {
 
 const clampColWidth = (w: number) => Math.round(Math.min(COL_WIDTH.max, Math.max(COL_WIDTH.min, w)))
 
-const isImage = (f: Attachment) => fileKind(f.type, f.name) === 'image'
+const isImage = isImageFile
 
 const mapTask = (t: DbTask): Task => ({
   id: t.id,
@@ -97,7 +88,7 @@ const mapTask = (t: DbTask): Task => ({
   description: t.description || '',
   status: t.status,
   urgency: t.urgency ?? 'medium',
-  files: readFiles(t),
+  files: taskFiles(t),
   categoryId: t.category_id,
   position: t.position ?? 0,
 })
@@ -1156,7 +1147,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                       src={f.url}
                                       alt=""
                                       draggable={false}
-                                      className="h-full w-full object-cover"
+                                      className="h-full w-full object-contain"
+                                      style={{ background: 'var(--dv-panel-2)' }}
                                     />
                                   ) : (
                                     <div
@@ -1224,19 +1216,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               return (
                                 <>
                                   {images.length > 0 && (
-                                    <div
-                                      className="mt-2 grid gap-1.5"
-                                      style={{
-                                        gridTemplateColumns: `repeat(${Math.min(3, images.length)}, 1fr)`,
-                                      }}
-                                    >
-                                      {images.slice(0, 3).map((f, i) => (
+                                    // Whole images at their own proportions; very tall ones are scaled down, not cropped.
+                                    <div className="mt-2 flex flex-col gap-1.5">
+                                      {images.slice(0, 3).map((f) => (
                                         <button
                                           key={f.url}
-                                          className="relative overflow-hidden rounded-md border"
+                                          className="flex justify-center overflow-hidden rounded-md border"
                                           style={{
                                             borderColor: 'var(--dv-border)',
-                                            aspectRatio: images.length === 1 ? '16 / 9' : '4 / 3',
+                                            background: 'var(--dv-panel-2)',
                                           }}
                                           title="View image"
                                           onClick={() => open(f)}
@@ -1246,15 +1234,19 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                             alt=""
                                             draggable={false}
                                             loading="lazy"
-                                            className="h-full w-full object-cover"
+                                            className="block h-auto max-h-80 w-auto max-w-full object-contain"
                                           />
-                                          {i === 2 && images.length > 3 && (
-                                            <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-xs font-semibold text-white">
-                                              +{images.length - 3}
-                                            </span>
-                                          )}
                                         </button>
                                       ))}
+                                      {images.length > 3 && (
+                                        <button
+                                          className="self-start text-[11px]"
+                                          style={{ color: 'var(--dv-muted)' }}
+                                          onClick={() => open(images[3])}
+                                        >
+                                          +{images.length - 3} more image{images.length - 3 === 1 ? '' : 's'}
+                                        </button>
+                                      )}
                                     </div>
                                   )}
                                   {others.length > 0 && (

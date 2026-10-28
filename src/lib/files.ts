@@ -75,6 +75,17 @@ export function cleanAttachment(raw: unknown): Attachment | null {
   }
 }
 
+/** A task's files: attachments, plus images from the older `images` column not yet moved over. */
+export function taskFiles(row: { images?: unknown; attachments?: unknown }): Attachment[] {
+  const list = (v: unknown) =>
+    (Array.isArray(v) ? v : []).map(cleanAttachment).filter((a): a is Attachment => !!a)
+  const files = list(row.attachments)
+  const seen = new Set(files.map((f) => f.url))
+  return [...list(row.images).filter((f) => !seen.has(f.url)), ...files]
+}
+
+export const isImageFile = (f: Attachment) => fileKind(f.type, f.name) === 'image'
+
 // Served from our storage domain, these would render as live pages; store them as plain text instead.
 const ACTIVE_TYPE = /^(text\/html|application\/xhtml\+xml|text\/xml|application\/xml)/i
 const ACTIVE_EXT = /^(html?|xhtml|shtml|xml|xht|mht|mhtml)$/

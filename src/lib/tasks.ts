@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabase'
+import { type Attachment, taskFiles } from './files'
 import { useRoom } from './room'
 import {
   DEFAULT_STATUS,
@@ -14,11 +15,13 @@ export interface TaskLite {
   title: string
   status: string
   urgency: string
+  description: string
+  files: Attachment[]
 }
 
 /**
- * Lightweight, live view of the room's tasks. The canvas uses this so task cards
- * always show the current title / status, and so you can pick tasks to drop onto it.
+ * Live view of the room's tasks. The canvas uses this so task cards always show the current
+ * title, status, description and files, and so you can pick tasks to drop onto it.
  */
 export function useRoomTasks() {
   const { roomId, on } = useRoom()
@@ -30,7 +33,7 @@ export function useRoomTasks() {
 
   const load = useCallback(async () => {
     const [t, o] = await Promise.all([
-      supabase.from('tasks').select('id,title,status,urgency').eq('room_id', roomId),
+      supabase.from('tasks').select('*').eq('room_id', roomId),
       supabase.from('task_options').select('*').eq('room_id', roomId),
     ])
     if (t.data) {
@@ -40,6 +43,8 @@ export function useRoomTasks() {
           title: r.title,
           status: r.status,
           urgency: r.urgency ?? 'medium',
+          description: r.description ?? '',
+          files: taskFiles(r),
         })),
       )
     }
