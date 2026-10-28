@@ -784,7 +784,7 @@ const relative = (iso: string) => {
 }
 
 const AddEmailBanner: React.FC = () => {
-  const { addEmail } = useAuth()
+  const { updateEmail } = useAuth()
   const [open, setOpen] = useState(false)
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState(false)
@@ -812,7 +812,7 @@ const AddEmailBanner: React.FC = () => {
             setBusy(true)
             setError(null)
             try {
-              await addEmail(email)
+              await updateEmail(email)
             } catch (err) {
               setError(errorText(err))
             } finally {
@@ -1055,6 +1055,141 @@ const Modal: React.FC<{ title: string; onClose: () => void; children: React.Reac
   )
 }
 
+const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const { user, profile, needsEmail, updateProfileName, updateEmail, setNewPassword } = useAuth()
+  const [name, setName] = useState(profile?.username ?? '')
+  const [email, setEmail] = useState(needsEmail ? '' : (user?.email ?? ''))
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [busy, setBusy] = useState<'name' | 'email' | 'password' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const submit = async (
+    section: 'name' | 'email' | 'password',
+    action: () => Promise<void>,
+    success: string,
+  ) => {
+    setBusy(section)
+    setError(null)
+    setNotice(null)
+    try {
+      await action()
+      setNotice(success)
+      if (section === 'password') {
+        setPassword('')
+        setConfirmPassword('')
+      }
+    } catch (e) {
+      setError(errorText(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <Modal title="Edit profile" onClose={onClose}>
+      <p className="dv-sub -mt-2">
+        Your name is how you appear to others in rooms. Names use 3–24 letters, numbers, or
+        underscores.
+      </p>
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void submit('name', () => updateProfileName(name), 'Your name has been updated.')
+        }}
+      >
+        <Field label="Name">
+          {(id) => (
+            <input
+              id={id}
+              className="dv-input lg"
+              autoComplete="username"
+              maxLength={24}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          )}
+        </Field>
+        <Submit
+          busy={busy === 'name'}
+          disabled={!profile || !/^[a-zA-Z0-9_]{3,24}$/.test(name.trim())}
+        >
+          Save name
+        </Submit>
+      </form>
+
+      <form
+        className="flex flex-col gap-3 border-t pt-4"
+        style={{ borderColor: 'var(--dv-border)' }}
+        onSubmit={(e) => {
+          e.preventDefault()
+          void submit(
+            'email',
+            () => updateEmail(email),
+            'Email update requested. Check your inbox if confirmation is required.',
+          )
+        }}
+      >
+        <Field label="Linked email">
+          {(id) => (
+            <input
+              id={id}
+              className="dv-input lg"
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          )}
+        </Field>
+        <Submit busy={busy === 'email'} disabled={!EMAIL_RE.test(email.trim())}>
+          Save email
+        </Submit>
+      </form>
+
+      <form
+        className="flex flex-col gap-3 border-t pt-4"
+        style={{ borderColor: 'var(--dv-border)' }}
+        onSubmit={(e) => {
+          e.preventDefault()
+          void submit('password', () => setNewPassword(password), 'Your password has been updated.')
+        }}
+      >
+        <Field label="New password" hint={`At least ${MIN_PASSWORD} characters.`}>
+          {(id) => (
+            <PasswordInput
+              id={id}
+              value={password}
+              onChange={setPassword}
+              autoComplete="new-password"
+            />
+          )}
+        </Field>
+        <Field label="Confirm new password">
+          {(id) => (
+            <PasswordInput
+              id={id}
+              value={confirmPassword}
+              onChange={setConfirmPassword}
+              autoComplete="new-password"
+            />
+          )}
+        </Field>
+        <Submit
+          busy={busy === 'password'}
+          disabled={password.length < MIN_PASSWORD || password !== confirmPassword}
+        >
+          Save password
+        </Submit>
+      </form>
+      {error && <Alert>{error}</Alert>}
+      {notice && <Alert tone="info">{notice}</Alert>}
+    </Modal>
+  )
+}
+
 /* ------------------------------------------------------------------ */
 /* Signing in from inside a room                                       */
 /* ------------------------------------------------------------------ */
@@ -1133,6 +1268,7 @@ export const RoomsHome: React.FC = () => {
   const [startError, setStartError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [settingsId, setSettingsId] = useState<string | null>(null)
+  const [profileSettingsOpen, setProfileSettingsOpen] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const settingsRoom = rooms?.find((r) => r.roomId === settingsId) ?? null
 
@@ -1209,6 +1345,14 @@ export const RoomsHome: React.FC = () => {
           </div>
           <span className="max-sm:hidden">{name}</span>
         </div>
+        <button
+          className="dv-btn ghost"
+          title="Edit profile"
+          onClick={() => setProfileSettingsOpen(true)}
+        >
+          <Pencil size={14} />
+          <span className="max-sm:hidden">Profile</span>
+        </button>
         <button className="dv-btn ghost" onClick={signOut}>
           <LogOut size={14} />
           <span className="max-sm:hidden">Sign out</span>
@@ -1315,6 +1459,7 @@ export const RoomsHome: React.FC = () => {
           />
         </Modal>
       )}
+      {profileSettingsOpen && <ProfileSettings onClose={() => setProfileSettingsOpen(false)} />}
     </div>
   )
 }

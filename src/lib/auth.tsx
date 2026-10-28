@@ -53,7 +53,8 @@ interface AuthContextValue {
   signInWithGoogle: (loginHint?: string) => Promise<void>
   signInAsGuest: () => Promise<void>
   signOut: () => Promise<void>
-  addEmail: (email: string) => Promise<void>
+  updateProfileName: (name: string) => Promise<void>
+  updateEmail: (email: string) => Promise<void>
   sendPasswordReset: (email: string) => Promise<void>
   setNewPassword: (password: string) => Promise<void>
 }
@@ -190,14 +191,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setRecovering(false)
   }, [])
 
-  const addEmail = useCallback(async (email: string) => {
+  const updateEmail = useCallback(async (email: string) => {
+    const address = email.trim()
+    if (!EMAIL_RE.test(address)) fail('Enter a valid email address.')
     const { error } = await supabase.auth.updateUser(
-      { email: email.trim() },
+      { email: address },
       { emailRedirectTo: siteUrl() },
     )
     if (error) fail(error.message)
-    // With "Confirm email" off the change is immediate; refresh so needsEmail clears.
     await supabase.auth.refreshSession()
+  }, [])
+
+  const updateProfileName = useCallback(async (name: string) => {
+    const normalized = name.trim().toLowerCase()
+    if (!/^[a-z0-9_]{3,24}$/.test(normalized))
+      fail('Names must be 3–24 characters: letters, numbers and underscores.')
+    const { data, error } = await supabase.rpc('update_profile_name', {
+      p_username: normalized,
+    })
+    if (error) {
+      if (error.code === '23505') fail('That name is already in use.')
+      fail(error.message)
+    }
+    if (typeof data !== 'string') fail('Could not update your profile name. Try again.')
+    setProfile((current) =>
+      current ? { ...current, username: data } : current,
+    )
   }, [])
 
   const sendPasswordReset = useCallback(async (email: string) => {
@@ -241,7 +260,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       signInWithGoogle,
       signInAsGuest,
       signOut,
-      addEmail,
+      updateProfileName,
+      updateEmail,
       sendPasswordReset,
       setNewPassword,
     }),
@@ -258,7 +278,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       signInWithGoogle,
       signInAsGuest,
       signOut,
-      addEmail,
+      updateProfileName,
+      updateEmail,
       sendPasswordReset,
       setNewPassword,
     ],
