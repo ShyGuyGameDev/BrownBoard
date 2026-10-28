@@ -107,6 +107,12 @@ const mapTask = (t: DbTask): Task => ({
   assigneeId: t.assignee_id ?? null,
 })
 
+/** Completed tasks sink to the bottom of their list; order is otherwise kept. */
+const sinkDone = (tasks: Task[]): Task[] => [
+  ...tasks.filter((t) => t.status !== 'completed'),
+  ...tasks.filter((t) => t.status === 'completed'),
+]
+
 const buildBoard = (categories: DbCategory[], tasks: DbTask[]): Category[] => {
   const cats = [...categories].sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
   const buckets = new Map<string, Task[]>(cats.map((c) => [c.id, []]))
@@ -118,7 +124,7 @@ const buildBoard = (categories: DbCategory[], tasks: DbTask[]): Category[] => {
     id: c.id,
     name: c.name,
     position: c.position ?? 0,
-    tasks: buckets.get(c.id) ?? [],
+    tasks: sinkDone(buckets.get(c.id) ?? []),
   }))
 }
 
@@ -421,7 +427,9 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (data) {
       const mapped = mapTask(data)
       setCategories((prev) =>
-        prev.map((c) => (c.id === categoryId ? { ...c, tasks: [...c.tasks, mapped] } : c)),
+        prev.map((c) =>
+          c.id === categoryId ? { ...c, tasks: sinkDone([...c.tasks, mapped]) } : c,
+        ),
       )
       sync()
     }
@@ -433,12 +441,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       Pick<Task, 'status' | 'urgency' | 'title' | 'description' | 'files' | 'dueDate' | 'assigneeId'>
     >,
   ) => {
-    setCategories((prev) =>
-      prev.map((c) => ({
-        ...c,
-        tasks: c.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)),
-      })),
-    )
+    const prev = categoriesRef.current
+    const next = prev.map((c) => {
+      if (!c.tasks.some((t) => t.id === taskId)) return c
+      const tasks = c.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t))
+      if (!('status' in patch)) return { ...c, tasks }
+      return { ...c, tasks: sinkDone(tasks).map((t, i) => ({ ...t, position: i })) }
+    })
+    setCategories(next)
+    if ('status' in patch) savePositions(prev, next)
     const { files, dueDate, assigneeId, ...rest } = patch
     const dbPatch: Record<string, unknown> = { ...rest }
     if ('dueDate' in patch) dbPatch.due_date = dueDate
@@ -630,14 +641,16 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     const next = prev.map((c) => {
       const tasks = c.tasks.filter((t) => t.id !== drag.taskId)
       if (c.id === target.cat) tasks.splice(index, 0, { ...task, categoryId: target.cat })
-      return { ...c, tasks: tasks.map((t, i) => ({ ...t, position: i })) }
+      return { ...c, tasks: sinkDone(tasks).map((t, i) => ({ ...t, position: i })) }
     })
     setCategories(next)
+    savePositions(prev, next)
+  }
 
-    // Persist only what changed.
+  /** Persists only the task positions / lists that changed between two board states. */
+  function savePositions(prev: Category[], next: Category[]) {
     const before = new Map(prev.flatMap((c) => c.tasks.map((t) => [t.id, t] as const)))
     const writes = next
-      .filter((c) => c.id === fromCat.id || c.id === target.cat)
       .flatMap((c) => c.tasks)
       .filter((t) => {
         const o = before.get(t.id)
@@ -1123,6 +1136,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                       <article
                         draggable={!isEditing && !q}
                         data-dragging={dragId === task.id}
+                        data-done={done}
                         className={`dv-card ${flashId === task.id ? 'dv-flash' : ''}`}
                         style={
                           fileOverId === task.id

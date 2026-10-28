@@ -417,6 +417,13 @@ body.dv-grabbing * {
   border-color: color-mix(in srgb, var(--dv-text) 22%, var(--dv-border));
   box-shadow: var(--dv-shadow-card);
 }
+.dv-card[data-done='true'] {
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+.dv-card[data-done='true']:hover {
+  opacity: 0.85;
+}
 .dv-card[data-dragging='true'] {
   opacity: 0.35;
 }
