@@ -107,8 +107,6 @@ interface ColDrag {
   onKey: (e: KeyboardEvent) => void
 }
 
-/** Tilt of a lifted list, so it reads as picked up. */
-const LIFT = 'rotate(1.5deg)'
 const SETTLE = 'transform 260ms var(--dv-ease)'
 
 interface MenuState {
@@ -153,7 +151,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const colDragRef = useRef<ColDrag | null>(null)
   const [colDragId, setColDragId] = useState<string | null>(null)
   /** Where each list was drawn just before a reorder, so it can glide from there to its new slot. */
-  const flipFrom = useRef<{ xs: Map<string, number>; lifted: string | null } | null>(null)
+  const flipFrom = useRef<Map<string, number> | null>(null)
   const [dropAt, setDropAt] = useState<{ cat: string; index: number } | null>(null)
   const dropAtRef = useRef<{ cat: string; index: number } | null>(null)
   const [flashId, setFlashId] = useState<string | null>(null)
@@ -604,13 +602,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   }
 
   /** Puts list `id` at `index`, remembering where everything was drawn so it animates there. */
-  const commitColumnMove = (
-    id: string,
-    index: number,
-    drawnAt: Map<string, number>,
-    lifted: string | null,
-  ) => {
-    flipFrom.current = { xs: drawnAt, lifted }
+  const commitColumnMove = (id: string, index: number, drawnAt: Map<string, number>) => {
+    flipFrom.current = drawnAt
     const prev = categoriesRef.current
     const from = prev.findIndex((c) => c.id === id)
     if (from < 0 || from === index) {
@@ -636,13 +629,13 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       return
     }
     const moving: HTMLElement[] = []
-    for (const [id, x] of flip.xs) {
+    for (const [id, x] of flip) {
       const el = colEls.current.get(id)
       if (!el) continue
       const delta = x - el.offsetLeft
       el.style.transition = 'none'
-      if (delta || id === flip.lifted) {
-        el.style.transform = `translate3d(${delta}px,0,0)${id === flip.lifted ? ` ${LIFT}` : ''}`
+      if (delta) {
+        el.style.transform = `translate3d(${delta}px,0,0)`
         moving.push(el)
       } else {
         el.style.transform = ''
@@ -674,7 +667,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     const raw = d.x - d.startX + box.scrollLeft - d.startScroll
     // Stays within the row of lists.
     d.dx = Math.max(first - d.lefts[d.from], Math.min(last - d.lefts[d.from], raw))
-    colEls.current.get(d.id)!.style.transform = `translate3d(${d.dx}px,0,0) ${LIFT}`
+    colEls.current.get(d.id)!.style.transform = `translate3d(${d.dx}px,0,0)`
 
     // Its slot: how many other lists have their middle left of the dragged list's middle.
     const mid = d.lefts[d.from] + d.dx + d.widths[d.from] / 2
@@ -707,7 +700,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     const drawnAt = new Map(
       d.order.map((id, i) => [id, d.lefts[i] + (i === d.from ? d.dx : d.shifts[i])]),
     )
-    commitColumnMove(d.id, commit ? d.target : d.from, drawnAt, d.id)
+    commitColumnMove(d.id, commit ? d.target : d.from, drawnAt)
   }
 
   const onColumnPointerDown = (e: React.PointerEvent<HTMLElement>, catId: string) => {
@@ -777,7 +770,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     const to = from + by
     if (from < 0 || to < 0 || to >= order.length) return
     const drawnAt = new Map(order.map((id) => [id, colEls.current.get(id)?.offsetLeft ?? 0]))
-    commitColumnMove(catId, to, drawnAt, null)
+    commitColumnMove(catId, to, drawnAt)
     // React may re-insert the moved list's node, which drops focus; keep it on the grip.
     requestAnimationFrame(() => {
       const el = colEls.current.get(catId)
