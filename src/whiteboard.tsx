@@ -892,6 +892,12 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         const task = el.taskId ? taskRef.current.byId.get(el.taskId) : undefined
         const urg = task ? taskRef.current.urgencyOpt(task.urgency) : null
         const stat = task ? taskRef.current.statusOpt(task.status) : null
+        const done = task?.status === 'completed'
+        if (done) {
+          // Greyed out, like completed cards on the board.
+          ctx.globalAlpha *= 0.55
+          ctx.filter = 'grayscale(1)'
+        }
         ctx.shadowColor = 'rgba(0,0,0,0.16)'
         ctx.shadowBlur = 10
         ctx.shadowOffsetY = 3
@@ -915,11 +921,13 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         ctx.fillStyle = pal.muted
         ctx.font = `11px ${MONO}`
         ctx.fillText('task', b.minX + 16, b.minY + 11)
-        ctx.fillStyle = task ? pal.ink : pal.muted
+        ctx.fillStyle = task && !done ? pal.ink : pal.muted
         ctx.font = `600 14px ${FONT}`
-        layout.title.forEach((l, i) =>
-          ctx.fillText(l, b.minX + 16, b.minY + 28 + i * TASK_CARD.titleLH),
-        )
+        layout.title.forEach((l, i) => {
+          const y = b.minY + 28 + i * TASK_CARD.titleLH
+          ctx.fillText(l, b.minX + 16, y)
+          if (done) ctx.fillRect(b.minX + 16, y + 8, ctx.measureText(l).width, 1.25)
+        })
         if (layout.desc.length) {
           ctx.fillStyle = pal.muted
           ctx.font = `12.5px ${FONT}`
