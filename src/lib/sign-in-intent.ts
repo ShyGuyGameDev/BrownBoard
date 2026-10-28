@@ -43,3 +43,52 @@ export let leavingToSignIn = false
 export const markLeavingToSignIn = (leaving = true) => {
   leavingToSignIn = leaving
 }
+
+/**
+ * The last account signed in on this browser, so starting a room can offer it again. Kept after
+ * signing out (that's the point), but never the password: `login` is what the sign-in form takes.
+ */
+export interface LastAccount {
+  login: string
+  method: 'google' | 'email'
+}
+
+const LAST_ACCOUNT_KEY = 'devboard.lastAccount'
+
+export const rememberLastAccount = (account: LastAccount) => {
+  try {
+    localStorage.setItem(LAST_ACCOUNT_KEY, JSON.stringify(account))
+  } catch {
+    /* storage unavailable: starting a room just uses a guest */
+  }
+}
+
+export const getLastAccount = (): LastAccount | null => {
+  try {
+    return JSON.parse(localStorage.getItem(LAST_ACCOUNT_KEY) ?? 'null') as LastAccount | null
+  } catch {
+    return null
+  }
+}
+
+/** "Start a blank room" sent them to sign in first: open a new room once they're back. */
+const START_ROOM_KEY = 'devboard.startRoomAfterSignIn'
+
+export const setStartRoomAfterSignIn = (start: boolean) => {
+  try {
+    if (start) sessionStorage.setItem(START_ROOM_KEY, '1')
+    else sessionStorage.removeItem(START_ROOM_KEY)
+  } catch {
+    /* storage unavailable: they land on their rooms page instead */
+  }
+}
+
+export const takeStartRoomAfterSignIn = (): boolean => {
+  try {
+    const start = sessionStorage.getItem(START_ROOM_KEY) === '1'
+    sessionStorage.removeItem(START_ROOM_KEY)
+    return start
+  } catch {
+    return false
+  }
+}

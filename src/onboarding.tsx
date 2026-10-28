@@ -36,7 +36,7 @@ import {
 } from './lib/rooms'
 import { type RoomSettingsActions, RoomSettingsForm } from './room-settings'
 import { colorFor, goHome, goToRoom, initials } from './lib/room'
-import { setSignInIntent } from './lib/sign-in-intent'
+import { getLastAccount, setSignInIntent, setStartRoomAfterSignIn } from './lib/sign-in-intent'
 import { useTheme } from './lib/theme'
 
 /* ------------------------------------------------------------------ */
@@ -210,13 +210,15 @@ const errorText = (e: unknown) =>
 /* Sign in / sign up                                                   */
 /* ------------------------------------------------------------------ */
 
-const AccountForm: React.FC<{ initialTab?: 'signin' | 'signup'; onForgot: () => void }> = ({
-  initialTab = 'signin',
-  onForgot,
-}) => {
+const AccountForm: React.FC<{
+  initialTab?: 'signin' | 'signup'
+  /** Prefills the email (or old-style username), e.g. with the last account on this browser. */
+  initialLogin?: string
+  onForgot: () => void
+}> = ({ initialTab = 'signin', initialLogin = '', onForgot }) => {
   const { signInWithPassword, signUp, signInWithGoogle } = useAuth()
   const [tab, setTab] = useState(initialTab)
-  const [login, setLogin] = useState('')
+  const [login, setLogin] = useState(initialLogin)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -343,7 +345,7 @@ const AccountForm: React.FC<{ initialTab?: 'signin' | 'signup'; onForgot: () => 
               type="email"
               inputMode="email"
               value={login}
-              autoFocus
+              autoFocus={!initialLogin}
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
@@ -378,6 +380,7 @@ const AccountForm: React.FC<{ initialTab?: 'signin' | 'signup'; onForgot: () => 
                 setError(null)
               }}
               autoComplete={signup ? 'new-password' : 'current-password'}
+              autoFocus={!!initialLogin}
               aria-invalid={passwordShort}
             />
           )}
@@ -472,18 +475,45 @@ type Step = 'choose' | 'account' | 'forgot'
 
 /** First screen for anyone without an account session (opened without a room link). */
 export const Onboarding: React.FC = () => {
-  const { signInAsGuest } = useAuth()
+  const { signInAsGuest, signInWithGoogle } = useAuth()
   const [step, setStep] = useState<Step>('choose')
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Set when "Start a blank room" is signing in the last account first.
+  const [startingAs, setStartingAs] = useState<string | null>(null)
 
-  const startRoom = async () => {
+  const startAsGuest = async () => {
     setStarting(true)
     setError(null)
+    setStartRoomAfterSignIn(false)
     try {
       await signInAsGuest()
       goToRoom((await createQuickRoom()).roomId)
     } catch (e) {
+      setError(errorText(e))
+      setStarting(false)
+    }
+  }
+
+  /**
+   * With an account used on this browser before, sign that one in first and the room opens once
+   * it's back (see the Router). Google goes straight through; email asks for the password.
+   */
+  const startRoom = async () => {
+    const last = getLastAccount()
+    if (!last || (last.method === 'google' && isElectron)) return startAsGuest()
+    setError(null)
+    setStartRoomAfterSignIn(true)
+    if (last.method === 'email') {
+      setStartingAs(last.login)
+      setStep('account')
+      return
+    }
+    setStarting(true)
+    try {
+      await signInWithGoogle(last.login)
+    } catch (e) {
+      setStartRoomAfterSignIn(false)
       setError(errorText(e))
       setStarting(false)
     }
@@ -535,8 +565,26 @@ export const Onboarding: React.FC = () => {
 
       {step === 'account' && (
         <>
-          <BackButton onClick={() => setStep('choose')} />
-          <AccountForm onForgot={() => setStep('forgot')} />
+          <BackButton
+            onClick={() => {
+              setStartRoomAfterSignIn(false)
+              setStartingAs(null)
+              setStep('choose')
+            }}
+          />
+          {startingAs && (
+            <p className="dv-sub -mt-2">
+              Sign in and your new room opens right away.{' '}
+              <button type="button" className="dv-link" disabled={starting} onClick={startAsGuest}>
+                Start as a guest instead
+              </button>
+            </p>
+          )}
+          <AccountForm
+            key={startingAs ?? ''}
+            initialLogin={startingAs ?? undefined}
+            onForgot={() => setStep('forgot')}
+          />
         </>
       )}
 

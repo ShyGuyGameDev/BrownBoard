@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 import { rememberReturnRoom } from './room'
-import { markLeavingToSignIn } from './sign-in-intent'
+import { markLeavingToSignIn, rememberLastAccount } from './sign-in-intent'
 
 /**
  * Older username-only accounts are Supabase email accounts with a placeholder address (see the
@@ -49,7 +49,8 @@ interface AuthContextValue {
   signInWithPassword: (login: string, password: string) => Promise<void>
   /** 'signed_in', or 'confirm' when Supabase requires clicking the emailed link first. */
   signUp: (email: string, password: string) => Promise<'signed_in' | 'confirm'>
-  signInWithGoogle: () => Promise<void>
+  /** `loginHint` picks that Google account, so a returning user usually just clicks through. */
+  signInWithGoogle: (loginHint?: string) => Promise<void>
   signInAsGuest: () => Promise<void>
   signOut: () => Promise<void>
   addEmail: (email: string) => Promise<void>
@@ -162,12 +163,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return data.session ? ('signed_in' as const) : ('confirm' as const)
   }, [])
 
-  const signInWithGoogle = useCallback(async () => {
+  const signInWithGoogle = useCallback(async (loginHint?: string) => {
     rememberReturnRoom()
     markLeavingToSignIn()
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: siteUrl() },
+      options: {
+        redirectTo: siteUrl(),
+        ...(loginHint ? { queryParams: { login_hint: loginHint } } : {}),
+      },
     })
     if (error) {
       markLeavingToSignIn(false)
@@ -209,6 +213,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (error) fail(error.message)
     setRecovering(false)
   }, [])
+
+  // Remember who signed in, for "Start a blank room" next time. Older username accounts sign in
+  // with their username, since their email is a placeholder.
+  useEffect(() => {
+    if (!user || user.is_anonymous) return
+    const google = user.app_metadata?.provider === 'google'
+    const placeholder = !!user.email?.endsWith(`@${USERNAME_DOMAIN}`)
+    const login = placeholder ? profile?.username : user.email
+    if (login) rememberLastAccount({ login, method: google ? 'google' : 'email' })
+  }, [user, profile])
 
   const needsEmail =
     !!user && !user.is_anonymous && !!user.email?.endsWith(`@${USERNAME_DOMAIN}`) && !user.new_email

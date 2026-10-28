@@ -25,11 +25,17 @@ import {
   useRoom,
 } from './lib/room.tsx'
 import { bus, isTyping, toast } from './lib/bus.ts'
-import { clearSignInIntent, leavingToSignIn, peekSignInIntent } from './lib/sign-in-intent.ts'
+import {
+  clearSignInIntent,
+  leavingToSignIn,
+  peekSignInIntent,
+  takeStartRoomAfterSignIn,
+} from './lib/sign-in-intent.ts'
 import { AuthProvider, isElectron, useAuth } from './lib/auth.tsx'
 import {
   type RoomSession,
   claimRoom,
+  createQuickRoom,
   deleteRoom,
   discardRoom,
   enterRoom,
@@ -672,8 +678,16 @@ const Router: React.FC = () => {
 
   // Back from Google sign-in: OAuth returns to the bare site URL, so reopen the linked room.
   // A confirmation email can open in a new tab, which only has the sign-in intent to go on.
+  // "Start a blank room" signed the last account in first: open the new room now.
   useEffect(() => {
     if (!session || roomId) return
+    if (!isGuest && takeStartRoomAfterSignIn()) {
+      // If it fails they're on their rooms page, where New room shows the error.
+      createQuickRoom()
+        .then((room) => goToRoom(room.roomId))
+        .catch(() => undefined)
+      return
+    }
     const pending = takeReturnRoom() ?? (!isGuest ? peekSignInIntent()?.roomId : null)
     if (pending) goToRoom(pending)
   }, [session, roomId, isGuest])
