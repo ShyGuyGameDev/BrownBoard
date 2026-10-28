@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  CalendarDays,
   Crosshair,
   GripVertical,
   Paperclip,
@@ -8,12 +9,19 @@ import {
   Plus,
   Search,
   Trash2,
+  UserRound,
   X,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
-import { useRoom } from './lib/room'
+import { colorFor, useRoom } from './lib/room'
 import { bus, getLinkCounts, isTyping, toast } from './lib/bus'
 import { type Attachment, cleanAttachment, isImageFile, taskFiles, uploadRoomFile } from './lib/files'
+import { Avatar } from './avatar'
+import {
+  formatDueDate,
+  loadRoomTaskAssignees,
+  type TaskAssignee,
+} from './lib/tasks'
 import { LIMITS, cleanHexColor, cleanLine, cleanMultiline } from './lib/sanitize'
 import { FileChip, FileIcon, FileViewer } from './file-viewer'
 import {
@@ -39,6 +47,8 @@ type DbTask = {
   attachments?: unknown
   category_id: string
   position: number | null
+  due_date?: string | null
+  assignee_id?: string | null
 }
 
 interface Task {
@@ -50,6 +60,8 @@ interface Task {
   files: Attachment[]
   categoryId: string
   position: number
+  dueDate: string | null
+  assigneeId: string | null
 }
 
 interface Category {
@@ -91,6 +103,8 @@ const mapTask = (t: DbTask): Task => ({
   files: taskFiles(t),
   categoryId: t.category_id,
   position: t.position ?? 0,
+  dueDate: t.due_date ?? null,
+  assigneeId: t.assignee_id ?? null,
 })
 
 const buildBoard = (categories: DbCategory[], tasks: DbTask[]): Category[] => {
@@ -135,7 +149,7 @@ interface ColDrag {
 const SETTLE = 'transform 260ms var(--dv-ease)'
 
 interface MenuState {
-  kind: TaskOptionType
+  kind: TaskOptionType | 'due_date' | 'assignee'
   taskId: string
   categoryId: string
   x: number
@@ -143,7 +157,7 @@ interface MenuState {
 }
 
 export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) => {
-  const { roomId, send, on } = useRoom()
+  const { roomId, send, on, peers } = useRoom()
 
   const [categories, setCategories] = useState<Category[]>([])
   const categoriesRef = useRef<Category[]>([])
@@ -166,6 +180,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const [customStatus, setCustomStatus] = useState<TaskOption[]>([])
   const [customUrgency, setCustomUrgency] = useState<TaskOption[]>([])
+  const [assignees, setAssignees] = useState<TaskAssignee[]>([])
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [optForm, setOptForm] = useState<{ label: string; color: string } | null>(null)
 
@@ -192,6 +207,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const statusOptions = useMemo(() => [...DEFAULT_STATUS, ...customStatus], [customStatus])
   const urgencyOptions = useMemo(() => [...DEFAULT_URGENCY, ...customUrgency], [customUrgency])
+  const assigneesById = useMemo(() => new Map(assignees.map((person) => [person.id, person])), [assignees])
+  const peerIds = peers.map((peer) => peer.id).join(',')
 
   /** Tell everyone else (and the canvas in this window) that board data changed. */
   const sync = useCallback(() => send('board', {}, true), [send])
@@ -259,6 +276,20 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   useEffect(() => {
     loadBoard()
   }, [loadBoard])
+
+  useEffect(() => {
+    let cancelled = false
+    loadRoomTaskAssignees(roomId)
+      .then((people) => {
+        if (!cancelled) setAssignees(people)
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) fail(error instanceof Error ? error.message : 'Could not load assignees')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [roomId, peerIds, fail])
 
   // Live updates from teammates (debounced, and never mid-drag).
   useEffect(() => {
@@ -398,7 +429,9 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const patchTask = async (
     taskId: string,
-    patch: Partial<Pick<Task, 'status' | 'urgency' | 'title' | 'description' | 'files'>>,
+    patch: Partial<
+      Pick<Task, 'status' | 'urgency' | 'title' | 'description' | 'files' | 'dueDate' | 'assigneeId'>
+    >,
   ) => {
     setCategories((prev) =>
       prev.map((c) => ({
@@ -406,8 +439,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         tasks: c.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)),
       })),
     )
-    const { files, ...rest } = patch
+    const { files, dueDate, assigneeId, ...rest } = patch
     const dbPatch: Record<string, unknown> = { ...rest }
+    if ('dueDate' in patch) dbPatch.due_date = dueDate
+    if ('assigneeId' in patch) dbPatch.assignee_id = assigneeId
     if ('title' in patch) dbPatch.title = cleanLine(patch.title ?? '', LIMITS.taskTitle)
     if ('description' in patch)
       dbPatch.description = cleanMultiline(patch.description ?? '', LIMITS.taskDescription) || null
@@ -483,7 +518,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const openMenu = (
     e: React.MouseEvent<HTMLElement>,
-    kind: TaskOptionType,
+    kind: MenuState['kind'],
     taskId: string,
     categoryId: string,
   ) => {
@@ -501,13 +536,21 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const pick = (value: string) => {
     if (!menu) return
-    patchTask(menu.taskId, menu.kind === 'status' ? { status: value } : { urgency: value })
+    if (menu.kind === 'status') patchTask(menu.taskId, { status: value })
+    else if (menu.kind === 'urgency') patchTask(menu.taskId, { urgency: value })
+    else if (menu.kind === 'assignee') patchTask(menu.taskId, { assigneeId: value || null })
     setMenu(null)
     setOptForm(null)
   }
 
+  const pickDueDate = (value: string) => {
+    if (!menu || menu.kind !== 'due_date') return
+    patchTask(menu.taskId, { dueDate: value || null })
+    setMenu(null)
+  }
+
   const createOption = async () => {
-    if (!menu || !optForm) return
+    if (!menu || !optForm || (menu.kind !== 'status' && menu.kind !== 'urgency')) return
     const label = cleanLine(optForm.label, LIMITS.optionLabel)
     if (!label) return
     const pool = menu.kind === 'status' ? statusOptions : urgencyOptions
@@ -835,14 +878,24 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     )
   }
 
-  const menuOptions = menu ? (menu.kind === 'status' ? statusOptions : urgencyOptions) : []
+  const menuOptions = menu
+    ? menu.kind === 'status'
+      ? statusOptions
+      : menu.kind === 'urgency'
+        ? urgencyOptions
+        : []
+    : []
   const menuTask = menu
     ? categories.flatMap((c) => c.tasks).find((t) => t.id === menu.taskId)
     : null
   const menuCurrent = menuTask
     ? menu!.kind === 'status'
       ? menuTask.status
-      : menuTask.urgency
+      : menu!.kind === 'urgency'
+        ? menuTask.urgency
+        : menu!.kind === 'due_date'
+          ? menuTask.dueDate
+          : menuTask.assigneeId
     : null
 
   return (
@@ -1036,6 +1089,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                 {visible.map((task, index) => {
                   const status = resolveOption(statusOptions, task.status, 'status')
                   const urgency = resolveOption(urgencyOptions, task.urgency, 'urgency')
+                  const assignee = task.assigneeId ? assigneesById.get(task.assigneeId) : null
                   const isEditing = editingTask?.id === task.id
                   const done = task.status === 'completed'
                   return (
@@ -1267,7 +1321,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                 Uploading…
                               </p>
                             )}
-                            <div className="mt-2.5 flex items-center gap-1.5">
+                            <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                               <button
                                 className="dv-chip"
                                 style={badgeStyle(status.color)}
@@ -1284,6 +1338,40 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                 onClick={(e) => openMenu(e, 'urgency', task.id, cat.id)}
                               >
                                 {urgency.label}
+                              </button>
+                              <button
+                                className="dv-chip"
+                                style={{
+                                  background: 'var(--dv-panel-2)',
+                                  color: 'var(--dv-text)',
+                                }}
+                                title={task.dueDate ? `Due ${formatDueDate(task.dueDate)}` : 'Set due date'}
+                                onClick={(e) => openMenu(e, 'due_date', task.id, cat.id)}
+                              >
+                                <CalendarDays size={12} />
+                                {task.dueDate ? formatDueDate(task.dueDate) : 'Due date'}
+                              </button>
+                              <button
+                                className="dv-chip"
+                                style={{
+                                  background: 'var(--dv-panel-2)',
+                                  color: 'var(--dv-text)',
+                                }}
+                                title={assignee ? `Assigned to ${assignee.name}` : 'Assign task'}
+                                onClick={(e) => openMenu(e, 'assignee', task.id, cat.id)}
+                              >
+                                {assignee ? (
+                                  <Avatar
+                                    name={assignee.name}
+                                    color={colorFor(assignee.id)}
+                                    src={assignee.avatarUrl}
+                                    size={14}
+                                    className="-ml-1"
+                                  />
+                                ) : (
+                                  <UserRound size={12} />
+                                )}
+                                {assignee?.name ?? 'Assign'}
                               </button>
                               <div className="dv-actions ml-auto flex items-center">
                                 <button
@@ -1460,7 +1548,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         />
       )}
 
-      {/* Status / urgency menu (fixed so column scrolling can't clip it) */}
+      {/* Task fields menu (fixed so column scrolling can't clip it) */}
       {menu && (
         <>
           <div
@@ -1471,73 +1559,146 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             }}
           />
           <div className="dv-menu fixed z-50 w-56" style={{ left: menu.x, top: menu.y }}>
-            <div
-              className="px-2 pb-1 pt-1.5 text-xs font-semibold"
-              style={{ color: 'var(--dv-muted)' }}
-            >
-              {menu.kind === 'status' ? 'Set status' : 'Set urgency'}
-            </div>
-            {menuOptions.map((o) => (
-              <button
-                key={o.value}
-                className="dv-menu-item"
-                data-selected={menuCurrent === o.value}
-                onClick={() => pick(o.value)}
-              >
-                <span className="dv-dot" style={{ background: o.color }} />
-                <span className="flex-1">{o.label}</span>
-                {menuCurrent === o.value && (
-                  <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
-                    Current
-                  </span>
-                )}
-              </button>
-            ))}
-            <div className="my-1 h-px" style={{ background: 'var(--dv-border)' }} />
-            {optForm ? (
+            {menu.kind === 'due_date' ? (
               <div className="flex flex-col gap-2 p-2">
+                <span className="px-1 text-xs font-semibold" style={{ color: 'var(--dv-muted)' }}>
+                  Set due date
+                </span>
                 <input
                   autoFocus
+                  type="date"
                   className="dv-input"
-                  placeholder={menu.kind === 'status' ? 'Status name' : 'Urgency name'}
-                  value={optForm.label}
-                  onChange={(e) => setOptForm({ ...optForm, label: e.target.value })}
-                  onKeyDown={(e) => e.key === 'Enter' && createOption()}
+                  aria-label="Due date"
+                  value={menuTask?.dueDate ?? ''}
+                  onClick={(e) => e.currentTarget.showPicker?.()}
+                  onChange={(e) => pickDueDate(e.target.value)}
                 />
-                <label
-                  className="flex items-center justify-between text-xs"
+                {menuTask?.dueDate && (
+                  <button className="dv-menu-item" onClick={() => pickDueDate('')}>
+                    <X size={13} />
+                    Clear due date
+                  </button>
+                )}
+              </div>
+            ) : menu.kind === 'assignee' ? (
+              <div className="max-h-72 overflow-y-auto py-1">
+                <div
+                  className="px-2 pb-1 pt-1.5 text-xs font-semibold"
                   style={{ color: 'var(--dv-muted)' }}
                 >
-                  Color
-                  <input
-                    type="color"
-                    value={optForm.color}
-                    onChange={(e) => setOptForm({ ...optForm, color: e.target.value })}
-                    className="h-7 w-12 cursor-pointer rounded border-0 bg-transparent"
-                  />
-                </label>
-                <div className="flex justify-end gap-2">
-                  <button className="dv-btn" onClick={() => setOptForm(null)}>
-                    Back
-                  </button>
-                  <button
-                    className="dv-btn primary"
-                    disabled={!optForm.label.trim()}
-                    onClick={createOption}
-                  >
-                    Create
-                  </button>
+                  Assign to
                 </div>
+                <button
+                  className="dv-menu-item"
+                  data-selected={!menuTask?.assigneeId}
+                  onClick={() => pick('')}
+                >
+                  <UserRound size={15} />
+                  <span className="flex-1">Unassigned</span>
+                  {!menuTask?.assigneeId && (
+                    <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+                      Current
+                    </span>
+                  )}
+                </button>
+                {assignees.map((person) => (
+                  <button
+                    key={person.id}
+                    className="dv-menu-item"
+                    data-selected={menuTask?.assigneeId === person.id}
+                    onClick={() => pick(person.id)}
+                  >
+                    <Avatar
+                      name={person.name}
+                      color={colorFor(person.id)}
+                      src={person.avatarUrl}
+                      size={20}
+                    />
+                    <span className="flex-1 truncate">{person.name}</span>
+                    {menuTask?.assigneeId === person.id && (
+                      <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+                        Current
+                      </span>
+                    )}
+                  </button>
+                ))}
+                {assignees.length === 0 && (
+                  <p className="m-0 px-3 py-2 text-xs" style={{ color: 'var(--dv-muted)' }}>
+                    No signed-in people have been on this board yet.
+                  </p>
+                )}
               </div>
             ) : (
-              <button
-                className="dv-menu-item"
-                style={{ color: 'var(--dv-accent)' }}
-                onClick={() => setOptForm({ label: '', color: '#3b82f6' })}
-              >
-                <Plus size={13} />
-                New {menu.kind}
-              </button>
+              <>
+                <div
+                  className="px-2 pb-1 pt-1.5 text-xs font-semibold"
+                  style={{ color: 'var(--dv-muted)' }}
+                >
+                  {menu.kind === 'status' ? 'Set status' : 'Set urgency'}
+                </div>
+                {menuOptions.map((o) => (
+                  <button
+                    key={o.value}
+                    className="dv-menu-item"
+                    data-selected={menuCurrent === o.value}
+                    onClick={() => pick(o.value)}
+                  >
+                    <span className="dv-dot" style={{ background: o.color }} />
+                    <span className="flex-1">{o.label}</span>
+                    {menuCurrent === o.value && (
+                      <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+                        Current
+                      </span>
+                    )}
+                  </button>
+                ))}
+                <div className="my-1 h-px" style={{ background: 'var(--dv-border)' }} />
+                {optForm ? (
+                  <div className="flex flex-col gap-2 p-2">
+                    <input
+                      autoFocus
+                      className="dv-input"
+                      placeholder={menu.kind === 'status' ? 'Status name' : 'Urgency name'}
+                      value={optForm.label}
+                      onChange={(e) => setOptForm({ ...optForm, label: e.target.value })}
+                      onKeyDown={(e) => e.key === 'Enter' && createOption()}
+                    />
+                    <label
+                      className="flex items-center justify-between text-xs"
+                      style={{ color: 'var(--dv-muted)' }}
+                    >
+                      Color
+                      <input
+                        type="color"
+                        value={optForm.color}
+                        onChange={(e) => setOptForm({ ...optForm, color: e.target.value })}
+                        className="h-7 w-12 cursor-pointer rounded border-0 bg-transparent"
+                      />
+                    </label>
+                    <div className="flex justify-end gap-2">
+                      <button className="dv-btn" onClick={() => setOptForm(null)}>
+                        Back
+                      </button>
+                      <button
+                        className="dv-btn primary"
+                        disabled={!optForm.label.trim()}
+                        onClick={createOption}
+                      >
+                        Create
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    className="dv-menu-item"
+                    style={{ color: 'var(--dv-accent)' }}
+                    onClick={() => setOptForm({ label: '', color: '#3b82f6' })}
+                  >
+                    <Plus size={13} />
+                    New {menu.kind}
+                  </button>
+                )}
+              </>
             )}
           </div>
         </>

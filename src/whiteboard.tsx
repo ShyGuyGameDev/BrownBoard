@@ -29,7 +29,7 @@ import { HexColorPicker } from 'react-colorful'
 import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room'
 import { bus, isTyping, setLinkCounts, toast } from './lib/bus'
-import { type TaskLite, useRoomTasks } from './lib/tasks'
+import { formatDueDate, type TaskLite, useRoomTasks } from './lib/tasks'
 import { clearCanvas as clearRoomCanvas } from './lib/rooms'
 import { canvas, font, noteColors, noteInk, swatches } from './design/tokens'
 import { LIMITS, cleanInk, cleanLine, cleanMultiline, isSafeImageSrc, safeExtension } from './lib/sanitize'
@@ -197,7 +197,7 @@ const TASK_CARD = {
   maxRows: 3,
   rowH: 26,
   moreH: 18,
-  footer: 40,
+  footer: 58,
 }
 
 /**
@@ -973,11 +973,22 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         if (stat) {
           ctx.fillStyle = stat.color
           ctx.beginPath()
-          ctx.arc(b.minX + 20, b.maxY - 17, 4, 0, Math.PI * 2)
+          ctx.arc(b.minX + 20, b.maxY - 36, 4, 0, Math.PI * 2)
           ctx.fill()
           ctx.fillStyle = pal.muted
           ctx.font = `12px ${FONT}`
-          ctx.fillText(`${stat.label}${urg ? ` · ${urg.label}` : ''}`, b.minX + 30, b.maxY - 24)
+          ctx.fillText(`${stat.label}${urg ? ` · ${urg.label}` : ''}`, b.minX + 30, b.maxY - 43)
+        }
+        if (task && (task.dueDate || task.assigneeName)) {
+          const details = [
+            task.dueDate ? `Due ${formatDueDate(task.dueDate)}` : '',
+            task.assigneeName ?? '',
+          ]
+            .filter(Boolean)
+            .join(' · ')
+          ctx.fillStyle = pal.muted
+          ctx.font = `11.5px ${FONT}`
+          ctx.fillText(ellipsize(ctx, details, w - 32), b.minX + 16, b.maxY - 20)
         }
       }
       ctx.restore()

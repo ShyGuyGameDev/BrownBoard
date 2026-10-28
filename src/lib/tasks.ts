@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabase'
 import { type Attachment, taskFiles } from './files'
 import { useRoom } from './room'
+import { toast } from './bus'
 import {
   DEFAULT_STATUS,
   DEFAULT_URGENCY,
@@ -17,6 +18,47 @@ export interface TaskLite {
   urgency: string
   description: string
   files: Attachment[]
+  dueDate: string | null
+  assigneeId: string | null
+  assigneeName: string | null
+}
+
+export interface TaskAssignee {
+  id: string
+  name: string
+  avatarUrl: string | null
+}
+
+export async function loadRoomTaskAssignees(roomId: string): Promise<TaskAssignee[]> {
+  const { data, error } = await supabase.rpc('task_assignees', { p_room_id: roomId })
+  if (error) throw new Error(error.message)
+
+  const result = data as { ok?: boolean; error?: string; people?: unknown } | null
+  if (!result?.ok) throw new Error(result?.error ?? 'Could not load task assignees')
+  if (!Array.isArray(result.people)) return []
+
+  return result.people.flatMap((person): TaskAssignee[] => {
+    if (!person || typeof person !== 'object') return []
+    const row = person as Record<string, unknown>
+    if (typeof row.id !== 'string' || typeof row.name !== 'string') return []
+    return [{
+      id: row.id,
+      name: row.name,
+      avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : null,
+    }]
+  })
+}
+
+export const formatDueDate = (value: string) => {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return value
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(date)
 }
 
 /**
@@ -26,6 +68,7 @@ export interface TaskLite {
 export function useRoomTasks() {
   const { roomId, on } = useRoom()
   const [list, setList] = useState<TaskLite[]>([])
+  const [assignees, setAssignees] = useState<TaskAssignee[]>([])
   const [custom, setCustom] = useState<{ status: TaskOption[]; urgency: TaskOption[] }>({
     status: [],
     urgency: [],
@@ -36,6 +79,13 @@ export function useRoomTasks() {
       supabase.from('tasks').select('*').eq('room_id', roomId),
       supabase.from('task_options').select('*').eq('room_id', roomId),
     ])
+    let people: TaskAssignee[] = []
+    try {
+      people = await loadRoomTaskAssignees(roomId)
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not load task assignees')
+    }
+    setAssignees(people)
     if (t.data) {
       setList(
         t.data.map((r: any) => ({
@@ -45,6 +95,9 @@ export function useRoomTasks() {
           urgency: r.urgency ?? 'medium',
           description: r.description ?? '',
           files: taskFiles(r),
+          dueDate: r.due_date ?? null,
+          assigneeId: r.assignee_id ?? null,
+          assigneeName: people.find((p) => p.id === r.assignee_id)?.name ?? null,
         })),
       )
     }
@@ -66,5 +119,5 @@ export function useRoomTasks() {
     [custom],
   )
 
-  return { list, byId, statusOpt, urgencyOpt }
+  return { list, byId, statusOpt, urgencyOpt, assignees }
 }
