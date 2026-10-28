@@ -7,11 +7,11 @@ export interface RoomSession {
   roomId: string
   roomName: string
   displayName: string
-  /** Signed-in creator of the room: can rename, re-password, delete and clear the canvas. */
+  /** Signed-in creator of the room: can rename, delete and clear the canvas. */
   isOwner: boolean
   /** Whether people without an account can join. On by default; the owner can turn it off. */
   allowGuests: boolean
-  /** Started without a name or password: nobody else can join, and it's discarded on leaving. */
+  /** Started without a name: nobody else can join, and it's discarded on leaving. */
   unnamed: boolean
 }
 
@@ -27,16 +27,13 @@ export interface RoomSummary {
 
 export type RoomError =
   | 'not_found'
-  | 'wrong_password'
   | 'taken'
   | 'bad_name'
-  | 'bad_password'
   | 'rate_limited'
   | 'not_member'
   | 'not_signed_in'
   | 'not_owner'
   | 'deleted'
-  | 'same_password'
   | 'guests_disabled'
 
 export class RoomRpcError extends Error {
@@ -48,19 +45,15 @@ export class RoomRpcError extends Error {
 }
 
 const ROOM_ERRORS: Record<RoomError, string> = {
-  not_found: 'No room has that name.',
-  wrong_password: "That password doesn't match this room.",
+  not_found: "This link doesn't point to a room.",
   taken: 'Another room already uses that name.',
   bad_name: 'Room names are 2–48 characters.',
-  bad_password: 'Room passwords need at least 4 characters.',
   rate_limited: 'Too many tries. Wait a few minutes and try again.',
   not_member: "You haven't joined this room yet.",
   not_signed_in: 'Your session expired. Start again.',
   not_owner: 'Only the signed-in person who created this room can do that.',
   deleted: 'This room was deleted by its owner.',
   guests_disabled: 'This room only lets in signed-in accounts. Sign in to join it.',
-  same_password:
-    'Another room with this name already uses that password. Choose a different password.',
 }
 
 async function rpc(fn: string, args: Record<string, string | boolean>) {
@@ -82,25 +75,15 @@ async function call(fn: string, args: Record<string, string>): Promise<RoomSessi
   }
 }
 
-/** Joins the room a share link points to. Rooms are only found by id, never by name. */
-export const joinRoom = (name: string, password: string, roomId: string) =>
-  call('join_room', { p_name: cleanRoomName(name), p_password: password, p_room_id: roomId })
+/** Joins the room a share link points to. The link is all you need. */
+export const joinRoom = (roomId: string) => call('join_room', { p_room_id: roomId })
 
-export const createRoom = (name: string, password: string) =>
-  call('create_room', { p_name: cleanRoomName(name), p_password: password })
-
-/** A room with no name or password yet, to get going right away. Name it with saveRoom. */
+/** A room with no name yet, to get going right away. Name it with saveRoom. */
 export const createQuickRoom = () => call('create_quick_room', {})
 
-/** Names an unnamed room and sets its password, so it's kept and others can join. */
-export const saveRoom = async (roomId: string, name: string, password: string): Promise<string> =>
-  (
-    await rpc('save_room', {
-      p_room_id: roomId,
-      p_name: cleanRoomName(name),
-      p_password: password,
-    })
-  ).room_name
+/** Names an unnamed room, so it's kept and anyone with its link can join. */
+export const saveRoom = async (roomId: string, name: string): Promise<string> =>
+  (await rpc('save_room', { p_room_id: roomId, p_name: cleanRoomName(name) })).room_name
 
 /** Re-enter a room you're already a member of. */
 export const enterRoom = (roomId: string) => call('enter_room', { p_room_id: roomId })
@@ -128,11 +111,6 @@ export const clearFlash = () => {
   } catch {
     /* ignore */
   }
-}
-
-/** The room's password, for members. Null for rooms created before passwords were kept readable. */
-export async function roomPassword(roomId: string): Promise<string | null> {
-  return (await rpc('room_password', { p_room_id: roomId })).password ?? null
 }
 
 /* ---------- owner only ---------- */
@@ -172,10 +150,6 @@ export async function actAndNotify<T>(
 
 export const renameRoom = async (roomId: string, name: string): Promise<string> =>
   (await rpc('rename_room', { p_room_id: roomId, p_name: cleanRoomName(name) })).room_name
-
-export const changeRoomPassword = async (roomId: string, password: string) => {
-  await rpc('change_room_password', { p_room_id: roomId, p_password: password })
-}
 
 /** Turning guests off also removes the guests already in the room. */
 export const setGuestAccess = async (roomId: string, allow: boolean) => {

@@ -27,10 +27,10 @@ import { bus, isTyping, toast } from './lib/bus.ts'
 import { AuthProvider, isElectron, useAuth } from './lib/auth.tsx'
 import {
   type RoomSession,
-  changeRoomPassword,
   deleteRoom,
   discardRoom,
   enterRoom,
+  joinRoom,
   renameRoom,
   roomInviteInfo,
   saveRoom,
@@ -53,11 +53,11 @@ const isMac = /Mac/i.test(navigator.platform)
 
 const UNSAVED_WARNING = "This room has no name, so it won't be saved."
 
-/** Names an unnamed room and sets its password. Its creator is the only one in it, so no broadcast. */
+/** Names an unnamed room. Its creator is the only one in it, so no broadcast. */
 const useSaveRoom = () => {
   const { roomId, setRoomName, setUnnamed } = useRoom()
-  return async (name: string, password: string) => {
-    setRoomName(await saveRoom(roomId, name, password))
+  return async (name: string) => {
+    setRoomName(await saveRoom(roomId, name))
     setUnnamed(false)
   }
 }
@@ -82,7 +82,7 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     }
   }
 
-  // People join with the name and password, so an unnamed room gets both before its link.
+  // Nobody can join an unnamed room, so it gets a name before its link.
   if (unnamed)
     return (
       <>
@@ -91,7 +91,7 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           <div className="flex flex-col gap-1">
             <span className="text-[13px] font-semibold">Name this room to invite people</span>
             <p className="m-0 text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
-              Give it a name and password first. {UNSAVED_WARNING}
+              Give it a name first. {UNSAVED_WARNING}
             </p>
           </div>
           <SaveRoomForm save={save} submitLabel="Save and get link" guest={!isOwner} />
@@ -106,8 +106,8 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         <div className="flex flex-col gap-2">
           <span className="text-[13px] font-semibold">Invite your team</span>
           <p className="text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
-            Send this link along with the room password. It's the only way into{' '}
-            <strong style={{ color: 'var(--dv-text)' }}>{roomName}</strong>.
+            Anyone with this link can join{' '}
+            <strong style={{ color: 'var(--dv-text)' }}>{roomName}</strong>. It's the only way in.
           </p>
           <div className="flex gap-2">
             <input
@@ -159,7 +159,6 @@ const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => 
       send('room:renamed', { name: saved })
       return saved
     },
-    changePassword: (password) => changeRoomPassword(roomId, password),
     setGuestAccess: async (allow) => {
       await setGuestAccess(roomId, allow)
       setAllowGuests(allow)
@@ -181,13 +180,13 @@ const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => 
           <div className="flex flex-col gap-1">
             <span className="text-[13px] font-semibold">Save this room</span>
             <p className="m-0 text-xs leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
-              {UNSAVED_WARNING} Give it a name and password to keep it and invite people.
+              {UNSAVED_WARNING} Give it a name to keep it and invite people.
             </p>
           </div>
           <SaveRoomForm
             guest={!isOwner}
-            save={async (name, password) => {
-              await save(name, password)
+            save={async (name) => {
+              await save(name)
               toast('Room saved.')
               onClose()
             }}
@@ -516,34 +515,34 @@ const Splash: React.FC = () => (
 type Gate =
   | { state: 'checking' }
   | { state: 'in'; room: RoomSession }
-  | { state: 'join'; name: string | null; deleted: boolean }
+  | { state: 'blocked'; name: string | null; deleted: boolean; error: unknown }
 
-/** Lets you into `roomId` if you're a member, otherwise asks for its password. */
+/** Lets you into `roomId`, joining it from the link if you're not a member yet. */
 const RoomGate: React.FC<{ roomId: string; userId: string }> = ({ roomId, userId }) => {
   const [gate, setGate] = useState<Gate>({ state: 'checking' })
-  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     let cancelled = false
     enterRoom(roomId)
+      .catch(() => joinRoom(roomId))
       .then((room) => !cancelled && setGate({ state: 'in', room }))
-      .catch(async () => {
+      .catch(async (e) => {
         const info = await roomInviteInfo(roomId)
-        if (!cancelled) setGate({ state: 'join', ...info })
+        if (!cancelled) setGate({ state: 'blocked', ...info, error: e })
       })
     return () => {
       cancelled = true
     }
-  }, [roomId, attempt])
+  }, [roomId])
 
   if (gate.state === 'checking') return <Splash />
-  if (gate.state === 'join')
+  if (gate.state === 'blocked')
     return (
       <JoinRoomScreen
         roomId={roomId}
         roomName={gate.name}
         deleted={gate.deleted}
-        onJoined={() => setAttempt((n) => n + 1)}
+        error={gate.error}
       />
     )
   return (

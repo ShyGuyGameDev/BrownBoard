@@ -789,35 +789,6 @@ textarea.dv-input {
   color: var(--dv-muted);
   font-size: var(--dv-text-xs);
 }
-.dv-room-pw {
-  position: relative;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  padding: 3px 3px 3px 10px;
-  border-radius: var(--dv-radius-md);
-  background: var(--dv-panel-2);
-  color: var(--dv-muted);
-  cursor: default;
-}
-.dv-room-pw-value {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--dv-text);
-  font-family: var(--dv-mono);
-  font-size: var(--dv-text-sm);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dv-room-pw-missing {
-  margin: 6px 0 0;
-  color: var(--dv-muted);
-  font-size: var(--dv-text-xs);
-  line-height: 1.45;
-}
 /* Toggle switch: a real checkbox (keyboard + screen reader friendly) drawn as a pill. */
 .dv-switch {
   position: relative;
@@ -888,14 +859,6 @@ textarea.dv-input {
 .dv-room-card:hover .dv-edit-hint {
   opacity: 1;
 }
-.dv-room-pw-value.editable {
-  cursor: text;
-}
-.dv-room-pw-missing.editable {
-  position: relative;
-  z-index: 2;
-  cursor: pointer;
-}
 .dv-inline-edit {
   position: relative;
   z-index: 2;
@@ -906,9 +869,6 @@ textarea.dv-input {
 .dv-inline-input {
   height: var(--dv-size-control-sm);
   font-size: var(--dv-text-md);
-}
-.dv-inline-input.mono {
-  font-family: var(--dv-mono);
 }
 .dv-inline-error {
   margin: 0;

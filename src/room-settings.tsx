@@ -6,26 +6,24 @@ const errorText = (e: unknown) =>
 export interface RoomSettingsActions {
   /** Returns the name as saved (trimmed / normalised by the server). */
   rename: (name: string) => Promise<string>
-  changePassword: (password: string) => Promise<void>
   setGuestAccess: (allow: boolean) => Promise<void>
   remove: () => Promise<void>
 }
 
 /**
- * Name and password for an unnamed room, set together: that's what saves it and lets others in.
+ * Name for an unnamed room: that's what saves it and lets people in with its link.
  * Shown in the room's settings and before sharing it.
  */
 export const SaveRoomForm: React.FC<{
-  save: (name: string, password: string) => Promise<void>
+  save: (name: string) => Promise<void>
   submitLabel?: string
   /** Guests can save a room but can't manage it afterwards. */
   guest?: boolean
 }> = ({ save, submitLabel = 'Save room', guest }) => {
   const [name, setName] = useState('')
-  const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const canSave = name.trim().length >= 2 && password.length >= 4
+  const canSave = name.trim().length >= 2
 
   return (
     <form
@@ -36,7 +34,7 @@ export const SaveRoomForm: React.FC<{
         setBusy(true)
         setError(null)
         try {
-          await save(name, password)
+          await save(name)
         } catch (err) {
           setError(errorText(err))
           setBusy(false)
@@ -53,20 +51,11 @@ export const SaveRoomForm: React.FC<{
         placeholder="e.g. Design sprint"
         onChange={(e) => setName(e.target.value)}
       />
-      <span className="dv-label mt-1">Password</span>
-      <input
-        className="dv-input"
-        type="password"
-        autoComplete="new-password"
-        placeholder="At least 4 characters"
-        maxLength={72}
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-      />
-      <p className="m-0 text-[11px] leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
-        People join with the name and password.
-        {guest && " As a guest, you won't be able to change them or delete the room later."}
-      </p>
+      {guest && (
+        <p className="m-0 text-[11px] leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
+          As a guest, you won't be able to rename or delete the room later.
+        </p>
+      )}
       {error && (
         <p className="m-0 text-xs" role="alert" style={{ color: 'var(--dv-danger)' }}>
           {error}
@@ -80,7 +69,7 @@ export const SaveRoomForm: React.FC<{
 }
 
 /**
- * Owner-only room settings: rename, change password, delete. Used in the room header popover
+ * Owner-only room settings: rename, guest access, delete. Used in the room header popover
  * and on the rooms page, which supply their own actions (each tells people in the room).
  */
 export const RoomSettingsForm: React.FC<{
@@ -89,13 +78,12 @@ export const RoomSettingsForm: React.FC<{
   actions: RoomSettingsActions
 }> = ({ roomName, allowGuests, actions }) => {
   const [name, setName] = useState(roomName)
-  const [password, setPassword] = useState('')
   const [confirmName, setConfirmName] = useState('')
-  const [busy, setBusy] = useState<'name' | 'password' | 'guests' | 'delete' | null>(null)
+  const [busy, setBusy] = useState<'name' | 'guests' | 'delete' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
 
-  const run = async (kind: 'name' | 'password' | 'guests' | 'delete', fn: () => Promise<void>) => {
+  const run = async (kind: 'name' | 'guests' | 'delete', fn: () => Promise<void>) => {
     setBusy(kind)
     setError(null)
     setSaved(null)
@@ -137,39 +125,6 @@ export const RoomSettingsForm: React.FC<{
         </div>
       </form>
 
-      <form
-        className="flex flex-col gap-2 border-t pt-3"
-        style={{ borderColor: 'var(--dv-border)' }}
-        onSubmit={(e) => {
-          e.preventDefault()
-          if (password.length < 4) return
-          run('password', async () => {
-            await actions.changePassword(password)
-            setPassword('')
-            setSaved('Room password changed.')
-          })
-        }}
-      >
-        <span className="dv-label">New password</span>
-        <div className="flex gap-2">
-          <input
-            className="dv-input"
-            type="password"
-            autoComplete="new-password"
-            placeholder="At least 4 characters"
-            maxLength={72}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          <button className="dv-btn shrink-0" disabled={password.length < 4 || busy !== null}>
-            {busy === 'password' ? <span className="dv-spinner" /> : 'Change'}
-          </button>
-        </div>
-        <p className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
-          Only affects people joining from now on. Everyone already in the room stays in.
-        </p>
-      </form>
-
       <div
         className="flex flex-col gap-2 border-t pt-3"
         style={{ borderColor: 'var(--dv-border)' }}
@@ -195,7 +150,7 @@ export const RoomSettingsForm: React.FC<{
         </label>
         <p className="m-0 text-[11px] leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
           {allowGuests
-            ? 'People without an account can join with the room password, as an anonymous animal. Turning this off removes any guests in the room now.'
+            ? 'People without an account can join from the link, as an anonymous animal. Turning this off removes any guests in the room now.'
             : 'Only signed-in accounts can join. Guests who try get asked to sign in.'}
         </p>
       </div>

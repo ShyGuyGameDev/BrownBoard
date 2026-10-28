@@ -2,15 +2,12 @@ import React, { useEffect, useId, useRef, useState } from 'react'
 import {
   AlertCircle,
   ArrowLeft,
-  Check,
   ChevronRight,
   Clock,
-  Copy,
   DoorOpen,
   Eye,
   EyeOff,
   Info,
-  KeyRound,
   LogOut,
   Mail,
   Moon,
@@ -25,7 +22,6 @@ import {
 import { EMAIL_RE, MIN_PASSWORD, isElectron, useAuth, usernameFromEmail } from './lib/auth'
 import {
   RoomRpcError,
-  type RoomSession,
   type RoomSummary,
   createQuickRoom,
   clearFlash,
@@ -33,10 +29,8 @@ import {
   myRooms,
   peekFlash,
   actAndNotify,
-  changeRoomPassword,
   deleteRoom,
   renameRoom,
-  roomPassword,
   setGuestAccess,
 } from './lib/rooms'
 import { type RoomSettingsActions, RoomSettingsForm } from './room-settings'
@@ -209,99 +203,6 @@ const GoogleIcon = () => (
 
 const errorText = (e: unknown) =>
   e instanceof Error ? e.message : 'Something went wrong. Try again.'
-
-/* ------------------------------------------------------------------ */
-/* Room form (guests and signed-in users)                              */
-/* ------------------------------------------------------------------ */
-
-/** Join the room a share link points to, with its password. */
-export const RoomForm: React.FC<{
-  initialName?: string
-  lockName?: boolean
-  /** The room from the share link: the only way to join one. */
-  roomId: string
-  onEntered: (room: RoomSession) => void
-  guest?: boolean
-}> = ({ initialName = '', lockName, roomId, onEntered, guest }) => {
-  const [name, setName] = useState(initialName)
-  const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => setName(initialName), [initialName])
-
-  const run = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      onEntered(await joinRoom(name, password, roomId))
-    } catch (e) {
-      setError(errorText(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const clean = name.trim()
-  const canSubmit = clean.length >= 2 && password.length >= 1
-
-  return (
-    <form
-      className="flex flex-col gap-4"
-      onSubmit={(e) => {
-        e.preventDefault()
-        if (canSubmit) run()
-      }}
-    >
-      <Field label="Room name">
-        {(id) => (
-          <input
-            id={id}
-            className="dv-input lg"
-            value={name}
-            readOnly={lockName}
-            maxLength={48}
-            autoFocus={!lockName}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="The room you were invited to"
-            onChange={(e) => setName(e.target.value)}
-          />
-        )}
-      </Field>
-      <Field label="Room password">
-        {(id) => (
-          <PasswordInput
-            id={id}
-            value={password}
-            onChange={(v) => {
-              setPassword(v)
-              setError(null)
-            }}
-            autoFocus={lockName}
-            maxLength={72}
-            autoComplete="current-password"
-          />
-        )}
-      </Field>
-
-      {error && <Alert>{error}</Alert>}
-
-      <Submit busy={busy} disabled={!canSubmit}>
-        Enter room
-      </Submit>
-
-      {guest && (
-        <p
-          className="dv-hint text-center"
-          style={{ color: 'var(--dv-muted)', fontSize: 'var(--dv-text-xs)' }}
-        >
-          You'll appear to others as an anonymous animal, like “Anonymous Otter”.
-        </p>
-      )}
-    </form>
-  )
-}
 
 /* ------------------------------------------------------------------ */
 /* Sign in / sign up                                                   */
@@ -647,7 +548,7 @@ export const Onboarding: React.FC = () => {
 /* ------------------------------------------------------------------ */
 
 /**
- * Straight into the linked room: just its password, as a guest. Signing in is one click away.
+ * Straight into the linked room as a guest, in one click. Signing in is one click away too.
  * `onHold(true)` keeps this screen up while the guest session starts and the join runs (the app
  * would otherwise switch to the room gate the moment a session exists); `onHold(false)` hands over.
  * Signing in with an account always hands over, since that isn't a guest session.
@@ -659,8 +560,7 @@ export const InviteScreen: React.FC<{
   onHold: (hold: boolean) => void
 }> = ({ roomId, roomName, deleted, onHold }) => {
   const { signInAsGuest } = useAuth()
-  const [step, setStep] = useState<'password' | 'account' | 'forgot'>('password')
-  const [password, setPassword] = useState('')
+  const [step, setStep] = useState<'join' | 'account' | 'forgot'>('join')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [accountsOnly, setAccountsOnly] = useState(false)
@@ -684,7 +584,7 @@ export const InviteScreen: React.FC<{
       <AuthLayout>
         {step === 'account' ? (
           <>
-            <BackButton onClick={() => setStep('password')} />
+            <BackButton onClick={() => setStep('join')} />
             {roomName && (
               <p className="dv-sub -mt-2">
                 After you sign in, you'll go straight to <strong>{roomName}</strong>.
@@ -701,13 +601,12 @@ export const InviteScreen: React.FC<{
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!password) return
     setBusy(true)
     setError(null)
     onHold(true)
     try {
       await signInAsGuest()
-      await joinRoom(roomName ?? '', password, roomId)
+      await joinRoom(roomId)
       onHold(false) // member now: the room gate takes over and opens the room
     } catch (err) {
       if (err instanceof RoomRpcError && err.code === 'guests_disabled') setAccountsOnly(true)
@@ -721,7 +620,7 @@ export const InviteScreen: React.FC<{
       <div className="flex flex-col gap-2">
         <h1>{roomName ? `Join “${roomName}”` : 'Join this room'}</h1>
         <p className="dv-sub">
-          You've been invited to a shared board and canvas. Enter the room password to jump in.
+          You've been invited to a shared board and canvas. Jump in as a guest, or sign in.
         </p>
       </div>
 
@@ -740,25 +639,8 @@ export const InviteScreen: React.FC<{
         </Alert>
       ) : (
         <form className="flex flex-col gap-4" onSubmit={submit}>
-          <Field label="Room password">
-            {(id) => (
-              <PasswordInput
-                id={id}
-                value={password}
-                onChange={(v) => {
-                  setPassword(v)
-                  setError(null)
-                }}
-                autoFocus
-                maxLength={72}
-                autoComplete="current-password"
-              />
-            )}
-          </Field>
           {error && <Alert>{error}</Alert>}
-          <Submit busy={busy} disabled={!password}>
-            Enter room
-          </Submit>
+          <Submit busy={busy}>Join as a guest</Submit>
           <p className="dv-sub text-center" style={{ fontSize: 'var(--dv-text-xs)' }}>
             You'll join as a guest, shown to others as an anonymous animal like “Anonymous Otter”.
           </p>
@@ -786,9 +668,13 @@ export const JoinRoomScreen: React.FC<{
   roomId: string
   roomName: string | null
   deleted: boolean
-  onJoined: () => void
-}> = ({ roomId, roomName, deleted, onJoined }) => {
+  /** Why joining from the link failed. */
+  error: unknown
+}> = ({ roomName, deleted, error }) => {
   const { isGuest, signOut } = useAuth()
+  const code = error instanceof RoomRpcError ? error.code : null
+  const accountsOnly = code === 'guests_disabled'
+  const missing = deleted || code === 'not_found' || code === 'deleted'
   return (
     <AuthLayout>
       <BackButton
@@ -797,24 +683,30 @@ export const JoinRoomScreen: React.FC<{
       />
       <div className="flex flex-col gap-2">
         <h2>
-          {roomName ? `Enter “${roomName}”` : deleted ? 'This room was deleted' : 'Room not found'}
+          {deleted || code === 'deleted'
+            ? 'This room was deleted'
+            : missing
+              ? 'Room not found'
+              : accountsOnly && roomName
+                ? `“${roomName}” is for accounts only`
+                : "Couldn't open this room"}
         </h2>
         <p className="dv-sub">
-          {roomName
-            ? "Enter the room's password to join. You'll only need it once."
-            : deleted
-              ? 'Its owner deleted it, so its board and canvas are gone.'
-              : "This link doesn't point to a room. Check that you copied all of it."}
+          {deleted || code === 'deleted'
+            ? 'Its owner deleted it, so its board and canvas are gone.'
+            : missing
+              ? "This link doesn't point to a room. Check that you copied all of it."
+              : accountsOnly
+                ? 'This room only lets in signed-in accounts.'
+                : errorText(error)}
         </p>
       </div>
-      {roomName && (
-        <RoomForm
-          initialName={roomName}
-          roomId={roomId}
-          lockName
-          guest={isGuest}
-          onEntered={onJoined}
-        />
+      {/* Signing out of the guest session brings back the link's sign-in screen. */}
+      {accountsOnly && isGuest && (
+        <button className="dv-btn primary lg block" onClick={signOut}>
+          <UserRound size={16} />
+          Sign in or create an account
+        </button>
       )}
     </AuthLayout>
   )
@@ -907,8 +799,8 @@ const fullDate = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
 /**
- * Text field that edits in place: Enter saves, Escape cancels. Blur saves when `saveOnBlur`
- * (names), otherwise cancels (passwords, so clicking away never changes one by accident).
+ * Text field that edits in place: Enter saves, Escape cancels. Blur saves when `saveOnBlur`,
+ * otherwise cancels, so clicking away never changes anything by accident.
  */
 const InlineEdit: React.FC<{
   initial: string
@@ -917,20 +809,9 @@ const InlineEdit: React.FC<{
   maxLength: number
   minLength: number
   saveOnBlur?: boolean
-  mono?: boolean
   onSave: (value: string) => Promise<void>
   onCancel: () => void
-}> = ({
-  initial,
-  label,
-  placeholder,
-  maxLength,
-  minLength,
-  saveOnBlur,
-  mono,
-  onSave,
-  onCancel,
-}) => {
+}> = ({ initial, label, placeholder, maxLength, minLength, saveOnBlur, onSave, onCancel }) => {
   const [value, setValue] = useState(initial)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -958,7 +839,7 @@ const InlineEdit: React.FC<{
   return (
     <div className="dv-inline-edit">
       <input
-        className={`dv-input dv-inline-input ${mono ? 'mono' : ''}`}
+        className="dv-input dv-inline-input"
         aria-label={label}
         aria-invalid={!!error}
         value={value}
@@ -988,145 +869,12 @@ const InlineEdit: React.FC<{
   )
 }
 
-/** Password on a room card: hidden until asked for, fetched only then, copyable. */
-const CardPassword: React.FC<{
-  roomId: string
-  isOwner: boolean
-  /** Owners only: double-click the password to change it. */
-  onChange?: (password: string) => Promise<void>
-}> = ({ roomId, isOwner, onChange }) => {
-  const [value, setValue] = useState<string | null | undefined>(undefined) // undefined = not fetched
-  const [shown, setShown] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [editing, setEditing] = useState(false)
-
-  const load = async () => {
-    if (value !== undefined) return value
-    setBusy(true)
-    try {
-      const pw = await roomPassword(roomId)
-      setValue(pw)
-      return pw
-    } catch {
-      setValue(null)
-      return null
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const startEditing = async () => {
-    if (!onChange) return
-    await load()
-    setEditing(true)
-  }
-
-  if (editing && onChange) {
-    return (
-      <InlineEdit
-        initial={value ?? ''}
-        label="New room password"
-        placeholder="New password"
-        minLength={4}
-        maxLength={72}
-        mono
-        onSave={onChange}
-        onCancel={() => setEditing(false)}
-      />
-    )
-  }
-
-  if (value === null) {
-    return onChange ? (
-      <p
-        className="dv-room-pw-missing editable"
-        title="Double-click to set a new password"
-        onDoubleClick={() => setEditing(true)}
-      >
-        Password not saved. Double-click here to set a new one.
-      </p>
-    ) : (
-      <p className="dv-room-pw-missing">
-        {isOwner ? 'Password not saved.' : 'Password not saved. Ask the owner for it.'}
-      </p>
-    )
-  }
-
-  return (
-    <div className="dv-room-pw">
-      <KeyRound size={13} aria-hidden />
-      <span
-        className={`dv-room-pw-value ${onChange ? 'editable' : ''}`}
-        aria-label={shown ? 'Room password' : 'Room password hidden'}
-        title={onChange ? 'Double-click to change' : undefined}
-        onDoubleClick={startEditing}
-      >
-        {/* Fixed-width mask so the hidden state doesn't reveal the length. */}
-        {shown && value ? value : '••••••••'}
-      </span>
-      {onChange && (
-        <button
-          type="button"
-          className="dv-iconbtn sm"
-          aria-label="Change password"
-          title="Change password"
-          disabled={busy}
-          onClick={startEditing}
-        >
-          <Pencil size={13} />
-        </button>
-      )}
-      <button
-        type="button"
-        className="dv-iconbtn sm"
-        aria-label={shown ? 'Hide password' : 'Show password'}
-        aria-pressed={shown}
-        disabled={busy}
-        onClick={async () => {
-          if (!shown) await load()
-          setShown((v) => !v)
-        }}
-      >
-        {busy ? (
-          <span className="dv-spinner sm" />
-        ) : shown ? (
-          <EyeOff size={14} />
-        ) : (
-          <Eye size={14} />
-        )}
-      </button>
-      <button
-        type="button"
-        className="dv-iconbtn sm"
-        aria-label="Copy password"
-        disabled={busy}
-        onClick={async () => {
-          const pw = await load()
-          if (!pw) return
-          try {
-            await navigator.clipboard.writeText(pw)
-            setCopied(true)
-            setTimeout(() => setCopied(false), 1400)
-          } catch {
-            setShown(true)
-          }
-        }}
-      >
-        {copied ? <Check size={14} /> : <Copy size={14} />}
-      </button>
-    </div>
-  )
-}
-
 const RoomCard: React.FC<{
   room: RoomSummary
-  /** Bumped after a password change so the card forgets the old one. */
-  passwordRev: number
   onSettings: () => void
-  /** Owners only: inline rename / password change. */
+  /** Owners only: inline rename. */
   actions?: RoomSettingsActions
-}> = ({ room, passwordRev, onSettings, actions }) => {
+}> = ({ room, onSettings, actions }) => {
   const [renaming, setRenaming] = useState(false)
   // The name opens the room on a single click, but waits a moment in case it's a double-click.
   const clickTimer = useRef<number | undefined>(undefined)
@@ -1206,12 +954,6 @@ const RoomCard: React.FC<{
           </time>
           {!room.allowGuests && <span title="Guests can't join this room"> · Accounts only</span>}
         </p>
-        <CardPassword
-          key={passwordRev}
-          roomId={room.roomId}
-          isOwner={room.isOwner}
-          onChange={actions?.changePassword}
-        />
       </div>
     </article>
   )
@@ -1270,7 +1012,6 @@ export const RoomsHome: React.FC = () => {
   const [startError, setStartError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [settingsId, setSettingsId] = useState<string | null>(null)
-  const [passwordRevs, setPasswordRevs] = useState<Record<string, number>>({})
   const [notice, setNotice] = useState<string | null>(null)
   const settingsRoom = rooms?.find((r) => r.roomId === settingsId) ?? null
 
@@ -1305,10 +1046,6 @@ export const RoomsHome: React.FC = () => {
       setRooms(
         (rs) => rs?.map((r) => (r.roomId === room.roomId ? { ...r, allowGuests: allow } : r)) ?? rs,
       )
-    },
-    changePassword: async (password) => {
-      await changeRoomPassword(room.roomId, password)
-      setPasswordRevs((revs) => ({ ...revs, [room.roomId]: (revs[room.roomId] ?? 0) + 1 }))
     },
     remove: async () => {
       await actAndNotify(room.roomId, () => deleteRoom(room.roomId), 'room:deleted')
@@ -1412,7 +1149,6 @@ export const RoomsHome: React.FC = () => {
                   <RoomCard
                     key={r.roomId}
                     room={r}
-                    passwordRev={passwordRevs[r.roomId] ?? 0}
                     actions={r.isOwner ? settingsActions(r) : undefined}
                     onSettings={() => {
                       setNotice(null)
