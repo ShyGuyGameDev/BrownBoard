@@ -28,6 +28,8 @@ interface RoomContextValue {
   roomName: string
   /** Signed-in creator: can rename, re-password, delete the room and clear the canvas. */
   isOwner: boolean
+  /** After the owner hands the room to you (they leave, you take over). */
+  setIsOwner: (isOwner: boolean) => void
   /** Update the name shown locally (after a rename here or by the owner elsewhere). */
   setRoomName: (name: string) => void
   allowGuests: boolean
@@ -147,7 +149,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   displayName,
   avatar,
   userId,
-  isOwner,
+  isOwner: initialIsOwner,
   allowGuests: initialAllowGuests,
   unnamed: initialUnnamed,
   isCreator,
@@ -155,6 +157,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   children,
 }) => {
   const [roomName, setRoomName] = useState(initialRoomName)
+  const [isOwner, setIsOwner] = useState(initialIsOwner)
   const [allowGuests, setAllowGuests] = useState(initialAllowGuests)
   const [unnamed, setUnnamed] = useState(initialUnnamed)
   // Presence is per tab (so two tabs don't fight over one cursor); colour follows the person.
@@ -249,6 +252,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       roomId,
       roomName,
       isOwner,
+      setIsOwner,
       setRoomName,
       allowGuests,
       setAllowGuests,

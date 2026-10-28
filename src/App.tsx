@@ -39,8 +39,10 @@ import {
   discardRoom,
   enterRoom,
   joinRoom,
+  leaveRoom,
   renameRoom,
   roomInviteInfo,
+  roomPeople,
   saveRoom,
   setFlash,
   setGuestAccess,
@@ -58,7 +60,13 @@ import {
   type SignInReason,
   SignInPanel,
 } from './onboarding.tsx'
-import { type RoomSettingsActions, RoomSettingsForm, SaveRoomForm } from './room-settings.tsx'
+import {
+  type LeaveRoomActions,
+  LeaveRoomSection,
+  type RoomSettingsActions,
+  RoomSettingsForm,
+  SaveRoomForm,
+} from './room-settings.tsx'
 
 type Page = 'board' | 'canvas'
 
@@ -172,12 +180,29 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 }
 
 /* ------------------------------------------------------------------ */
-/* Room settings (owner only)                                          */
+/* Room settings                                                       */
 /* ------------------------------------------------------------------ */
 
+/** Owners get the full settings; everyone else signed in gets Leave. */
 const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { roomId, roomName, setRoomName, allowGuests, setAllowGuests, send, unnamed } = useRoom()
+  const { roomId, roomName, isOwner, setRoomName, allowGuests, setAllowGuests, send, unnamed } =
+    useRoom()
   const save = useSaveRoom()
+
+  const leave: LeaveRoomActions = {
+    people: () => roomPeople(roomId),
+    leave: async (newOwnerId) => {
+      const left = await leaveRoom(roomId, newOwnerId)
+      if (newOwnerId) {
+        // Still on the channel, so tell the new owner (and everyone else, for the name).
+        send('room:owner', { userId: newOwnerId, name: left.roomName })
+        setFlash(`You left “${roomName}”. ${left.newOwnerName ?? 'Your pick'} owns it now.`)
+      } else {
+        setFlash(`You left “${roomName}”.`)
+      }
+      goHome()
+    },
+  }
 
   // Inside the room we already have its live channel, so just broadcast on it.
   const actions: RoomSettingsActions = {
@@ -225,14 +250,25 @@ const RoomSettingsPopover: React.FC<{ onClose: () => void }> = ({ onClose }) => 
   return (
     <>
       <div className="fixed inset-0 z-40" onPointerDown={onClose} />
-      <div className="dv-floating dv-no-drag absolute right-0 top-full z-50 mt-2 flex w-[340px] flex-col gap-4 p-4">
+      <div className="dv-floating dv-no-drag dv-scroll absolute right-0 top-full z-50 mt-2 flex max-h-[calc(100vh-72px)] w-[340px] flex-col gap-4 overflow-y-auto p-4">
         <div className="flex flex-col gap-1">
           <span className="text-[13px] font-semibold">Room settings</span>
-          <p className="text-xs" style={{ color: 'var(--dv-muted)' }}>
-            Only you can change these, because you created this room.
+          <p className="m-0 text-xs" style={{ color: 'var(--dv-muted)' }}>
+            {isOwner
+              ? 'Only you can change these, because you own this room.'
+              : 'Only the owner can rename or delete this room.'}
           </p>
         </div>
-        <RoomSettingsForm roomName={roomName} allowGuests={allowGuests} actions={actions} />
+        {isOwner ? (
+          <RoomSettingsForm
+            roomName={roomName}
+            allowGuests={allowGuests}
+            actions={actions}
+            leave={<LeaveRoomSection roomName={roomName} isOwner actions={leave} />}
+          />
+        ) : (
+          <LeaveRoomSection roomName={roomName} isOwner={false} actions={leave} divider={false} />
+        )}
       </div>
     </>
   )
@@ -248,6 +284,7 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
     roomId,
     roomName,
     isOwner,
+    setIsOwner,
     setRoomName,
     setAllowGuests,
     unnamed,
@@ -259,7 +296,7 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
     on,
     send,
   } = useRoom()
-  const { isGuest, signOut } = useAuth()
+  const { user, isGuest, signOut } = useAuth()
   // Every visit to a room starts on the board (Shell remounts per room, so this resets on entry).
   const [page, setPage] = useState<Page>('board')
   const { theme, toggle: toggleTheme } = useTheme()
@@ -307,12 +344,27 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
         signOut().then(goHome)
       }
     })
+    // The owner left and handed the room on. If it's to you, ask the server, then show it.
+    const offOwner = on('room:owner', ({ userId, name }: { userId: string; name?: string }) => {
+      if (name) setRoomName(name)
+      if (userId !== user?.id) return
+      enterRoom(roomId)
+        .then((r) => {
+          setIsOwner(r.isOwner)
+          setRoomName(r.roomName)
+          if (r.isOwner) toast(`You're now the owner of “${r.roomName}”.`)
+        })
+        .catch(() => {
+          /* they'll see it next time they open the room */
+        })
+    })
     return () => {
       offRename()
       offDelete()
       offGuests()
+      offOwner()
     }
-  }, [on, setRoomName, setAllowGuests, roomName, isGuest, signOut])
+  }, [on, setRoomName, setAllowGuests, setIsOwner, roomId, roomName, user, isGuest, signOut])
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
 
@@ -554,7 +606,7 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
             )}
           </div>
 
-          {(isOwner || unnamed) && (
+          {(!isGuest || unnamed) && (
             <div className="relative">
               <button
                 className="dv-iconbtn"

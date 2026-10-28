@@ -2,6 +2,8 @@ import React, { useEffect, useId, useRef, useState } from 'react'
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowUpRight,
+  Check,
   ChevronRight,
   Clock,
   DoorOpen,
@@ -9,9 +11,11 @@ import {
   EyeOff,
   Info,
   KeyRound,
+  Link2,
   LogOut,
   Mail,
   Moon,
+  MoreHorizontal,
   Pencil,
   Plus,
   Search,
@@ -32,15 +36,23 @@ import {
   peekFlash,
   actAndNotify,
   deleteRoom,
+  leaveRoom,
+  roomPeople,
   renameRoom,
   saveRoom,
   setGuestAccess,
 } from './lib/rooms'
-import { type RoomSettingsActions, RoomSettingsForm } from './room-settings'
-import { colorFor, goHome, goToRoom } from './lib/room'
+import {
+  type LeaveRoomActions,
+  LeaveRoomSection,
+  type RoomSettingsActions,
+  RoomSettingsForm,
+} from './room-settings'
+import { buildShareLink, colorFor, goHome, goToRoom } from './lib/room'
 import { Avatar } from './avatar'
 import { getLastAccount, setSignInIntent, setStartRoomAfterSignIn } from './lib/sign-in-intent'
 import { useTheme } from './lib/theme'
+import { fullDate, relative } from './lib/time'
 
 /* ------------------------------------------------------------------ */
 /* Pieces                                                              */
@@ -769,22 +781,6 @@ export const JoinRoomScreen: React.FC<{
 /* Signed-in home: your rooms                                          */
 /* ------------------------------------------------------------------ */
 
-const relative = (iso: string) => {
-  const diff = (new Date(iso).getTime() - Date.now()) / 1000
-  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
-  const steps: [Intl.RelativeTimeFormatUnit, number][] = [
-    ['year', 31536000],
-    ['month', 2592000],
-    ['week', 604800],
-    ['day', 86400],
-    ['hour', 3600],
-    ['minute', 60],
-  ]
-  for (const [unit, secs] of steps)
-    if (Math.abs(diff) >= secs) return rtf.format(Math.round(diff / secs), unit)
-  return 'just now'
-}
-
 const AddEmailBanner: React.FC = () => {
   const { updateEmail } = useAuth()
   const [open, setOpen] = useState(false)
@@ -847,9 +843,6 @@ const AddEmailBanner: React.FC = () => {
     </div>
   )
 }
-
-const fullDate = (iso: string) =>
-  new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
 /**
  * Text field that edits in place: Enter saves, Escape cancels. Blur saves when `saveOnBlur`,
@@ -922,19 +915,231 @@ export const InlineEdit: React.FC<{
   )
 }
 
+/**
+ * The ⋯ menu on a room card: open, copy link, settings (owner), leave. Members confirm leaving
+ * right in the menu; owners go on to pick who takes over (`onOwnerLeave`).
+ */
+const RoomCardMenu: React.FC<{
+  room: RoomSummary
+  onSettings: () => void
+  onOwnerLeave: () => void
+  leave: () => Promise<void>
+  onOpenChange: (open: boolean) => void
+}> = ({ room, onSettings, onOwnerLeave, leave, onOpenChange }) => {
+  const [open, setOpenState] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const menuId = useId()
+
+  const setOpen = (next: boolean) => {
+    setOpenState(next)
+    onOpenChange(next)
+    if (!next) {
+      setConfirming(false)
+      setError(null)
+    }
+  }
+
+  // Click outside or Escape closes it.
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || busy) return
+      setOpen(false)
+      triggerRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  })
+
+  // Focus the first item on open, like a native menu.
+  useEffect(() => {
+    if (open && !confirming) menuRef.current?.querySelector<HTMLElement>('[role=menuitem]')?.focus()
+  }, [open, confirming])
+
+  // Arrow keys move between items.
+  const onMenuKey = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return
+    const items = [...(menuRef.current?.querySelectorAll<HTMLElement>('[role=menuitem]') ?? [])]
+    if (!items.length) return
+    e.preventDefault()
+    const i = items.indexOf(document.activeElement as HTMLElement)
+    const next =
+      e.key === 'Home'
+        ? 0
+        : e.key === 'End'
+          ? items.length - 1
+          : (i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+    items[next].focus()
+  }
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(buildShareLink(room.roomId))
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1600)
+    } catch {
+      setError("Couldn't copy the link.")
+    }
+  }
+
+  return (
+    <div className="dv-room-menu-root" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="dv-room-more"
+        aria-label={`More for ${room.roomName}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        title="More"
+        onClick={() => setOpen(!open)}
+      >
+        <MoreHorizontal size={16} />
+      </button>
+      {open && (
+        <div
+          ref={menuRef}
+          id={menuId}
+          className="dv-menu dv-room-menu"
+          role={confirming ? 'group' : 'menu'}
+          aria-label={confirming ? 'Confirm leaving' : `${room.roomName} actions`}
+          onKeyDown={onMenuKey}
+        >
+          {confirming ? (
+            <div className="dv-menu-confirm">
+              <p>
+                Leave <strong>{room.roomName}</strong>?
+              </p>
+              <p className="dv-menu-hint">You can rejoin any time from its link.</p>
+              {error && (
+                <p className="dv-inline-error" role="alert">
+                  {error}
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="dv-btn ghost"
+                  disabled={busy}
+                  onClick={() => {
+                    setConfirming(false)
+                    setError(null)
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="dv-btn danger"
+                  autoFocus
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true)
+                    setError(null)
+                    try {
+                      await leave()
+                    } catch (e) {
+                      setError(errorText(e))
+                      setBusy(false)
+                    }
+                  }}
+                >
+                  {busy ? <span className="dv-spinner" /> : 'Leave'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                className="dv-menu-item"
+                onClick={() => goToRoom(room.roomId)}
+              >
+                <ArrowUpRight size={14} aria-hidden />
+                Open room
+              </button>
+              {/* Untitled rooms can't be joined, so there's no link to share yet. */}
+              {!room.unnamed && (
+                <button type="button" role="menuitem" className="dv-menu-item" onClick={copyLink}>
+                  {copied ? <Check size={14} aria-hidden /> : <Link2 size={14} aria-hidden />}
+                  {copied ? 'Link copied' : 'Copy link'}
+                </button>
+              )}
+              {room.isOwner && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="dv-menu-item"
+                  onClick={() => {
+                    setOpen(false)
+                    onSettings()
+                  }}
+                >
+                  <Settings size={14} aria-hidden />
+                  Room settings
+                </button>
+              )}
+              <div className="dv-menu-sep" role="separator" />
+              <button
+                type="button"
+                role="menuitem"
+                className="dv-menu-item danger"
+                onClick={() => {
+                  if (room.isOwner) {
+                    setOpen(false)
+                    onOwnerLeave()
+                  } else {
+                    setConfirming(true)
+                  }
+                }}
+              >
+                <LogOut size={14} aria-hidden />
+                {room.isOwner ? 'Leave room…' : 'Leave room'}
+              </button>
+              {error && (
+                <p className="dv-inline-error px-2 pb-1" role="alert">
+                  {error}
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const RoomCard: React.FC<{
   room: RoomSummary
   onSettings: () => void
+  onOwnerLeave: () => void
+  leave: () => Promise<void>
   /** Owners only: inline rename. */
   actions?: RoomSettingsActions
-}> = ({ room, onSettings, actions }) => {
+}> = ({ room, onSettings, onOwnerLeave, leave, actions }) => {
   const [renaming, setRenaming] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   // The name opens the room on a single click, but waits a moment in case it's a double-click.
   const clickTimer = useRef<number | undefined>(undefined)
   useEffect(() => () => window.clearTimeout(clickTimer.current), [])
 
   return (
-    <article className="dv-room-card">
+    <article className="dv-room-card" data-menu-open={menuOpen}>
       {/* Stretched button: the whole card opens the room; in-card controls sit above it. */}
       <button
         type="button"
@@ -949,20 +1154,14 @@ const RoomCard: React.FC<{
         <span className="dv-room-initial" aria-hidden>
           {room.roomName.slice(0, 1).toUpperCase()}
         </span>
-        {room.isOwner && (
-          <>
-            <span className="dv-room-owner">Owner</span>
-            <button
-              type="button"
-              className="dv-room-settings"
-              aria-label={`Settings for ${room.roomName}`}
-              title="Room settings"
-              onClick={onSettings}
-            >
-              <Settings size={15} />
-            </button>
-          </>
-        )}
+        {room.isOwner && <span className="dv-room-owner">Owner</span>}
+        <RoomCardMenu
+          room={room}
+          onSettings={onSettings}
+          onOwnerLeave={onOwnerLeave}
+          leave={leave}
+          onOpenChange={setMenuOpen}
+        />
       </div>
       <div className="dv-room-body">
         {renaming && actions ? (
@@ -1436,9 +1635,35 @@ export const RoomsHome: React.FC = () => {
   const [startError, setStartError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [settingsId, setSettingsId] = useState<string | null>(null)
+  /** Owner leaving from the card menu: picking who takes over. */
+  const [leavingId, setLeavingId] = useState<string | null>(null)
   const [profileSettingsOpen, setProfileSettingsOpen] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const settingsRoom = rooms?.find((r) => r.roomId === settingsId) ?? null
+  const leavingRoom = rooms?.find((r) => r.roomId === leavingId) ?? null
+
+  const leaveActions = (room: RoomSummary): LeaveRoomActions => ({
+    people: () => roomPeople(room.roomId),
+    leave: async (newOwnerId) => {
+      // Handing over tells the room, so the new owner gets the owner's controls right away.
+      const left = newOwnerId
+        ? await actAndNotify(
+            room.roomId,
+            () => leaveRoom(room.roomId, newOwnerId),
+            'room:owner',
+            (l) => ({ userId: newOwnerId, name: l.roomName }),
+          )
+        : await leaveRoom(room.roomId)
+      setSettingsId(null)
+      setLeavingId(null)
+      setRooms((rs) => rs?.filter((r) => r.roomId !== room.roomId) ?? rs)
+      setNotice(
+        newOwnerId
+          ? `You left “${room.roomName}”. ${left.newOwnerName ?? 'Your pick'} owns it now.`
+          : `You left “${room.roomName}”.`,
+      )
+    },
+  })
 
   // From here we're not in the room, so each action briefly joins its channel to tell members.
   const settingsActions = (room: RoomSummary): RoomSettingsActions => ({
@@ -1587,6 +1812,11 @@ export const RoomsHome: React.FC = () => {
                       setNotice(null)
                       setSettingsId(r.roomId)
                     }}
+                    onOwnerLeave={() => {
+                      setNotice(null)
+                      setLeavingId(r.roomId)
+                    }}
+                    leave={() => leaveActions(r).leave()}
                   />
                 ))}
           </div>
@@ -1621,6 +1851,30 @@ export const RoomsHome: React.FC = () => {
             roomName={settingsRoom.roomName}
             allowGuests={settingsRoom.allowGuests}
             actions={settingsActions(settingsRoom)}
+            leave={
+              <LeaveRoomSection
+                key={settingsRoom.roomId}
+                roomName={settingsRoom.roomName}
+                isOwner
+                actions={leaveActions(settingsRoom)}
+              />
+            }
+          />
+        </Modal>
+      )}
+      {leavingRoom && (
+        <Modal title="Leave room" onClose={() => setLeavingId(null)}>
+          <p className="dv-sub -mt-2">
+            <strong>{leavingRoom.roomName}</strong>
+          </p>
+          <LeaveRoomSection
+            key={leavingRoom.roomId}
+            roomName={leavingRoom.roomName}
+            isOwner
+            actions={leaveActions(leavingRoom)}
+            startOpen
+            divider={false}
+            heading={false}
           />
         </Modal>
       )}

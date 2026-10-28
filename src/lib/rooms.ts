@@ -45,6 +45,8 @@ export type RoomError =
   | 'deleted'
   | 'guests_disabled'
   | 'needs_account'
+  | 'pick_owner'
+  | 'bad_owner'
 
 export class RoomRpcError extends Error {
   code: RoomError | string
@@ -65,9 +67,11 @@ const ROOM_ERRORS: Record<RoomError, string> = {
   deleted: 'This room was deleted by its owner.',
   guests_disabled: 'This room only lets in signed-in accounts. Sign in to join it.',
   needs_account: 'Sign in to save this room.',
+  pick_owner: 'Choose someone to take over this room before you leave it.',
+  bad_owner: "That person can't take over this room. Choose someone else.",
 }
 
-async function rpc(fn: string, args: Record<string, string | boolean>) {
+async function rpc(fn: string, args: Record<string, string | boolean | null>) {
   const { data, error } = await supabase.rpc(fn, args)
   if (error) throw new Error(error.message)
   if (!data?.ok) throw new RoomRpcError(data?.error ?? 'unknown')
@@ -205,6 +209,50 @@ export async function discardRoom(roomId: string) {
   } catch {
     /* pruned the next time they start a room, or after a day */
   }
+}
+
+/** Someone who has been in a room with an account, for its owner to hand it to. */
+export interface RoomPerson {
+  userId: string
+  username: string
+  avatarUrl: string | null
+  lastSeenAt: string
+  /** Still in the room (the others have left it). */
+  isMember: boolean
+}
+
+/** Owner only: everyone else who has been in the room, most recently seen first. */
+export async function roomPeople(roomId: string): Promise<RoomPerson[]> {
+  const data = await rpc('room_people', { p_room_id: roomId })
+  const people: {
+    user_id: string
+    username: string
+    avatar_url: string | null
+    last_seen_at: string
+    is_member: boolean
+  }[] = data.people ?? []
+  return people.map((p) => ({
+    userId: p.user_id,
+    username: p.username,
+    avatarUrl: p.avatar_url ?? null,
+    lastSeenAt: p.last_seen_at,
+    isMember: !!p.is_member,
+  }))
+}
+
+export interface LeftRoom {
+  /** The room's name afterwards: it gets a number if the new owner already has one called that. */
+  roomName: string
+  newOwnerName: string | null
+}
+
+/**
+ * Leave a room; it drops off your rooms page and you'd need its link to come back. The owner
+ * has to pass `newOwnerId`, someone from roomPeople, who then owns it.
+ */
+export async function leaveRoom(roomId: string, newOwnerId?: string): Promise<LeftRoom> {
+  const data = await rpc('leave_room', { p_room_id: roomId, p_new_owner: newOwnerId ?? null })
+  return { roomName: data.room_name, newOwnerName: data.new_owner_name ?? null }
 }
 
 export interface InviteInfo {
