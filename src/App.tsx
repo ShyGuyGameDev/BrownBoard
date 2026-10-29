@@ -293,6 +293,7 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
     peers,
     status,
     me,
+    setActivity,
     on,
     send,
   } = useRoom()
@@ -441,6 +442,23 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
     }
   }, [go, openShare])
 
+  useEffect(() => {
+    const workspace = page === 'board' ? 'On the board' : 'On the whiteboard'
+    setActivity('workspace', workspace, 1)
+    const overlay = profileOpen
+      ? 'Editing profile settings'
+      : settingsOpen
+        ? 'Editing room settings'
+        : renaming
+          ? 'Renaming the room'
+          : shareOpen
+            ? 'Viewing invite settings'
+            : signIn
+              ? 'Viewing sign-in options'
+              : null
+    setActivity('shell-overlay', overlay, 3)
+  }, [page, profileOpen, settingsOpen, renaming, shareOpen, signIn, setActivity])
+
   const statusLabel =
     status === 'live' ? 'Live' : status === 'connecting' ? 'Connecting' : 'Offline'
   const statusColor =
@@ -571,28 +589,41 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
               />
             </button>
             {shown.map((p) => (
-              <Avatar
+              <span
                 key={p.id}
-                name={p.name}
-                color={p.color}
-                src={p.avatar}
-                className="dv-avatar -ml-1.5 border-2"
-                style={{ borderColor: 'var(--dv-panel)' }}
-                data-tip={p.name}
-                aria-label={p.name}
+                className="relative -ml-1.5"
+                title={`${p.name} · ${p.activity ?? 'Online'}`}
+                aria-label={`${p.name} · ${p.activity ?? 'Online'}`}
                 tabIndex={0}
-              />
+              >
+                <Avatar
+                  name={p.name}
+                  color={p.color}
+                  src={p.avatar}
+                  className="dv-avatar border-2"
+                  style={{ borderColor: 'var(--dv-panel)' }}
+                  data-tip={`${p.name} · ${p.activity ?? 'Online'}`}
+                  aria-label={`${p.name} · ${p.activity ?? 'Online'}`}
+                />
+                {p.activity && /^(Editing|Adding|Renaming)/.test(p.activity) && (
+                  <span
+                    className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2"
+                    style={{ background: '#22c55e', borderColor: 'var(--dv-panel)' }}
+                    aria-hidden="true"
+                  />
+                )}
+              </span>
             ))}
             {peers.length > shown.length && (
               <div
                 className="dv-avatar multi -ml-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 text-[10px] font-semibold"
                 data-tip={peers
                   .slice(shown.length)
-                  .map((p) => p.name)
+                  .map((p) => `${p.name} · ${p.activity ?? 'Online'}`)
                   .join('\n')}
                 aria-label={`Also here: ${peers
                   .slice(shown.length)
-                  .map((p) => p.name)
+                  .map((p) => `${p.name} · ${p.activity ?? 'Online'}`)
                   .join(', ')}`}
                 tabIndex={0}
                 style={{

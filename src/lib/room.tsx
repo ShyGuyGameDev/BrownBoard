@@ -16,6 +16,8 @@ export interface Peer {
   color: string
   /** Profile picture URL, for accounts that set one. */
   avatar?: string | null
+  /** What this person is currently working on in the room. */
+  activity?: string | null
 }
 
 export type RoomStatus = 'connecting' | 'live' | 'offline'
@@ -44,6 +46,7 @@ interface RoomContextValue {
   me: Peer
   peers: Peer[]
   status: RoomStatus
+  setActivity: (source: string, activity: string | null, priority?: number) => void
   /** Broadcast to everyone else in the room. Pass `local = true` to also notify handlers in this window. */
   send: (event: string, payload?: any, local?: boolean) => void
   on: (event: string, handler: Handler) => () => void
@@ -179,11 +182,17 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   const statusRef = useRef<RoomStatus>('connecting')
   const channelRef = useRef<RealtimeChannel | null>(null)
   const handlers = useRef(new Map<string, Set<Handler>>())
+  const activities = useRef(new Map<string, { activity: string; priority: number }>())
+  const currentActivity = useRef<string | null>(null)
 
   const updateStatus = (s: RoomStatus) => {
     statusRef.current = s
     setStatus(s)
   }
+
+  const trackCurrentPresence = useCallback(() => {
+    channelRef.current?.track({ ...meRef.current, activity: currentActivity.current })
+  }, [])
 
   useEffect(() => {
     // Private channel: Realtime checks room membership against the policies on realtime.messages.
@@ -202,14 +211,20 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
           .flat()
           .forEach((p) => {
             if (p.id && p.id !== idRef.current)
-              seen.set(p.id, { id: p.id, name: p.name, color: p.color, avatar: p.avatar ?? null })
+              seen.set(p.id, {
+                id: p.id,
+                name: p.name,
+                color: p.color,
+                avatar: p.avatar ?? null,
+                activity: p.activity ?? null,
+              })
           })
         setPeers([...seen.values()])
       })
     const onStatus = (s: string) => {
       if (s === 'SUBSCRIBED') {
         updateStatus('live')
-        channel.track(meRef.current)
+        trackCurrentPresence()
       } else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') {
         updateStatus('offline')
       }
@@ -226,12 +241,24 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       channelRef.current = null
       supabase.removeChannel(channel)
     }
-  }, [roomId])
+  }, [roomId, trackCurrentPresence])
 
   // Re-announce when the display name or picture changes.
   useEffect(() => {
-    if (statusRef.current === 'live') channelRef.current?.track(me)
-  }, [me])
+    if (statusRef.current === 'live') trackCurrentPresence()
+  }, [me, trackCurrentPresence])
+
+  const setActivity = useCallback(
+    (source: string, activity: string | null, priority = 1) => {
+      if (activity) activities.current.set(source, { activity: activity.slice(0, 120), priority })
+      else activities.current.delete(source)
+      currentActivity.current =
+        [...activities.current.values()].sort((a, b) => b.priority - a.priority)[0]?.activity ??
+        null
+      if (statusRef.current === 'live') trackCurrentPresence()
+    },
+    [trackCurrentPresence],
+  )
 
   const on = useCallback((event: string, handler: Handler) => {
     if (!handlers.current.has(event)) handlers.current.set(event, new Set())
@@ -263,6 +290,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       me,
       peers,
       status,
+      setActivity,
       send,
       on,
     }),
@@ -277,6 +305,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       me,
       peers,
       status,
+      setActivity,
       send,
       on,
     ],

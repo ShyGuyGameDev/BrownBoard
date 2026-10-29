@@ -548,7 +548,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   active = true,
   theme = 'light',
 }) => {
-  const { roomId, me, send, on, status, isOwner } = useRoom()
+  const { roomId, me, send, on, status, isOwner, setActivity } = useRoom()
   const taskData = useRoomTasks()
 
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -609,6 +609,15 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   const viewingRef = useRef(false)
   viewingRef.current = !!viewing
   const [, force] = useState(0)
+
+  const activity = showSettings
+    ? 'Editing whiteboard settings'
+    : editing
+      ? 'Editing whiteboard text'
+      : 'On the whiteboard'
+  useEffect(() => {
+    setActivity('whiteboard', active ? activity : null, showSettings ? 3 : 2)
+  }, [active, activity, showSettings, setActivity])
 
   // ---------- refs that mirror state for event handlers ----------
   const toolRef = useRef(tool)

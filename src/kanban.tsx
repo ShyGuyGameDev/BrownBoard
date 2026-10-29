@@ -186,7 +186,7 @@ interface MenuState {
 }
 
 export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) => {
-  const { roomId, send, on, peers } = useRoom()
+  const { roomId, send, on, peers, setActivity } = useRoom()
 
   const [categories, setCategories] = useState<Category[]>([])
   const categoriesRef = useRef<Category[]>([])
@@ -242,6 +242,21 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const [uploadingId, setUploadingId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const uploadTarget = useRef<string | null>(null)
+
+  const activity = settingsOpen
+    ? 'Editing board settings'
+    : editingTask
+      ? 'Editing a board task'
+      : renamingCat
+        ? 'Renaming a board list'
+        : addingList
+          ? 'Adding a board list'
+          : Object.values(newTaskInputs).some(Boolean)
+            ? 'Adding a board task'
+            : 'On the board'
+  useEffect(() => {
+    setActivity('kanban', active ? activity : null, settingsOpen ? 3 : 2)
+  }, [active, activity, settingsOpen, setActivity])
 
   const statusOptions = useMemo(() => [...DEFAULT_STATUS, ...customStatus], [customStatus])
   const urgencyOptions = useMemo(() => [...DEFAULT_URGENCY, ...customUrgency], [customUrgency])
