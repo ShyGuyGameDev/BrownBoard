@@ -427,6 +427,32 @@ body.dv-grabbing * {
 .dv-card[data-dragging='true'] {
   opacity: 0.35;
 }
+/* Someone else is editing this card: outlined in their colour, their name on the corner. */
+.dv-peer-edit {
+  position: absolute;
+  inset: 0 0 8px;
+  z-index: 2;
+  border: 2px solid var(--peer);
+  border-radius: var(--dv-radius-lg);
+  pointer-events: none;
+}
+.dv-peer-edit > span {
+  float: right;
+  max-width: 50%;
+  margin: -2px -2px 0 2px;
+  padding: 1px 6px;
+  border-radius: 0 var(--dv-radius-lg) 0 6px;
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dv-peer-edit > span + span {
+  border-radius: 0 0 6px 6px;
+}
 .dv-card .dv-actions {
   opacity: 0;
   transition: opacity var(--dv-dur-fast);

@@ -18,7 +18,12 @@ export interface Peer {
   avatar?: string | null
   /** What this person is currently working on in the room. */
   activity?: string | null
+  /** What they have selected or are editing: task ids on the board, element ids on the canvas. */
+  selection?: PeerSelection | null
 }
+
+export type SelectionArea = 'board' | 'canvas'
+export type PeerSelection = Record<SelectionArea, string[]>
 
 export type RoomStatus = 'connecting' | 'live' | 'offline'
 
@@ -47,6 +52,8 @@ interface RoomContextValue {
   peers: Peer[]
   status: RoomStatus
   setActivity: (source: string, activity: string | null, priority?: number) => void
+  /** Share what you're editing in one area, so others see it outlined in your colour. */
+  setSelection: (area: SelectionArea, ids: string[]) => void
   /** Broadcast to everyone else in the room. Pass `local = true` to also notify handlers in this window. */
   send: (event: string, payload?: any, local?: boolean) => void
   on: (event: string, handler: Handler) => () => void
@@ -184,6 +191,8 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   const handlers = useRef(new Map<string, Set<Handler>>())
   const activities = useRef(new Map<string, { activity: string; priority: number }>())
   const currentActivity = useRef<string | null>(null)
+  const selection = useRef<PeerSelection>({ board: [], canvas: [] })
+  const selectionTimer = useRef(0)
 
   const updateStatus = (s: RoomStatus) => {
     statusRef.current = s
@@ -191,7 +200,11 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   }
 
   const trackCurrentPresence = useCallback(() => {
-    channelRef.current?.track({ ...meRef.current, activity: currentActivity.current })
+    channelRef.current?.track({
+      ...meRef.current,
+      activity: currentActivity.current,
+      selection: selection.current,
+    })
   }, [])
 
   useEffect(() => {
@@ -217,6 +230,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
                 color: p.color,
                 avatar: p.avatar ?? null,
                 activity: p.activity ?? null,
+                selection: p.selection ?? null,
               })
           })
         setPeers([...seen.values()])
@@ -238,6 +252,8 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
     })
     return () => {
       cancelled = true
+      window.clearTimeout(selectionTimer.current)
+      selectionTimer.current = 0
       channelRef.current = null
       supabase.removeChannel(channel)
     }
@@ -256,6 +272,21 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
         [...activities.current.values()].sort((a, b) => b.priority - a.priority)[0]?.activity ??
         null
       if (statusRef.current === 'live') trackCurrentPresence()
+    },
+    [trackCurrentPresence],
+  )
+
+  // Selections can change many times a second (marquee drags), so presence updates are batched.
+  const setSelection = useCallback(
+    (area: SelectionArea, ids: string[]) => {
+      const cur = selection.current[area]
+      if (cur.length === ids.length && cur.every((id, i) => id === ids[i])) return
+      selection.current = { ...selection.current, [area]: ids.slice(0, 100) }
+      if (selectionTimer.current) return
+      selectionTimer.current = window.setTimeout(() => {
+        selectionTimer.current = 0
+        if (statusRef.current === 'live') trackCurrentPresence()
+      }, 120)
     },
     [trackCurrentPresence],
   )
@@ -291,6 +322,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       peers,
       status,
       setActivity,
+      setSelection,
       send,
       on,
     }),
@@ -306,6 +338,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       peers,
       status,
       setActivity,
+      setSelection,
       send,
       on,
     ],

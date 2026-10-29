@@ -548,7 +548,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   active = true,
   theme = 'light',
 }) => {
-  const { roomId, me, send, on, status, isOwner, setActivity } = useRoom()
+  const { roomId, me, send, on, status, isOwner, setActivity, peers, setSelection } = useRoom()
   const taskData = useRoomTasks()
 
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -619,6 +619,15 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     setActivity('whiteboard', active ? activity : null, showSettings ? 3 : 2)
   }, [active, activity, showSettings, setActivity])
 
+  // Share what you've selected or are typing in, so others see it outlined in your colour.
+  const mySelectionKey = active
+    ? [...new Set([...selIds, ...(editing ? [editing.id] : [])])].join(',')
+    : ''
+  useEffect(() => {
+    setSelection('canvas', mySelectionKey ? mySelectionKey.split(',') : [])
+  }, [mySelectionKey, setSelection])
+  useEffect(() => () => setSelection('canvas', []), [setSelection])
+
   // ---------- refs that mirror state for event handlers ----------
   const toolRef = useRef(tool)
   toolRef.current = tool
@@ -630,6 +639,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   themeRef.current = theme
   const activeRef = useRef(active)
   activeRef.current = active
+  const peersRef = useRef(peers)
+  peersRef.current = peers
   const editingRef = useRef<{ id: string; isNew: boolean } | null>(null)
   const editTextRef = useRef('')
   const taskRef = useRef(taskData)
@@ -1056,6 +1067,23 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       ctx.restore()
     }
 
+    // what teammates have selected: their canvas selection, plus cards of tasks they're editing on the board
+    const peerTags: { name: string; color: string; x: number; y: number }[] = []
+    for (const p of peersRef.current) {
+      const ids = new Set(p.selection?.canvas)
+      const boardTasks = new Set(p.selection?.board)
+      const items = st.els.filter(
+        (e) => ids.has(e.id) || (e.type === 'task' && !!e.taskId && boardTasks.has(e.taskId)),
+      )
+      if (!items.length) continue
+      for (const el of items) outline(el, p.color, 2)
+      const boxes = items.filter((e) => e.type !== 'connector').map((e) => getBBox(e, st.map))
+      if (boxes.length) {
+        const b = unionBox(boxes)
+        peerTags.push({ name: p.name, color: p.color, x: b.minX - PAD, y: b.minY - PAD })
+      }
+    }
+
     // selection
     if (st.sel.size) {
       for (const id of st.sel) {
@@ -1081,6 +1109,21 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       }
     }
     ctx.restore()
+
+    // teammates' name tags on what they've selected (screen space, so they stay readable at any zoom)
+    ctx.font = `600 11px ${FONT}`
+    ctx.textBaseline = 'middle'
+    for (const tag of peerTags) {
+      const sx = tag.x * k + view.x
+      const sy = tag.y * k + view.y
+      const tw = Math.min(ctx.measureText(tag.name).width, 160)
+      ctx.fillStyle = tag.color
+      ctx.beginPath()
+      ctx.roundRect(sx, sy - 20, tw + 12, 18, [5, 5, 5, 0])
+      ctx.fill()
+      ctx.fillStyle = '#fff'
+      ctx.fillText(ellipsize(ctx, tag.name, 160), sx + 6, sy - 10.5)
+    }
 
     // teammates' cursors (screen space)
     const now = Date.now()
@@ -2153,6 +2196,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     taskData.byId,
     taskData.statusOpt,
     taskData.urgencyOpt,
+    peers,
     requestDraw,
   ])
 

@@ -14,7 +14,7 @@ import {
   X,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
-import { colorFor, useRoom } from './lib/room'
+import { colorFor, useRoom, type Peer } from './lib/room'
 import { bus, getLinkCounts, isTyping, toast, withUploadFeedback } from './lib/bus'
 import {
   type Attachment,
@@ -188,7 +188,7 @@ interface MenuState {
 }
 
 export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) => {
-  const { roomId, send, on, peers, setActivity } = useRoom()
+  const { roomId, send, on, peers, setActivity, setSelection } = useRoom()
 
   const [categories, setCategories] = useState<Category[]>([])
   const categoriesRef = useRef<Category[]>([])
@@ -300,6 +300,20 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     [assignees],
   )
   const peerIds = peers.map((peer) => peer.id).join(',')
+
+  // Share the task you're editing, opening a menu on, or dragging; show everyone else's.
+  const mySelection = active ? [editingTask?.id, menu?.taskId, dragId] : []
+  const mySelectionKey = [...new Set(mySelection.filter(Boolean))].join(',')
+  useEffect(() => {
+    setSelection('board', mySelectionKey ? mySelectionKey.split(',') : [])
+  }, [mySelectionKey, setSelection])
+  useEffect(() => () => setSelection('board', []), [setSelection])
+  const peersByTask = useMemo(() => {
+    const m = new Map<string, Peer[]>()
+    for (const p of peers)
+      for (const id of p.selection?.board ?? []) m.set(id, [...(m.get(id) ?? []), p])
+    return m
+  }, [peers])
 
   /** Tell everyone else (and the canvas in this window) that board data changed. */
   const sync = useCallback(() => send('board', {}, true), [send])
@@ -1895,11 +1909,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   const assignee = task.assigneeId ? assigneesById.get(task.assigneeId) : null
                   const isEditing = editingTask?.id === task.id
                   const done = task.status === 'completed'
+                  const editors = peersByTask.get(task.id)
                   return (
                     <div
                       key={task.id}
                       id={`task-${task.id}`}
-                      className="pb-2"
+                      className="relative pb-2"
                       onDragOver={(e) => {
                         if (e.dataTransfer.types.includes('Files')) {
                           e.preventDefault()
@@ -1922,6 +1937,18 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                     >
                       {dropAt?.cat === cat.id && dropAt.index === index && (
                         <div className="dv-drop-line" />
+                      )}
+                      {editors && (
+                        <div
+                          className="dv-peer-edit"
+                          style={{ '--peer': editors[0].color } as React.CSSProperties}
+                        >
+                          {editors.map((p) => (
+                            <span key={p.id} style={{ background: p.color }}>
+                              {p.name}
+                            </span>
+                          ))}
+                        </div>
                       )}
                       <article
                         draggable={!isEditing && !q}
