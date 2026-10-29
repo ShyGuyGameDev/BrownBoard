@@ -1277,7 +1277,7 @@ body.dv-grabbing * {
   flex-direction: column;
   gap: var(--dv-space-4);
   width: 100%;
-  max-width: 420px;
+  max-width: 620px;
   max-height: calc(100% - 32px);
   overflow-y: auto;
   padding: var(--dv-space-6);
