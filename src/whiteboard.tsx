@@ -88,6 +88,8 @@ interface El {
   tag?: string
   /** layer: a fractional index, compared as a plain string; higher draws on top */
   z?: string
+  /** rotation in radians (clockwise) about the item's centre; strokes are rotated by moving their points */
+  rot?: number
 }
 
 interface Entry {
@@ -104,7 +106,9 @@ type Act =
   | { kind: 'pan'; sx: number; sy: number; vx: number; vy: number }
   | { kind: 'draw' }
   | { kind: 'drag'; start: Pt; snaps: El[]; moved: boolean }
-  | { kind: 'resize'; handle: string; start: Pt; snaps: El[]; moved: boolean }
+  /** `rot` / `c`: a single rotated item is resized in its own (turned) frame around centre `c` */
+  | { kind: 'resize'; handle: string; start: Pt; snaps: El[]; moved: boolean; rot: number; c: Pt }
+  | { kind: 'rotate'; pivot: Pt; start: number; snaps: El[]; moved: boolean }
   | { kind: 'marquee'; start: Pt; base: Set<string> }
   | { kind: 'connect'; from: string; at: Pt }
 
@@ -121,6 +125,10 @@ const NOTE_COLORS = noteColors
 const SWATCHES = ['auto', ...swatches]
 const HANDLE = 8
 const PAD = 10
+/** Screen distance from the top of the selection to the rotation handle (as in Google Slides). */
+const ROT_GAP = 26
+/** Shift-rotating snaps to this step. */
+const ROT_STEP = Math.PI / 12
 
 const arrowCursor = new Path2D('M0 0 L0 16 L4.5 12 L8 19.5 L10.5 18.4 L7 11.2 L12.5 11 Z')
 const measureCtx = document.createElement('canvas').getContext('2d')!
@@ -401,11 +409,9 @@ const connPts = (el: El, map: Map<string, El>): [Pt, Pt] | null => {
   const a = el.from ? map.get(el.from) : undefined
   const b = el.to ? map.get(el.to) : undefined
   if (!a || !b) return null
-  const ba = getBBox(a, map)
-  const bb = getBBox(b, map)
-  const ca = { x: (ba.minX + ba.maxX) / 2, y: (ba.minY + ba.maxY) / 2 }
-  const cb = { x: (bb.minX + bb.maxX) / 2, y: (bb.minY + bb.maxY) / 2 }
-  return [rectEdge(ba, cb.x, cb.y), rectEdge(bb, ca.x, ca.y)]
+  const ca = centerOf(getBBox(a, map))
+  const cb = centerOf(getBBox(b, map))
+  return [edgeToward(a, map, cb), edgeToward(b, map, ca)]
 }
 
 function getBBox(el: El, map: Map<string, El>): BBox {
@@ -432,7 +438,69 @@ function getBBox(el: El, map: Map<string, El>): BBox {
   }
 }
 
+const centerOf = (b: BBox): Pt => ({ x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 })
+const rotatePt = (p: Pt, c: Pt, a: number): Pt => {
+  const cos = Math.cos(a)
+  const sin = Math.sin(a)
+  const dx = p.x - c.x
+  const dy = p.y - c.y
+  return { x: c.x + dx * cos - dy * sin, y: c.y + dx * sin + dy * cos }
+}
+const rotOf = (el: El) => (el.type === 'stroke' || el.type === 'connector' ? 0 : (el.rot ?? 0))
+
+/** A canvas point in the item's own unrotated frame (where its points live). */
+const toLocal = (el: El, p: Pt, map: Map<string, El>): Pt => {
+  const a = rotOf(el)
+  return a ? rotatePt(p, centerOf(getBBox(el, map)), -a) : p
+}
+
+/** The area an item covers on the canvas, rotation included. */
+const worldBox = (el: El, map: Map<string, El>): BBox => {
+  const b = getBBox(el, map)
+  const a = rotOf(el)
+  if (!a) return b
+  const c = centerOf(b)
+  const pts = [
+    { x: b.minX, y: b.minY },
+    { x: b.maxX, y: b.minY },
+    { x: b.maxX, y: b.maxY },
+    { x: b.minX, y: b.maxY },
+  ].map((q) => rotatePt(q, c, a))
+  return bboxOf(
+    { x: Math.min(...pts.map((q) => q.x)), y: Math.min(...pts.map((q) => q.y)) },
+    { x: Math.max(...pts.map((q) => q.x)), y: Math.max(...pts.map((q) => q.y)) },
+  )
+}
+
+/** Where a line toward `t` leaves the item's (possibly rotated) box. */
+const edgeToward = (el: El, map: Map<string, El>, t: Pt): Pt => {
+  const b = getBBox(el, map)
+  const a = rotOf(el)
+  if (!a) return rectEdge(b, t.x, t.y)
+  const c = centerOf(b)
+  const lt = rotatePt(t, c, -a)
+  return rotatePt(rectEdge(b, lt.x, lt.y), c, a)
+}
+
+/** Turns an item by `delta` around `pivot`: its centre swings round and its own rotation grows. */
+const rotateEl = (el: El, pivot: Pt, delta: number, map: Map<string, El>): El => {
+  if (el.type === 'stroke')
+    return { ...el, points: el.points.map((q) => rotatePt(q, pivot, delta)) }
+  const c = centerOf(getBBox(el, map))
+  const nc = rotatePt(c, pivot, delta)
+  const full = Math.PI * 2
+  let rot = (((rotOf(el) + delta) % full) + full) % full
+  if (rot > Math.PI) rot -= full
+  if (Math.abs(rot) < 1e-6) rot = 0
+  return {
+    ...el,
+    points: el.points.map((q) => ({ x: q.x + nc.x - c.x, y: q.y + nc.y - c.y })),
+    rot,
+  }
+}
+
 const pointNear = (el: El, p: Pt, pad: number, map: Map<string, El>): boolean => {
+  if (el.type !== 'connector') p = toLocal(el, p, map)
   if (isBoxEl(el)) return inBox(p, getBBox(el, map), pad)
   const hit = (el.lineWidth ?? 4) / 2 + pad
   if (el.type === 'connector') {
@@ -489,6 +557,8 @@ const normalize = (raw: any): El => {
   if (el.mime !== undefined)
     el.mime = typeof el.mime === 'string' && /^[\w.+-]+\/[\w.+*-]+$/.test(el.mime) ? el.mime : ''
   if (el.size !== undefined) el.size = typeof el.size === 'number' && el.size >= 0 ? el.size : 0
+  if (el.rot !== undefined)
+    el.rot = typeof el.rot === 'number' && Number.isFinite(el.rot) ? el.rot : 0
   return el
 }
 
@@ -723,9 +793,31 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       .map((id) => st.map.get(id))
       .filter((e): e is El => !!e && e.type !== 'connector')
     if (!items.length) return null
-    const b = unionBox(items.map((e) => getBBox(e, st.map)))
+    const b = unionBox(items.map((e) => worldBox(e, st.map)))
     return { minX: b.minX - PAD, minY: b.minY - PAD, maxX: b.maxX + PAD, maxY: b.maxY + PAD }
   }
+
+  /**
+   * The selection frame, as in Google Slides: a single rotated item gets a frame turned with it
+   * (`box` is in its own frame, turned by `rot` about `c`); anything else an upright box.
+   */
+  const selFrame = (): { box: BBox; rot: number; c: Pt } | null => {
+    const items = [...st.sel]
+      .map((id) => st.map.get(id))
+      .filter((e): e is El => !!e && e.type !== 'connector')
+    if (items.length === 1 && rotOf(items[0])) {
+      const b = getBBox(items[0], st.map)
+      const box = { minX: b.minX - PAD, minY: b.minY - PAD, maxX: b.maxX + PAD, maxY: b.maxY + PAD }
+      return { box, rot: rotOf(items[0]), c: centerOf(b) }
+    }
+    const box = selBox()
+    return box && { box, rot: 0, c: centerOf(box) }
+  }
+
+  const rotHandleOf = (b: BBox): Pt => ({
+    x: (b.minX + b.maxX) / 2,
+    y: b.minY - ROT_GAP / st.view.k,
+  })
 
   const handlesOf = (b: BBox) => [
     { id: 'nw', x: b.minX, y: b.minY },
@@ -786,6 +878,13 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
 
     const outline = (el: El, strokeStyle: string, px: number, dashed = false) => {
       ctx.save()
+      const turn = rotOf(el)
+      if (turn) {
+        const c = centerOf(getBBox(el, st.map))
+        ctx.translate(c.x, c.y)
+        ctx.rotate(turn)
+        ctx.translate(-c.x, -c.y)
+      }
       ctx.strokeStyle = strokeStyle
       ctx.lineWidth = px / k
       if (dashed) ctx.setLineDash([6 / k, 4 / k])
@@ -849,6 +948,13 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       if (el.type === 'connector') continue
       ctx.save()
       if (dim(el.id)) ctx.globalAlpha = 0.12
+      const turn = rotOf(el)
+      if (turn) {
+        const c = centerOf(getBBox(el, st.map))
+        ctx.translate(c.x, c.y)
+        ctx.rotate(turn)
+        ctx.translate(-c.x, -c.y)
+      }
       if (el.type === 'stroke' && el.points.length) {
         ctx.strokeStyle = resolveColor(el.color, pal.ink)
         ctx.lineWidth = el.lineWidth ?? 4
@@ -1057,7 +1163,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     if (st.act?.kind === 'connect') {
       const from = st.map.get(st.act.from)
       if (from) {
-        const p0 = rectEdge(getBBox(from, st.map), st.act.at.x, st.act.at.y)
+        const p0 = edgeToward(from, st.map, st.act.at)
         ctx.save()
         ctx.strokeStyle = pal.accent
         ctx.lineWidth = 2 / k
@@ -1104,7 +1210,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       )
       if (!items.length) continue
       for (const el of items) outline(el, p.color, 2)
-      const boxes = items.filter((e) => e.type !== 'connector').map((e) => getBBox(e, st.map))
+      const boxes = items.filter((e) => e.type !== 'connector').map((e) => worldBox(e, st.map))
       if (boxes.length) {
         const b = unionBox(boxes)
         peerTags.push({ name: p.name, color: p.color, x: b.minX - PAD, y: b.minY - PAD })
@@ -1117,9 +1223,15 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         const el = st.map.get(id)
         if (el && el.type !== 'connector') outline(el, pal.accent, 1.5, true)
       }
-      const box = selBox()
-      if (box && !st.act?.kind.match(/draw|connect/)) {
+      const frame = selFrame()
+      if (frame && !st.act?.kind.match(/draw|connect/)) {
+        const { box } = frame
         ctx.save()
+        if (frame.rot) {
+          ctx.translate(frame.c.x, frame.c.y)
+          ctx.rotate(frame.rot)
+          ctx.translate(-frame.c.x, -frame.c.y)
+        }
         ctx.fillStyle = pal.accent + '0d'
         ctx.strokeStyle = pal.accent
         ctx.lineWidth = 1 / k
@@ -1132,6 +1244,18 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           ctx.fillRect(h.x - size / 2, h.y - size / 2, size, size)
           ctx.strokeRect(h.x - size / 2, h.y - size / 2, size, size)
         }
+        // rotation handle: a round knob on a short stem above the top edge
+        const knob = rotHandleOf(box)
+        ctx.beginPath()
+        ctx.moveTo(knob.x, box.minY)
+        ctx.lineTo(knob.x, knob.y)
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.arc(knob.x, knob.y, (st.hoverHandle === 'rot' ? 6.5 : 5) / k, 0, Math.PI * 2)
+        ctx.fillStyle =
+          st.hoverHandle === 'rot' || st.act?.kind === 'rotate' ? pal.accent : '#ffffff'
+        ctx.fill()
+        ctx.stroke()
         ctx.restore()
       }
     }
@@ -1426,8 +1550,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     const rest = layered.filter((e) => !st.sel.has(e.id))
     const lowest = moving[0].z!
     const highest = moving[moving.length - 1].z!
-    const box = unionBox(moving.map((e) => getBBox(e, st.map)))
-    const overlaps = (e: El) => intersects(getBBox(e, st.map), box)
+    const box = unionBox(moving.map((e) => worldBox(e, st.map)))
+    const overlaps = (e: El) => intersects(worldBox(e, st.map), box)
     let lo: string | null = null
     let hi: string | null = null
     if (to === 'front' || to === 'back') {
@@ -1527,7 +1651,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   const fitContent = () => {
     const items = st.els.filter((e) => e.type !== 'connector')
     if (!items.length) return setView({ x: 0, y: 0, k: 1 })
-    const b = unionBox(items.map((e) => getBBox(e, st.map)))
+    const b = unionBox(items.map((e) => worldBox(e, st.map)))
     const bw = b.maxX - b.minX + 160
     const bh = b.maxY - b.minY + 160
     const k = clamp(Math.min(st.w / bw, st.h / bh), 0.1, 1.5)
@@ -1565,7 +1689,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   }
 
   const viewForItems = (items: El[], maxK = 1.25) => {
-    const b = unionBox(items.map((e) => getBBox(e, st.map)))
+    const b = unionBox(items.map((e) => worldBox(e, st.map)))
     const k = clamp(
       Math.min(st.w / (b.maxX - b.minX + 220), st.h / (b.maxY - b.minY + 260)),
       0.1,
@@ -1866,11 +1990,15 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   }
 
   const handleAt = (p: Pt): string | null => {
-    const box = selBox()
-    if (!box) return null
+    const frame = selFrame()
+    if (!frame) return null
+    const q = frame.rot ? rotatePt(p, frame.c, -frame.rot) : p
     const tol = 12 / st.view.k
+    const knob = rotHandleOf(frame.box)
+    if (Math.hypot(q.x - knob.x, q.y - knob.y) < tol) return 'rot'
     return (
-      handlesOf(box).find((h) => Math.abs(p.x - h.x) < tol && Math.abs(p.y - h.y) < tol)?.id ?? null
+      handlesOf(frame.box).find((h) => Math.abs(q.x - h.x) < tol && Math.abs(q.y - h.y) < tol)
+        ?.id ?? null
     )
   }
 
@@ -1888,9 +2016,11 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     if (t === 'text' || t === 'note') return 'text'
     if (t === 'shape' || t === 'connect') return 'crosshair'
     return st.hoverHandle
-      ? st.hoverHandle === 'nw' || st.hoverHandle === 'se'
-        ? 'nwse-resize'
-        : 'nesw-resize'
+      ? st.hoverHandle === 'rot'
+        ? 'grab'
+        : st.hoverHandle === 'nw' || st.hoverHandle === 'se'
+          ? 'nwse-resize'
+          : 'nesw-resize'
       : st.hoverId
         ? 'pointer'
         : 'default'
@@ -1913,12 +2043,27 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
 
   const selectDown = (p: Pt, additive: boolean) => {
     const hb = handleAt(p)
-    if (hb) {
+    const frame = hb ? selFrame() : null
+    if (hb && frame) {
       const snaps = [...st.sel]
         .map((id) => st.map.get(id))
         .filter((e): e is El => !!e && e.type !== 'connector')
         .map((e) => ({ ...e, points: e.points.map((q) => ({ ...q })) }))
-      st.act = { kind: 'resize', handle: hb, start: p, snaps, moved: false }
+      if (hb === 'rot') {
+        const pivot = frame.c
+        const start = Math.atan2(p.y - pivot.y, p.x - pivot.x)
+        st.act = { kind: 'rotate', pivot, start, snaps, moved: false }
+        setCursor('grabbing')
+      } else
+        st.act = {
+          kind: 'resize',
+          handle: hb,
+          start: p,
+          snaps,
+          moved: false,
+          rot: frame.rot,
+          c: frame.c,
+        }
       return
     }
     const hit = hitTest(p)
@@ -2093,15 +2238,35 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         setCursor('move')
         break
       }
+      case 'rotate': {
+        act.moved = true
+        let delta = Math.atan2(p.y - act.pivot.y, p.x - act.pivot.x) - act.start
+        if (e.shiftKey) {
+          // Snap the resulting angle (one item) or the turn (several) to 15° steps.
+          const base = act.snaps.length === 1 ? rotOf(act.snaps[0]) : 0
+          delta = Math.round((base + delta) / ROT_STEP) * ROT_STEP - base
+        }
+        const m = new Map(act.snaps.map((sn) => [sn.id, rotateEl(sn, act.pivot, delta, st.map)]))
+        setEls(st.els.map((el) => m.get(el.id) ?? el))
+        pushLive([...m.values()].map((r) => ({ id: r.id, points: r.points, rot: r.rot })))
+        setCursor('grabbing')
+        break
+      }
       case 'resize': {
         if (!act.snaps.length) break
         act.moved = true
-        const box = unionBox(act.snaps.map((s) => getBBox(s, st.map)))
+        // One rotated item: its own frame. Otherwise the upright box the frame shows.
+        const box = unionBox(
+          act.snaps.map((s) => (act.rot ? getBBox(s, st.map) : worldBox(s, st.map))),
+        )
         const ow = box.maxX - box.minX
         const oh = box.maxY - box.minY
         if (ow < 1 || oh < 1) break
-        const dx = p.x - act.start.x
-        const dy = p.y - act.start.y
+        // A rotated item is resized in its own frame, so the drag is measured in that frame too.
+        const pp = act.rot ? rotatePt(p, act.c, -act.rot) : p
+        const ps = act.rot ? rotatePt(act.start, act.c, -act.rot) : act.start
+        const dx = pp.x - ps.x
+        const dy = pp.y - ps.y
         const hd = act.handle
         let nx0 = hd.includes('w') ? box.minX + dx : box.minX
         let nx1 = hd.includes('e') ? box.maxX + dx : box.maxX
@@ -2117,13 +2282,17 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         const nh = ny1 - ny0
         if (Math.abs(nw) < 8 || Math.abs(nh) < 8) break
         const m = new Map(
-          act.snaps.map((s) => [
-            s.id,
-            s.points.map((q) => ({
+          act.snaps.map((s) => {
+            const pts = s.points.map((q) => ({
               x: nx0 + ((q.x - box.minX) / ow) * nw,
               y: ny0 + ((q.y - box.minY) / oh) * nh,
-            })),
-          ]),
+            }))
+            if (!act.rot) return [s.id, pts]
+            // Keep the far corner fixed on screen: the new centre turns with the item.
+            const cl = centerOf(getBBox({ ...s, points: pts }, st.map))
+            const cn = rotatePt(cl, act.c, act.rot)
+            return [s.id, pts.map((q) => ({ x: q.x + cn.x - cl.x, y: q.y + cn.y - cl.y }))]
+          }),
         )
         setEls(st.els.map((el) => (m.has(el.id) ? { ...el, points: m.get(el.id)! } : el)))
         pushLive([...m].map(([id, points]) => ({ id, points })))
@@ -2137,7 +2306,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             (el) =>
               el.type !== 'connector' &&
               (!st.focusSet || st.focusSet.has(el.id)) &&
-              intersects(getBBox(el, st.map), m),
+              intersects(worldBox(el, st.map), m),
           )
           .map((el) => el.id)
         setSel(new Set([...act.base, ...hits]))
@@ -2185,13 +2354,21 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         break
       }
       case 'drag':
-      case 'resize': {
+      case 'resize':
+      case 'rotate': {
         if (act.moved) {
           const ids = act.snaps.map((s) => s.id)
           const after = ids.map((id) => st.map.get(id)).filter((x): x is El => !!x)
           commit({ added: [], removed: [], before: act.snaps, after: after.map((a) => ({ ...a })) })
-          opPatch(after.map((a) => ({ id: a.id, points: a.points })))
+          opPatch(
+            after.map((a) =>
+              act.kind === 'rotate'
+                ? { id: a.id, points: a.points, rot: a.rot }
+                : { id: a.id, points: a.points },
+            ),
+          )
         }
+        if (act.kind === 'rotate') setCursor(idleCursor())
         break
       }
       case 'marquee':
@@ -2240,7 +2417,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     if (!hit) return createText(p, false)
     if (hit.type === 'text') beginEdit(hit, false)
     else if (hit.type === 'task') {
-      const file = taskFileAt(hit, getBBox(hit, st.map), p)
+      const file = taskFileAt(hit, getBBox(hit, st.map), toLocal(hit, p, st.map))
       if (file) setViewing(file)
       else enterFocus(hit.id)
     } else if ((hit.type === 'file' || hit.type === 'image') && hit.src)
@@ -2741,6 +2918,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             boxShadow: edEl.note ? undefined : `0 0 0 1.5px ${PAL[theme].accent}`,
             borderRadius: 6,
             zIndex: 15,
+            transform: rotOf(edEl) ? `rotate(${rotOf(edEl)}rad)` : undefined,
+            transformOrigin: `${((edBox.maxX - edBox.minX) / 2) * st.view.k}px ${((edBox.maxY - edBox.minY) / 2) * st.view.k}px`,
           }}
         />
       )}
