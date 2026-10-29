@@ -78,7 +78,11 @@ export function useRoomTasks() {
   const load = useCallback(async () => {
     const [t, o, fields] = await Promise.all([
       supabase.from('tasks').select('*').eq('room_id', roomId),
-      supabase.from('task_options').select('*').eq('room_id', roomId),
+      supabase
+        .from('task_options')
+        .select('*')
+        .eq('room_id', roomId)
+        .order('created_at', { ascending: true }),
       supabase
         .from('task_field_category_names')
         .select('field_type, is_deleted')

@@ -1059,6 +1059,69 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     sync()
   }
 
+  /** How many tasks on the board use a status. */
+  const tasksUsing = (category: TaskOptionType | CustomTaskField, value: string) =>
+    categories
+      .flatMap((c) => c.tasks)
+      .filter((t) =>
+        category === 'status'
+          ? t.status === value
+          : category === 'urgency'
+            ? t.urgency === value
+            : t.customFields[category.id] === value,
+      ).length
+
+  /**
+   * Deletes a status from a category. Refused while a task uses it (checked here for a quick
+   * answer, and by the database in case the board is behind) or while it's the default.
+   */
+  const deleteOption = async (category: TaskOptionType | CustomTaskField, option: TaskOption) => {
+    const used = tasksUsing(category, option.value)
+    if (used) {
+      const tasks = used === 1 ? '1 task. Move it' : `${used} tasks. Move them`
+      return toast(`“${option.label}” is used by ${tasks} to another status first.`)
+    }
+    const isDefaultField = typeof category === 'string'
+    const defaultValue = isDefaultField
+      ? defaultFieldConfig[category].defaultValue
+      : (category.defaultValue ?? category.options[0]?.value)
+    if (defaultValue === option.value) {
+      return toast(`“${option.label}” is the default status. Choose another default first.`)
+    }
+
+    if (isDefaultField && (category === 'status' ? statusOptions : urgencyOptions).length <= 1) {
+      return toast('A category needs at least one status.')
+    }
+    if (!option.id) return toast('This status can’t be deleted yet. Try reloading the board.')
+
+    const result = isDefaultField
+      ? await supabase.from('task_options').delete().eq('id', option.id).eq('room_id', roomId)
+      : await supabase
+          .from('task_custom_field_options')
+          .delete()
+          .eq('id', option.id)
+          .eq('field_id', category.id)
+    if (result.error) {
+      toast(result.error.message)
+      return loadBoard(true)
+    }
+
+    if (isDefaultField) {
+      const remove = (items: TaskOption[]) => items.filter((o) => o.value !== option.value)
+      if (category === 'status') setCustomStatus(remove)
+      else setCustomUrgency(remove)
+      if (editingDefaultOption?.value === option.value) setEditingDefaultOption(null)
+    } else {
+      setCustomFields((fields) =>
+        fields.map((f) =>
+          f.id === category.id ? { ...f, options: f.options.filter((o) => o.id !== option.id) } : f,
+        ),
+      )
+      if (editingOptionLabel?.optionId === option.id) setEditingOptionLabel(null)
+    }
+    sync()
+  }
+
   const saveDefaultOption = async () => {
     if (!editingDefaultOption) return
     const label = cleanLine(editingDefaultOption.label, LIMITS.optionLabel)
@@ -1650,6 +1713,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                 }
               >
                 <Pencil size={10} />
+              </button>
+              <button
+                type="button"
+                className="opacity-60 hover:opacity-100"
+                title={`Delete ${option.label}`}
+                aria-label={`Delete ${option.label} ${type}`}
+                onClick={() => deleteOption(type, option)}
+              >
+                <X size={11} />
               </button>
             </span>
           ),
@@ -2674,6 +2746,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                             }
                           >
                             <Pencil size={10} />
+                          </button>
+                          <button
+                            type="button"
+                            className="opacity-60 hover:opacity-100"
+                            title={`Delete ${option.label}`}
+                            aria-label={`Delete ${option.label} status`}
+                            onClick={() => deleteOption(field, { ...option, type: 'status' })}
+                          >
+                            <X size={11} />
                           </button>
                         </span>
                       ),

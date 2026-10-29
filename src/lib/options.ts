@@ -85,24 +85,27 @@ export const rowToOption = (row: any): TaskOption => ({
   isCustom: true,
 })
 
-/** Combines room-specific option rows with the built-in options they override. */
+/**
+ * A room's status / urgency options, from its task_options rows (rooms get the built-ins as rows
+ * when created). Built-ins keep their usual order, followed by the room's own in the order given.
+ */
 export const splitCustom = (rows: any[]) => {
-  const merge = (defaults: TaskOption[], type: TaskOptionType) => {
+  const pick = (defaults: TaskOption[], type: TaskOptionType) => {
     const typeRows = rows.filter((row) => row.type === type)
-    const options = defaults.map((option) => {
-      const override = typeRows.find((row) => row.value === option.value)
-      return override
-        ? { ...option, id: override.id, label: override.label, color: override.color }
-        : option
-    })
-    const builtInValues = new Set(defaults.map((option) => option.value))
-    return [
-      ...options,
-      ...typeRows.filter((row) => !builtInValues.has(row.value)).map(rowToOption),
-    ]
+    // Only a database that hasn't had the built-ins added as rows yet.
+    if (!typeRows.length) return defaults
+    const rank = (value: string) => {
+      const i = defaults.findIndex((option) => option.value === value)
+      return i < 0 ? defaults.length : i
+    }
+    return typeRows
+      .map(rowToOption)
+      .map((option, i) => ({ option, i }))
+      .sort((a, b) => rank(a.option.value) - rank(b.option.value) || a.i - b.i)
+      .map(({ option }) => option)
   }
   return {
-    status: merge(DEFAULT_STATUS, 'status'),
-    urgency: merge(DEFAULT_URGENCY, 'urgency'),
+    status: pick(DEFAULT_STATUS, 'status'),
+    urgency: pick(DEFAULT_URGENCY, 'urgency'),
   }
 }
