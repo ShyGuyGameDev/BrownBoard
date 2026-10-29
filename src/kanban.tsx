@@ -8,6 +8,7 @@ import {
   PenTool,
   Plus,
   Search,
+  Settings2,
   Trash2,
   UserRound,
   X,
@@ -49,6 +50,21 @@ type DbTask = {
   position: number | null
   due_date?: string | null
   assignee_id?: string | null
+  custom_fields?: Record<string, unknown> | null
+}
+
+interface CustomFieldOption {
+  id: string
+  value: string
+  label: string
+  color: string
+}
+
+interface CustomTaskField {
+  id: string
+  name: string
+  defaultValue: string | null
+  options: CustomFieldOption[]
 }
 
 interface Task {
@@ -62,6 +78,7 @@ interface Task {
   position: number
   dueDate: string | null
   assigneeId: string | null
+  customFields: Record<string, string>
 }
 
 interface Category {
@@ -105,6 +122,11 @@ const mapTask = (t: DbTask): Task => ({
   position: t.position ?? 0,
   dueDate: t.due_date ?? null,
   assigneeId: t.assignee_id ?? null,
+  customFields: Object.fromEntries(
+    Object.entries(t.custom_fields ?? {}).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ),
+  ),
 })
 
 /** Completed tasks sink to the bottom of their list; order is otherwise kept. */
@@ -155,9 +177,10 @@ interface ColDrag {
 const SETTLE = 'transform 260ms var(--dv-ease)'
 
 interface MenuState {
-  kind: TaskOptionType | 'due_date' | 'assignee'
+  kind: TaskOptionType | 'due_date' | 'assignee' | 'custom'
   taskId: string
   categoryId: string
+  fieldId?: string
   x: number
   y: number
 }
@@ -186,6 +209,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const [customStatus, setCustomStatus] = useState<TaskOption[]>([])
   const [customUrgency, setCustomUrgency] = useState<TaskOption[]>([])
+  const [customFields, setCustomFields] = useState<CustomTaskField[]>([])
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [fieldToRemove, setFieldToRemove] = useState<CustomTaskField | null>(null)
+  const [newFieldName, setNewFieldName] = useState('')
+  const [newFieldOption, setNewFieldOption] = useState<{
+    fieldId: string
+    label: string
+    color: string
+  } | null>(null)
   const [assignees, setAssignees] = useState<TaskAssignee[]>([])
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [optForm, setOptForm] = useState<{ label: string; color: string } | null>(null)
@@ -245,7 +277,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const loadBoard = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true)
-      const [c, t, o] = await Promise.all([
+      const [c, t, o, f, fo] = await Promise.all([
         supabase
           .from('categories')
           .select('*')
@@ -261,9 +293,25 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           .select('*')
           .eq('room_id', roomId)
           .order('created_at', { ascending: true }),
+        supabase
+          .from('task_custom_fields')
+          .select('*')
+          .eq('room_id', roomId)
+          .order('created_at', { ascending: true }),
+        supabase
+          .from('task_custom_field_options')
+          .select('*')
+          .order('created_at', { ascending: true }),
       ])
-      if (c.error || t.error) {
-        setError(c.error?.message || t.error?.message || 'Unable to load the board')
+      if (c.error || t.error || o.error || f.error || fo.error) {
+        setError(
+          c.error?.message ||
+            t.error?.message ||
+            o.error?.message ||
+            f.error?.message ||
+            fo.error?.message ||
+            'Unable to load the board',
+        )
         setLoading(false)
         return
       }
@@ -273,6 +321,26 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         const split = splitCustom(o.data)
         setCustomStatus(split.status)
         setCustomUrgency(split.urgency)
+      }
+      if (f.data && fo.data) {
+        setCustomFields(
+          f.data.map((field) => ({
+            id: field.id,
+            name: field.name,
+            options: fo.data
+              .filter((option) => option.field_id === field.id)
+              .map((option) => ({
+                id: option.id,
+                value: option.value,
+                label: option.label,
+                color: option.color,
+              })),
+            defaultValue:
+              field.default_value ??
+              fo.data.find((option) => option.field_id === field.id)?.value ??
+              null,
+          })),
+        )
       }
       setLoading(false)
     },
@@ -340,11 +408,13 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       } else if (e.key === 'Escape') {
         setMenu(null)
         setOptForm(null)
+        if (fieldToRemove) setFieldToRemove(null)
+        else setSettingsOpen(false)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [active])
+  }, [active, fieldToRemove])
 
   // ---------- categories ----------
 
@@ -410,6 +480,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (!title) return
     const cat = categories.find((c) => c.id === categoryId)
     const position = cat ? cat.tasks.length : 0
+    const customValues = Object.fromEntries(
+      customFields.flatMap((field) =>
+        field.defaultValue ? [[field.id, field.defaultValue]] : [],
+      ),
+    )
     setNewTaskInputs((prev) => ({ ...prev, [categoryId]: '' }))
     const { data, error: err } = await supabase
       .from('tasks')
@@ -420,6 +495,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         category_id: categoryId,
         position,
         room_id: roomId,
+        custom_fields: customValues,
       })
       .select()
       .single()
@@ -438,7 +514,17 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const patchTask = async (
     taskId: string,
     patch: Partial<
-      Pick<Task, 'status' | 'urgency' | 'title' | 'description' | 'files' | 'dueDate' | 'assigneeId'>
+      Pick<
+        Task,
+        | 'status'
+        | 'urgency'
+        | 'title'
+        | 'description'
+        | 'files'
+        | 'dueDate'
+        | 'assigneeId'
+        | 'customFields'
+      >
     >,
   ) => {
     const prev = categoriesRef.current
@@ -450,10 +536,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     })
     setCategories(next)
     if ('status' in patch) savePositions(prev, next)
-    const { files, dueDate, assigneeId, ...rest } = patch
+    const { files, dueDate, assigneeId, customFields: fields, ...rest } = patch
     const dbPatch: Record<string, unknown> = { ...rest }
     if ('dueDate' in patch) dbPatch.due_date = dueDate
     if ('assigneeId' in patch) dbPatch.assignee_id = assigneeId
+    if ('customFields' in patch) dbPatch.custom_fields = fields
     if ('title' in patch) dbPatch.title = cleanLine(patch.title ?? '', LIMITS.taskTitle)
     if ('description' in patch)
       dbPatch.description = cleanMultiline(patch.description ?? '', LIMITS.taskDescription) || null
@@ -532,6 +619,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     kind: MenuState['kind'],
     taskId: string,
     categoryId: string,
+    fieldId?: string,
   ) => {
     e.stopPropagation()
     const r = e.currentTarget.getBoundingClientRect()
@@ -540,6 +628,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       kind,
       taskId,
       categoryId,
+      fieldId,
       x: Math.min(r.left, window.innerWidth - 232),
       y: Math.min(r.bottom + 4, window.innerHeight - 340),
     })
@@ -550,6 +639,14 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (menu.kind === 'status') patchTask(menu.taskId, { status: value })
     else if (menu.kind === 'urgency') patchTask(menu.taskId, { urgency: value })
     else if (menu.kind === 'assignee') patchTask(menu.taskId, { assigneeId: value || null })
+    else if (menu.kind === 'custom' && menu.fieldId && menuTask) {
+      const customFields = { ...menuTask.customFields }
+      if (value) customFields[menu.fieldId] = value
+      else delete customFields[menu.fieldId]
+      patchTask(menu.taskId, {
+        customFields,
+      })
+    }
     setMenu(null)
     setOptForm(null)
   }
@@ -584,6 +681,125 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (menu.kind === 'status') setCustomStatus((p) => [...p, opt])
     else setCustomUrgency((p) => [...p, opt])
     pick(opt.value)
+  }
+
+  const addCustomField = async () => {
+    const name = cleanLine(newFieldName, LIMITS.optionLabel)
+    if (!name) return
+    const { data, error: err } = await supabase
+      .from('task_custom_fields')
+      .insert({ name, room_id: roomId })
+      .select()
+      .single()
+    if (err) return fail(err.message)
+    setCustomFields((fields) => [
+      ...fields,
+      { id: data.id, name: data.name, defaultValue: data.default_value ?? null, options: [] },
+    ])
+    setNewFieldName('')
+    sync()
+  }
+
+  const removeCustomField = async (field: CustomTaskField) => {
+    const { data: tasks, error: taskError } = await supabase
+      .from('tasks')
+      .select('id, custom_fields')
+      .eq('room_id', roomId)
+    if (taskError) return fail(taskError.message)
+
+    const updates = await Promise.all(
+      (tasks ?? [])
+        .filter((task) => task.custom_fields && field.id in task.custom_fields)
+        .map((task) => {
+          const values = { ...task.custom_fields }
+          delete values[field.id]
+          return supabase.from('tasks').update({ custom_fields: values }).eq('id', task.id)
+        }),
+    )
+    const failedUpdate = updates.find((result) => result.error)
+    if (failedUpdate?.error) return fail(failedUpdate.error.message)
+
+    const { error: deleteError } = await supabase
+      .from('task_custom_fields')
+      .delete()
+      .eq('id', field.id)
+      .eq('room_id', roomId)
+    if (deleteError) return fail(deleteError.message)
+
+    setCustomFields((fields) => fields.filter((item) => item.id !== field.id))
+    if (newFieldOption?.fieldId === field.id) setNewFieldOption(null)
+    setFieldToRemove(null)
+    sync()
+  }
+
+  const addCustomFieldOption = async () => {
+    if (!newFieldOption) return
+    const label = cleanLine(newFieldOption.label, LIMITS.optionLabel)
+    if (!label) return
+    const field = customFields.find((item) => item.id === newFieldOption.fieldId)
+    if (!field) return
+    const value = slugify(label)
+    if (field.options.some((option) => option.value === value)) {
+      setNewFieldOption(null)
+      return
+    }
+    const { data, error: err } = await supabase
+      .from('task_custom_field_options')
+      .insert({
+        field_id: field.id,
+        value,
+        label,
+        color: cleanHexColor(newFieldOption.color, '#71717a'),
+      })
+      .select()
+      .single()
+    if (err) return fail(err.message)
+    let defaultValue = field.defaultValue
+    if (!defaultValue) {
+      const { error: defaultError } = await supabase
+        .from('task_custom_fields')
+        .update({ default_value: data.value })
+        .eq('id', field.id)
+        .eq('room_id', roomId)
+      if (defaultError) {
+        fail(defaultError.message)
+        loadBoard(true)
+        return
+      }
+      defaultValue = data.value
+    }
+    setCustomFields((fields) =>
+      fields.map((item) =>
+        item.id === field.id
+          ? {
+              ...item,
+              defaultValue,
+              options: [
+                ...item.options,
+                { id: data.id, value: data.value, label: data.label, color: data.color },
+              ],
+            }
+          : item,
+      ),
+    )
+    setNewFieldOption(null)
+    sync()
+  }
+
+  const setCustomFieldDefault = async (field: CustomTaskField, value: string) => {
+    if (!field.options.some((option) => option.value === value)) return
+    const { error: err } = await supabase
+      .from('task_custom_fields')
+      .update({ default_value: value })
+      .eq('id', field.id)
+      .eq('room_id', roomId)
+    if (err) return fail(err.message)
+    setCustomFields((fields) =>
+      fields.map((item) =>
+        item.id === field.id ? { ...item, defaultValue: value } : item,
+      ),
+    )
+    sync()
   }
 
   // ---------- drag and drop (move happens on drop, so the dragged node never remounts mid-drag) ----------
@@ -873,7 +1089,14 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const q = query.trim().toLowerCase()
   const matches = (t: Task) =>
-    !q || t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)
+    !q ||
+    t.title.toLowerCase().includes(q) ||
+    t.description.toLowerCase().includes(q) ||
+    customFields.some((field) => {
+      const value = t.customFields[field.id] ?? field.defaultValue
+      const option = field.options.find((item) => item.value === value)
+      return option?.label.toLowerCase().includes(q) ?? false
+    })
   const totals = useMemo(() => {
     const all = categories.flatMap((c) => c.tasks)
     return { all: all.length, done: all.filter((t) => t.status === 'completed').length }
@@ -896,7 +1119,9 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       ? statusOptions
       : menu.kind === 'urgency'
         ? urgencyOptions
-        : []
+        : menu.kind === 'custom'
+          ? customFields.find((field) => field.id === menu.fieldId)?.options ?? []
+          : []
     : []
   const menuTask = menu
     ? categories.flatMap((c) => c.tasks).find((t) => t.id === menu.taskId)
@@ -908,7 +1133,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         ? menuTask.urgency
         : menu!.kind === 'due_date'
           ? menuTask.dueDate
-          : menuTask.assigneeId
+          : menu!.kind === 'custom'
+            ? menuTask.customFields[menu!.fieldId ?? ''] ??
+              customFields.find((field) => field.id === menu!.fieldId)?.defaultValue
+            : menuTask.assigneeId
     : null
 
   return (
@@ -919,6 +1147,14 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     >
       {/* Toolbar */}
       <div className="flex shrink-0 items-center gap-3 px-6 pb-3 pt-4">
+        <button
+          className="dv-iconbtn shrink-0"
+          title="Kanban settings"
+          aria-label="Kanban settings"
+          onClick={() => setSettingsOpen(true)}
+        >
+          <Settings2 size={15} />
+        </button>
         <div className="relative w-72">
           <Search
             size={14}
@@ -1353,6 +1589,43 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               >
                                 {urgency.label}
                               </button>
+                              {customFields.filter((field) => field.defaultValue).map((field) => {
+                                const selected = field.options.find(
+                                  (option) =>
+                                    option.value ===
+                                    (task.customFields[field.id] ?? field.defaultValue),
+                                )
+                                return (
+                                  <button
+                                    key={field.id}
+                                    className="dv-chip"
+                                    style={
+                                      selected
+                                        ? badgeStyle(selected.color)
+                                        : {
+                                            background: 'var(--dv-panel-2)',
+                                            color: 'var(--dv-muted)',
+                                          }
+                                    }
+                                    title={`Change ${field.name}`}
+                                    onClick={(e) =>
+                                      openMenu(e, 'custom', task.id, cat.id, field.id)
+                                    }
+                                  >
+                                    {selected ? (
+                                      <>
+                                        <span
+                                          className="dv-dot"
+                                          style={{ background: selected.color }}
+                                        />
+                                        {selected.label}
+                                      </>
+                                    ) : (
+                                      field.name
+                                    )}
+                                  </button>
+                                )
+                              })}
                               <button
                                 className="dv-chip"
                                 style={{
@@ -1562,6 +1835,224 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         />
       )}
 
+      {settingsOpen && (
+        <div
+          className="dv-modal-backdrop z-[70]"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setSettingsOpen(false)
+          }}
+        >
+          <section
+            className="dv-floating dv-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="kanban-settings-title"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="kanban-settings-title" className="m-0 text-lg font-semibold">
+                  Kanban settings
+                </h2>
+                <p className="mt-1 text-xs" style={{ color: 'var(--dv-muted)' }}>
+                  Add custom task categories, their statuses, and a default status for each.
+                </p>
+              </div>
+              <button
+                className="dv-iconbtn !h-7 !w-7"
+                aria-label="Close kanban settings"
+                onClick={() => setSettingsOpen(false)}
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <form
+              className="flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault()
+                addCustomField()
+              }}
+            >
+              <input
+                className="dv-input"
+                aria-label="Category name"
+                placeholder="Category (e.g. Difficulty)"
+                maxLength={LIMITS.optionLabel}
+                value={newFieldName}
+                onChange={(e) => setNewFieldName(e.target.value)}
+              />
+              <button className="dv-btn primary shrink-0" disabled={!newFieldName.trim()}>
+                <Plus size={14} />
+                Add
+              </button>
+            </form>
+
+            <div className="dv-scroll flex max-h-[45vh] flex-col gap-3 overflow-y-auto">
+              {customFields.map((field) => (
+                <div
+                  key={field.id}
+                  className="rounded-xl border p-3"
+                  style={{ borderColor: 'var(--dv-border)', background: 'var(--dv-panel-2)' }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="m-0 text-sm font-semibold">{field.name}</h3>
+                    <div className="flex items-center gap-1">
+                      <button
+                        className="dv-btn !h-7"
+                        onClick={() =>
+                          setNewFieldOption({ fieldId: field.id, label: '', color: '#3b82f6' })
+                        }
+                      >
+                        <Plus size={13} />
+                        Add status
+                      </button>
+                      <button
+                        className="dv-iconbtn danger !h-7 !w-7"
+                        title={`Remove ${field.name}`}
+                        aria-label={`Remove ${field.name}`}
+                        onClick={() => setFieldToRemove(field)}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {field.options.map((option) => (
+                      <span key={option.id} className="dv-chip" style={badgeStyle(option.color)}>
+                        <span className="dv-dot" style={{ background: option.color }} />
+                        {option.label}
+                        {(field.defaultValue ?? field.options[0]?.value) === option.value &&
+                          <span className="ml-1 text-[10px]">Default</span>}
+                      </span>
+                    ))}
+                    {field.options.length === 0 && (
+                      <span className="text-xs" style={{ color: 'var(--dv-muted)' }}>
+                        Add a status before assigning this category to tasks.
+                      </span>
+                    )}
+                  </div>
+                  <label
+                    className="mt-3 flex items-center gap-2 text-xs font-medium"
+                    style={{ color: 'var(--dv-muted)' }}
+                  >
+                    Default status
+                    <select
+                      className="dv-input min-w-0 flex-1"
+                      aria-label={`${field.name} default status`}
+                      value={field.defaultValue ?? field.options[0]?.value ?? ''}
+                      disabled={field.options.length === 0}
+                      onChange={(e) => setCustomFieldDefault(field, e.target.value)}
+                    >
+                      {field.options.length === 0 ? (
+                        <option value="">Add a status first</option>
+                      ) : (
+                        field.options.map((option) => (
+                          <option key={option.id} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+                  {newFieldOption?.fieldId === field.id && (
+                    <form
+                      className="mt-3 flex flex-wrap items-center gap-2"
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        addCustomFieldOption()
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        className="dv-input min-w-0 flex-1"
+                        aria-label={`${field.name} status name`}
+                        placeholder="Status name"
+                        maxLength={LIMITS.optionLabel}
+                        value={newFieldOption.label}
+                        onChange={(e) =>
+                          setNewFieldOption({ ...newFieldOption, label: e.target.value })
+                        }
+                      />
+                      <label className="flex items-center gap-1 text-xs" style={{ color: 'var(--dv-muted)' }}>
+                        Color
+                        <input
+                          type="color"
+                          aria-label={`${field.name} status color`}
+                          value={newFieldOption.color}
+                          onChange={(e) =>
+                            setNewFieldOption({ ...newFieldOption, color: e.target.value })
+                          }
+                          className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent"
+                        />
+                      </label>
+                      <button
+                        className="dv-btn primary"
+                        disabled={!newFieldOption.label.trim()}
+                      >
+                        Create
+                      </button>
+                      <button
+                        type="button"
+                        className="dv-btn"
+                        onClick={() => setNewFieldOption(null)}
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                  )}
+                </div>
+              ))}
+              {customFields.length === 0 && (
+                <p className="m-0 py-4 text-center text-sm" style={{ color: 'var(--dv-muted)' }}>
+                  No custom categories yet.
+                </p>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {fieldToRemove && (
+        <div
+          className="dv-modal-backdrop z-[80]"
+          onPointerDown={(e) => {
+            if (e.target === e.currentTarget) setFieldToRemove(null)
+          }}
+        >
+          <section
+            className="dv-floating dv-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="remove-custom-field-title"
+            aria-describedby="remove-custom-field-description"
+          >
+            <div>
+              <h2 id="remove-custom-field-title" className="m-0 text-lg font-semibold">
+                Remove category?
+              </h2>
+              <p
+                id="remove-custom-field-description"
+                className="mt-2 text-sm"
+                style={{ color: 'var(--dv-muted)' }}
+              >
+                Remove “{fieldToRemove.name}”? Its statuses and values on all tasks will be deleted.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className="dv-btn" onClick={() => setFieldToRemove(null)}>
+                Cancel
+              </button>
+              <button
+                className="dv-btn danger"
+                onClick={() => removeCustomField(fieldToRemove)}
+              >
+                Remove category
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {/* Task fields menu (fixed so column scrolling can't clip it) */}
       {menu && (
         <>
@@ -1648,7 +2139,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   className="px-2 pb-1 pt-1.5 text-xs font-semibold"
                   style={{ color: 'var(--dv-muted)' }}
                 >
-                  {menu.kind === 'status' ? 'Set status' : 'Set urgency'}
+                  {menu.kind === 'status'
+                    ? 'Set status'
+                    : menu.kind === 'urgency'
+                      ? 'Set urgency'
+                      : customFields.find((field) => field.id === menu.fieldId)?.name}
                 </div>
                 {menuOptions.map((o) => (
                   <button
@@ -1666,51 +2161,55 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                     )}
                   </button>
                 ))}
-                <div className="my-1 h-px" style={{ background: 'var(--dv-border)' }} />
-                {optForm ? (
-                  <div className="flex flex-col gap-2 p-2">
-                    <input
-                      autoFocus
-                      className="dv-input"
-                      placeholder={menu.kind === 'status' ? 'Status name' : 'Urgency name'}
-                      value={optForm.label}
-                      onChange={(e) => setOptForm({ ...optForm, label: e.target.value })}
-                      onKeyDown={(e) => e.key === 'Enter' && createOption()}
-                    />
-                    <label
-                      className="flex items-center justify-between text-xs"
-                      style={{ color: 'var(--dv-muted)' }}
-                    >
-                      Color
-                      <input
-                        type="color"
-                        value={optForm.color}
-                        onChange={(e) => setOptForm({ ...optForm, color: e.target.value })}
-                        className="h-7 w-12 cursor-pointer rounded border-0 bg-transparent"
-                      />
-                    </label>
-                    <div className="flex justify-end gap-2">
-                      <button className="dv-btn" onClick={() => setOptForm(null)}>
-                        Back
-                      </button>
+                {menu.kind !== 'custom' && (
+                  <>
+                    <div className="my-1 h-px" style={{ background: 'var(--dv-border)' }} />
+                    {optForm ? (
+                      <div className="flex flex-col gap-2 p-2">
+                        <input
+                          autoFocus
+                          className="dv-input"
+                          placeholder={menu.kind === 'status' ? 'Status name' : 'Urgency name'}
+                          value={optForm.label}
+                          onChange={(e) => setOptForm({ ...optForm, label: e.target.value })}
+                          onKeyDown={(e) => e.key === 'Enter' && createOption()}
+                        />
+                        <label
+                          className="flex items-center justify-between text-xs"
+                          style={{ color: 'var(--dv-muted)' }}
+                        >
+                          Color
+                          <input
+                            type="color"
+                            value={optForm.color}
+                            onChange={(e) => setOptForm({ ...optForm, color: e.target.value })}
+                            className="h-7 w-12 cursor-pointer rounded border-0 bg-transparent"
+                          />
+                        </label>
+                        <div className="flex justify-end gap-2">
+                          <button className="dv-btn" onClick={() => setOptForm(null)}>
+                            Back
+                          </button>
+                          <button
+                            className="dv-btn primary"
+                            disabled={!optForm.label.trim()}
+                            onClick={createOption}
+                          >
+                            Create
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
                       <button
-                        className="dv-btn primary"
-                        disabled={!optForm.label.trim()}
-                        onClick={createOption}
+                        className="dv-menu-item"
+                        style={{ color: 'var(--dv-accent)' }}
+                        onClick={() => setOptForm({ label: '', color: '#3b82f6' })}
                       >
-                        Create
+                        <Plus size={13} />
+                        New {menu.kind}
                       </button>
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    className="dv-menu-item"
-                    style={{ color: 'var(--dv-accent)' }}
-                    onClick={() => setOptForm({ label: '', color: '#3b82f6' })}
-                  >
-                    <Plus size={13} />
-                    New {menu.kind}
-                  </button>
+                    )}
+                  </>
                 )}
               </>
             )}
