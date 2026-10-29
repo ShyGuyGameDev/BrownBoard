@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  ArrowDown,
+  ArrowUp,
   ArrowUpRight,
+  BringToFront,
   Circle,
   Crosshair,
   Download,
@@ -15,6 +18,7 @@ import {
   Pen,
   Plus,
   Redo2,
+  SendToBack,
   Settings,
   Square,
   Star,
@@ -26,6 +30,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { HexColorPicker } from 'react-colorful'
+import { generateNKeysBetween } from 'fractional-indexing'
 import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room'
 import { bus, isTyping, setLinkCounts, toast, withUploadFeedback } from './lib/bus'
@@ -81,6 +86,8 @@ interface El {
   to?: string
   /** id of the task card that was in focus when this was created (keeps it part of that task's context) */
   tag?: string
+  /** layer: a fractional index, compared as a plain string; higher draws on top */
+  z?: string
 }
 
 interface Entry {
@@ -454,6 +461,22 @@ const pointNear = (el: El, p: Pt, pad: number, map: Map<string, El>): boolean =>
  * Also sanitises what could be abused: text (see lib/sanitize), ink colour, and image sources
  * (only our storage / embedded images load, so a crafted item can't make viewers fetch any URL).
  */
+/**
+ * Bottom-to-top draw order. Ties (rare) break by id so every client agrees; items without a layer
+ * (added by an older version of the app) stay on top in the order they arrived.
+ */
+const byLayer = (els: El[]) =>
+  [...els].sort((a, b) => {
+    if (a.z === undefined || b.z === undefined) return a.z === b.z ? 0 : a.z === undefined ? 1 : -1
+    if (a.z !== b.z) return a.z < b.z ? -1 : 1
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  })
+
+type LayerMove = 'front' | 'forward' | 'backward' | 'back'
+
+/** Ctrl+click is a right-click on a Mac (the usual trackpad alternative to a two-finger click). */
+const IS_MAC = /Mac|iPhone|iPad/i.test(navigator.platform)
+
 const normalize = (raw: any): El => {
   const { drawColor, shapeFill, imageDataUrl, drawing, ...rest } = raw
   let color = rest.color ?? drawColor
@@ -576,6 +599,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     prevView: null as { x: number; y: number; k: number } | null,
     linkSig: '',
     cursors: new Map<string, { name: string; color: string; x: number; y: number; t: number }>(),
+    /** a right-button drag has panned, so the right-click that ends it shouldn't open the menu */
+    panned: false,
   }).current
 
   // ---------- UI state ----------
@@ -604,6 +629,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     snap: false,
   })
   const [editing, setEditing] = useState<{ id: string; isNew: boolean } | null>(null)
+  /** The right-click layer menu, at the cursor (screen coordinates). */
+  const [layerMenu, setLayerMenu] = useState<{ x: number; y: number } | null>(null)
   const [editText, setEditText] = useState('')
   const [viewing, setViewing] = useState<{ files: Attachment[]; index: number } | null>(null)
   const viewingRef = useRef(false)
@@ -1214,7 +1241,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   }
 
   const setEls = (next: El[]) => {
-    st.els = next
+    st.els = byLayer(next)
     st.map = new Map(next.map((e) => [e.id, e]))
     if (st.focusId && !st.map.has(st.focusId)) {
       // the focused card was deleted
@@ -1262,7 +1289,19 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     if (error) console.error('[whiteboard]', error.message)
   }
 
-  const opAdd = (items: El[]) => {
+  /** New items go on top. Copies arrive holding their original's layer, so they get a new one too. */
+  const withLayers = (items: El[]): El[] => {
+    const holder = new Map(st.els.flatMap((e) => (e.z ? [[e.z, e.id] as const] : [])))
+    const fresh = items.filter((i) => !i.z || (holder.has(i.z) && holder.get(i.z) !== i.id))
+    if (!fresh.length) return items
+    const top = st.els.filter((e) => e.z).at(-1)?.z ?? null
+    const keys = generateNKeysBetween(top, null, fresh.length)
+    const keyOf = new Map(fresh.map((i, n) => [i.id, keys[n]]))
+    return items.map((i) => (keyOf.has(i.id) ? { ...i, z: keyOf.get(i.id) } : i))
+  }
+
+  const opAdd = (added: El[]) => {
+    const items = withLayers(added)
     const ids = new Set(items.map((i) => i.id))
     setEls([...st.els.filter((e) => !ids.has(e.id)), ...items])
     supabase
@@ -1374,6 +1413,63 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     commit({ added, removed: [], before: [], after: [] })
     opAdd(added)
     setSel(new Set(copies.map((c) => c.id)))
+  }
+
+  /**
+   * The selection's new layers for a move, or null if it wouldn't change anything. Forward and
+   * backward step past the nearest item the selection actually overlaps, so the change is visible.
+   */
+  const planLayerMove = (to: LayerMove): El[] | null => {
+    const layered = st.els.filter((e) => e.type !== 'connector' && e.z)
+    const moving = layered.filter((e) => st.sel.has(e.id))
+    if (!moving.length) return null
+    const rest = layered.filter((e) => !st.sel.has(e.id))
+    const lowest = moving[0].z!
+    const highest = moving[moving.length - 1].z!
+    const box = unionBox(moving.map((e) => getBBox(e, st.map)))
+    const overlaps = (e: El) => intersects(getBBox(e, st.map), box)
+    let lo: string | null = null
+    let hi: string | null = null
+    if (to === 'front' || to === 'back') {
+      const passed = rest.filter((e) => (to === 'front' ? e.z! > lowest : e.z! < highest))
+      if (!passed.length) return null
+      if (to === 'front') lo = rest[rest.length - 1].z!
+      else hi = rest[0].z!
+    } else if (to === 'forward') {
+      const above = rest.filter((e) => e.z! > highest)
+      const i = above.findIndex(overlaps)
+      if (i < 0) return null
+      lo = above[i].z!
+      hi = above[i + 1]?.z ?? null
+    } else {
+      const below = rest.filter((e) => e.z! < lowest)
+      let i = below.length - 1
+      while (i >= 0 && !overlaps(below[i])) i--
+      if (i < 0) return null
+      lo = below[i - 1]?.z ?? null
+      hi = below[i].z!
+    }
+    const keys = generateNKeysBetween(lo, hi, moving.length)
+    return moving.map((e, n) => ({ ...e, z: keys[n] }))
+  }
+
+  const moveLayer = (to: LayerMove) => {
+    setLayerMenu(null)
+    const after = planLayerMove(to)
+    if (!after) return
+    const before = after.map((e) => st.map.get(e.id)!)
+    commit({ added: [], removed: [], before, after })
+    opPatch(after)
+  }
+
+  /** Right-click (or two-finger click, or Ctrl+click on a Mac): the layer menu for what's under the cursor. */
+  const onContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault()
+    if (st.panned) return
+    const hit = hitTest(toWorld(e))
+    if (!hit || hit.type === 'connector') return setLayerMenu(null)
+    if (!st.sel.has(hit.id)) setSel(new Set([hit.id]))
+    setLayerMenu({ x: e.clientX, y: e.clientY })
   }
 
   const applyStyle = (patch: Partial<El>, tag: string) => {
@@ -1853,6 +1949,10 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     animToken.current++
+    st.panned = false
+    setLayerMenu(null)
+    // Left to the context menu, which follows.
+    if (e.button === 0 && e.ctrlKey && IS_MAC) return
     e.currentTarget.setPointerCapture(e.pointerId)
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
     if (pointers.current.size === 2) {
@@ -1943,6 +2043,10 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
 
     switch (act.kind) {
       case 'pan':
+        if (Math.hypot(e.clientX - act.sx, e.clientY - act.sy) > 4) {
+          st.panned = true
+          setLayerMenu(null)
+        }
         setView({ x: act.vx + (e.clientX - act.sx), y: act.vy + (e.clientY - act.sy) })
         break
       case 'draw': {
@@ -2206,6 +2310,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
       animToken.current++
+      setLayerMenu(null)
       if (e.ctrlKey || e.metaKey) {
         const mag = Math.min(Math.abs(e.deltaY) / 200, 0.5) + 1
         zoomAt(e.deltaY < 0 ? mag : 1 / mag, e.clientX, e.clientY)
@@ -2226,7 +2331,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       for (let from = 0; ; from += 1000) {
         const { data, error } = await supabase
           .from('strokes')
-          .select('data')
+          .select('id,data')
           .eq('room_id', roomId)
           .order('created_at')
           .range(from, from + 999)
@@ -2234,7 +2339,21 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         rows.push(...data)
         if (data.length < 1000) break
       }
-      if (!cancelled) setEls(rows.map((r) => normalize(r.data)))
+      if (cancelled) return
+      const els = rows.map((r) => normalize(r.data))
+      // Items saved before layers existed go on top in the order they were made (as they were
+      // drawn before), and are saved that way. Every client works these out the same way.
+      const unlayered = els.flatMap((el, i) => (el.z ? [] : [i]))
+      if (unlayered.length) {
+        const top = byLayer(els.filter((el) => el.z)).at(-1)?.z ?? null
+        const keys = generateNKeysBetween(top, null, unlayered.length)
+        unlayered.forEach((i, n) => (els[i] = { ...els[i], z: keys[n] }))
+        supabase
+          .from('strokes')
+          .upsert(unlayered.map((i) => ({ id: rows[i].id, room_id: roomId, data: els[i] })))
+          .then(logErr)
+      }
+      setEls(els)
     }
     load()
 
@@ -2311,6 +2430,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       const typing = isTyping(e)
       const mod = e.metaKey || e.ctrlKey
       if (e.key === 'Escape') {
+        setLayerMenu(null)
         if (editingRef.current) return
         if (st.focusId && !st.sel.size && toolRef.current === 'select' && !st.act) {
           api.current.exitFocus()
@@ -2539,8 +2659,54 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           }
         }}
         onDoubleClick={onDoubleClick}
-        onContextMenu={(e) => e.preventDefault()}
+        onContextMenu={onContextMenu}
       />
+
+      {/* layer menu (right-click) */}
+      {layerMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onPointerDown={() => setLayerMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              setLayerMenu(null)
+            }}
+          />
+          <div
+            className="dv-floating fixed z-50 flex w-48 flex-col p-1.5"
+            role="menu"
+            aria-label="Layer"
+            style={{
+              left: Math.min(layerMenu.x, window.innerWidth - 200),
+              top: Math.min(layerMenu.y, window.innerHeight - 170),
+            }}
+          >
+            {(
+              [
+                ['front', 'Bring to front', BringToFront],
+                ['forward', 'Bring forward', ArrowUp],
+                ['backward', 'Send backward', ArrowDown],
+                ['back', 'Send to back', SendToBack],
+              ] as const
+            ).map(([to, label, Icon]) => {
+              const disabled = !planLayerMove(to)
+              return (
+                <button
+                  key={to}
+                  role="menuitem"
+                  className="dv-menu-item disabled:cursor-default disabled:opacity-40"
+                  disabled={disabled}
+                  onClick={() => moveLayer(to)}
+                >
+                  <Icon size={15} />
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      )}
 
       {/* inline text editor */}
       {edEl && edBox && (
