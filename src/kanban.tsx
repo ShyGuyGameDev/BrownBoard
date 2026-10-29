@@ -16,13 +16,15 @@ import {
 import { supabase } from './lib/supabase'
 import { colorFor, useRoom } from './lib/room'
 import { bus, getLinkCounts, isTyping, toast } from './lib/bus'
-import { type Attachment, cleanAttachment, isImageFile, taskFiles, uploadRoomFile } from './lib/files'
-import { Avatar } from './avatar'
 import {
-  formatDueDate,
-  loadRoomTaskAssignees,
-  type TaskAssignee,
-} from './lib/tasks'
+  type Attachment,
+  cleanAttachment,
+  isImageFile,
+  taskFiles,
+  uploadRoomFile,
+} from './lib/files'
+import { Avatar } from './avatar'
+import { formatDueDate, loadRoomTaskAssignees, type TaskAssignee } from './lib/tasks'
 import { LIMITS, cleanHexColor, cleanLine, cleanMultiline } from './lib/sanitize'
 import { FileChip, FileIcon, FileViewer } from './file-viewer'
 import {
@@ -224,6 +226,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const [dragId, setDragId] = useState<string | null>(null)
   const dragRef = useRef<{ taskId: string } | null>(null)
+  const cardDragRef = useRef<{
+    x: number
+    y: number
+    categoryId: string
+    raf: number
+  } | null>(null)
   const colsRef = useRef<HTMLDivElement>(null)
   const colEls = useRef(new Map<string, HTMLElement>())
   const colDragRef = useRef<ColDrag | null>(null)
@@ -260,7 +268,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const statusOptions = useMemo(() => [...DEFAULT_STATUS, ...customStatus], [customStatus])
   const urgencyOptions = useMemo(() => [...DEFAULT_URGENCY, ...customUrgency], [customUrgency])
-  const assigneesById = useMemo(() => new Map(assignees.map((person) => [person.id, person])), [assignees])
+  const assigneesById = useMemo(
+    () => new Map(assignees.map((person) => [person.id, person])),
+    [assignees],
+  )
   const peerIds = peers.map((peer) => peer.id).join(',')
 
   /** Tell everyone else (and the canvas in this window) that board data changed. */
@@ -496,9 +507,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     const cat = categories.find((c) => c.id === categoryId)
     const position = cat ? cat.tasks.length : 0
     const customValues = Object.fromEntries(
-      customFields.flatMap((field) =>
-        field.defaultValue ? [[field.id, field.defaultValue]] : [],
-      ),
+      customFields.flatMap((field) => (field.defaultValue ? [[field.id, field.defaultValue]] : [])),
     )
     setNewTaskInputs((prev) => ({ ...prev, [categoryId]: '' }))
     const { data, error: err } = await supabase
@@ -810,9 +819,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       .eq('room_id', roomId)
     if (err) return fail(err.message)
     setCustomFields((fields) =>
-      fields.map((item) =>
-        item.id === field.id ? { ...item, defaultValue: value } : item,
-      ),
+      fields.map((item) => (item.id === field.id ? { ...item, defaultValue: value } : item)),
     )
     sync()
   }
@@ -824,10 +831,53 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     setDropAt(v)
   }
 
+  const cardDragFrame = () => {
+    const drag = cardDragRef.current
+    const board = colsRef.current
+    if (!drag || !board) return
+
+    const boardRect = board.getBoundingClientRect()
+    const edge = 72
+    if (drag.x < boardRect.left + edge) {
+      board.scrollLeft -= Math.min(24, Math.ceil(((boardRect.left + edge - drag.x) / edge) * 24))
+    } else if (drag.x > boardRect.right - edge) {
+      board.scrollLeft += Math.min(24, Math.ceil(((drag.x - (boardRect.right - edge)) / edge) * 24))
+    }
+
+    const column = colEls.current.get(drag.categoryId)
+    const taskList = column?.querySelector<HTMLElement>('.dv-card-list')
+    if (taskList) {
+      const listRect = taskList.getBoundingClientRect()
+      const verticalEdge = 56
+      if (drag.y < listRect.top + verticalEdge) {
+        taskList.scrollTop -= Math.min(
+          20,
+          Math.ceil(((listRect.top + verticalEdge - drag.y) / verticalEdge) * 20),
+        )
+      } else if (drag.y > listRect.bottom - verticalEdge) {
+        taskList.scrollTop += Math.min(
+          20,
+          Math.ceil(((drag.y - (listRect.bottom - verticalEdge)) / verticalEdge) * 20),
+        )
+      }
+    }
+
+    drag.raf = requestAnimationFrame(cardDragFrame)
+  }
+
+  const trackCardDrag = (e: React.DragEvent<HTMLElement>, categoryId: string) => {
+    const drag = cardDragRef.current
+    if (!drag) return
+    drag.x = e.clientX
+    drag.y = e.clientY
+    drag.categoryId = categoryId
+  }
+
   const onCardDragOver = (e: React.DragEvent<HTMLElement>, catId: string, index: number) => {
     if (!dragRef.current) return
     e.preventDefault()
     e.stopPropagation()
+    trackCardDrag(e, catId)
     e.dataTransfer.dropEffect = 'move'
     const r = e.currentTarget.getBoundingClientRect()
     const idx = index + (e.clientY > r.top + r.height / 2 ? 1 : 0)
@@ -838,6 +888,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const onColumnDragOver = (e: React.DragEvent<HTMLElement>, cat: Category) => {
     if (!dragRef.current) return
     e.preventDefault()
+    trackCardDrag(e, cat.id)
     e.dataTransfer.dropEffect = 'move'
     const cur = dropAtRef.current
     if (!cur || cur.cat !== cat.id || cur.index !== cat.tasks.length)
@@ -845,6 +896,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   }
 
   const endDrag = () => {
+    if (cardDragRef.current) cancelAnimationFrame(cardDragRef.current.raf)
+    cardDragRef.current = null
     dragRef.current = null
     setDragId(null)
     setDrop(null)
@@ -1135,7 +1188,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       : menu.kind === 'urgency'
         ? urgencyOptions
         : menu.kind === 'custom'
-          ? customFields.find((field) => field.id === menu.fieldId)?.options ?? []
+          ? (customFields.find((field) => field.id === menu.fieldId)?.options ?? [])
           : []
     : []
   const menuTask = menu
@@ -1149,8 +1202,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         : menu!.kind === 'due_date'
           ? menuTask.dueDate
           : menu!.kind === 'custom'
-            ? menuTask.customFields[menu!.fieldId ?? ''] ??
-              customFields.find((field) => field.id === menu!.fieldId)?.defaultValue
+            ? (menuTask.customFields[menu!.fieldId ?? ''] ??
+              customFields.find((field) => field.id === menu!.fieldId)?.defaultValue)
             : menuTask.assigneeId
     : null
 
@@ -1349,7 +1402,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                 </button>
               </header>
 
-              <div className="dv-scroll min-h-[44px] flex-1 overflow-y-auto px-2">
+              <div className="dv-scroll dv-card-list min-h-[44px] flex-1 overflow-y-auto px-2">
                 {visible.map((task, index) => {
                   const status = resolveOption(statusOptions, task.status, 'status')
                   const urgency = resolveOption(urgencyOptions, task.urgency, 'urgency')
@@ -1401,6 +1454,35 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                           e.dataTransfer.effectAllowed = 'move'
                           e.dataTransfer.setData('text/plain', task.id)
                           dragRef.current = { taskId: task.id }
+                          const rect = e.currentTarget.getBoundingClientRect()
+                          const previewScale = 0.88
+                          const preview = e.currentTarget.cloneNode(true) as HTMLElement
+                          preview.removeAttribute('id')
+                          preview.removeAttribute('data-done')
+                          preview.setAttribute('data-dragging', 'false')
+                          Object.assign(preview.style, {
+                            position: 'fixed',
+                            top: '0',
+                            left: '-10000px',
+                            width: `${rect.width}px`,
+                            pointerEvents: 'none',
+                            transform: `scale(${previewScale})`,
+                            transformOrigin: 'top left',
+                            boxShadow: 'var(--dv-shadow-card)',
+                          })
+                          document.body.append(preview)
+                          e.dataTransfer.setDragImage(
+                            preview,
+                            Math.round((e.clientX - rect.left) * previewScale),
+                            Math.round((e.clientY - rect.top) * previewScale),
+                          )
+                          window.setTimeout(() => preview.remove(), 0)
+                          cardDragRef.current = {
+                            x: e.clientX,
+                            y: e.clientY,
+                            categoryId: cat.id,
+                            raf: requestAnimationFrame(cardDragFrame),
+                          }
                           setDragId(task.id)
                         }}
                         onDragEnd={endDrag}
@@ -1472,7 +1554,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                   ) : (
                                     <div
                                       className="flex h-full w-full flex-col items-center justify-center gap-1 px-1"
-                                      style={{ background: 'var(--dv-panel-2)', color: 'var(--dv-muted)' }}
+                                      style={{
+                                        background: 'var(--dv-panel-2)',
+                                        color: 'var(--dv-muted)',
+                                      }}
                                     >
                                       <FileIcon file={f} size={16} />
                                       <span className="w-full truncate text-center text-[9px]">
@@ -1563,7 +1648,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                           style={{ color: 'var(--dv-muted)' }}
                                           onClick={() => open(images[3])}
                                         >
-                                          +{images.length - 3} more image{images.length - 3 === 1 ? '' : 's'}
+                                          +{images.length - 3} more image
+                                          {images.length - 3 === 1 ? '' : 's'}
                                         </button>
                                       )}
                                     </div>
@@ -1604,50 +1690,56 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               >
                                 {urgency.label}
                               </button>
-                              {customFields.filter((field) => field.defaultValue).map((field) => {
-                                const selected = field.options.find(
-                                  (option) =>
-                                    option.value ===
-                                    (task.customFields[field.id] ?? field.defaultValue),
-                                )
-                                return (
-                                  <button
-                                    key={field.id}
-                                    className="dv-chip"
-                                    style={
-                                      selected
-                                        ? badgeStyle(selected.color)
-                                        : {
-                                            background: 'var(--dv-panel-2)',
-                                            color: 'var(--dv-muted)',
-                                          }
-                                    }
-                                    title={`Change ${field.name}`}
-                                    onClick={(e) =>
-                                      openMenu(e, 'custom', task.id, cat.id, field.id)
-                                    }
-                                  >
-                                    {selected ? (
-                                      <>
-                                        <span
-                                          className="dv-dot"
-                                          style={{ background: selected.color }}
-                                        />
-                                        {selected.label}
-                                      </>
-                                    ) : (
-                                      field.name
-                                    )}
-                                  </button>
-                                )
-                              })}
+                              {customFields
+                                .filter((field) => field.defaultValue)
+                                .map((field) => {
+                                  const selected = field.options.find(
+                                    (option) =>
+                                      option.value ===
+                                      (task.customFields[field.id] ?? field.defaultValue),
+                                  )
+                                  return (
+                                    <button
+                                      key={field.id}
+                                      className="dv-chip"
+                                      style={
+                                        selected
+                                          ? badgeStyle(selected.color)
+                                          : {
+                                              background: 'var(--dv-panel-2)',
+                                              color: 'var(--dv-muted)',
+                                            }
+                                      }
+                                      title={`Change ${field.name}`}
+                                      onClick={(e) =>
+                                        openMenu(e, 'custom', task.id, cat.id, field.id)
+                                      }
+                                    >
+                                      {selected ? (
+                                        <>
+                                          <span
+                                            className="dv-dot"
+                                            style={{ background: selected.color }}
+                                          />
+                                          {selected.label}
+                                        </>
+                                      ) : (
+                                        field.name
+                                      )}
+                                    </button>
+                                  )
+                                })}
                               <button
                                 className="dv-chip"
                                 style={{
                                   background: 'var(--dv-panel-2)',
                                   color: 'var(--dv-text)',
                                 }}
-                                title={task.dueDate ? `Due ${formatDueDate(task.dueDate)}` : 'Set due date'}
+                                title={
+                                  task.dueDate
+                                    ? `Due ${formatDueDate(task.dueDate)}`
+                                    : 'Set due date'
+                                }
                                 onClick={(e) => openMenu(e, 'due_date', task.id, cat.id)}
                               >
                                 <CalendarDays size={12} />
@@ -1936,8 +2028,9 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                       <span key={option.id} className="dv-chip" style={badgeStyle(option.color)}>
                         <span className="dv-dot" style={{ background: option.color }} />
                         {option.label}
-                        {(field.defaultValue ?? field.options[0]?.value) === option.value &&
-                          <span className="ml-1 text-[10px]">Default</span>}
+                        {(field.defaultValue ?? field.options[0]?.value) === option.value && (
+                          <span className="ml-1 text-[10px]">Default</span>
+                        )}
                       </span>
                     ))}
                     {field.options.length === 0 && (
@@ -1988,7 +2081,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                           setNewFieldOption({ ...newFieldOption, label: e.target.value })
                         }
                       />
-                      <label className="flex items-center gap-1 text-xs" style={{ color: 'var(--dv-muted)' }}>
+                      <label
+                        className="flex items-center gap-1 text-xs"
+                        style={{ color: 'var(--dv-muted)' }}
+                      >
                         Color
                         <input
                           type="color"
@@ -2000,10 +2096,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                           className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent"
                         />
                       </label>
-                      <button
-                        className="dv-btn primary"
-                        disabled={!newFieldOption.label.trim()}
-                      >
+                      <button className="dv-btn primary" disabled={!newFieldOption.label.trim()}>
                         Create
                       </button>
                       <button
@@ -2057,10 +2150,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
               <button className="dv-btn" onClick={() => setFieldToRemove(null)}>
                 Cancel
               </button>
-              <button
-                className="dv-btn danger"
-                onClick={() => removeCustomField(fieldToRemove)}
-              >
+              <button className="dv-btn danger" onClick={() => removeCustomField(fieldToRemove)}>
                 Remove category
               </button>
             </div>
