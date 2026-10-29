@@ -221,6 +221,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [fieldToRemove, setFieldToRemove] = useState<CustomTaskField | null>(null)
   const [defaultFieldToRemove, setDefaultFieldToRemove] = useState<TaskOptionType | null>(null)
+  const [catToDelete, setCatToDelete] = useState<Category | null>(null)
   const [newFieldName, setNewFieldName] = useState('')
   const [newFieldOption, setNewFieldOption] = useState<{
     fieldId: string
@@ -495,14 +496,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         searchRef.current?.focus()
       } else if (e.key === 'Escape') {
         setMenu(null)
-        if (fieldToRemove) setFieldToRemove(null)
+        if (catToDelete) setCatToDelete(null)
+        else if (fieldToRemove) setFieldToRemove(null)
         else if (defaultFieldToRemove) setDefaultFieldToRemove(null)
         else setSettingsOpen(false)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [active, defaultFieldToRemove, fieldToRemove])
+  }, [active, catToDelete, defaultFieldToRemove, fieldToRemove])
 
   // ---------- categories ----------
 
@@ -541,12 +543,14 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     } else sync()
   }
 
+  /** Lists with tasks ask first; empty ones go straight away. */
+  const requestDeleteCategory = (cat: Category) => {
+    if (cat.tasks.length > 0) setCatToDelete(cat)
+    else deleteCategory(cat)
+  }
+
   const deleteCategory = async (cat: Category) => {
-    if (
-      cat.tasks.length > 0 &&
-      !window.confirm(`Delete "${cat.name}" and its ${cat.tasks.length} task(s)?`)
-    )
-      return
+    setCatToDelete(null)
     setCategories((prev) => prev.filter((c) => c.id !== cat.id))
     const r1 = await supabase.from('tasks').delete().eq('category_id', cat.id)
     if (r1.error) {
@@ -1895,7 +1899,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                 </span>
                 <button
                   className="dv-iconbtn danger !h-6 !w-6 opacity-0 group-hover:opacity-100"
-                  onClick={() => deleteCategory(cat)}
+                  onClick={() => requestDeleteCategory(cat)}
                   title="Delete list"
                 >
                   <Trash2 size={13} />
@@ -2756,6 +2760,45 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   No custom categories yet.
                 </p>
               )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {catToDelete && (
+        <div
+          className="dv-modal-backdrop z-[80]"
+          onPointerDown={(e) => {
+            if (e.target === e.currentTarget) setCatToDelete(null)
+          }}
+        >
+          <section
+            className="dv-floating dv-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-list-title"
+            aria-describedby="delete-list-description"
+          >
+            <div>
+              <h2 id="delete-list-title" className="m-0 text-lg font-semibold">
+                Delete list?
+              </h2>
+              <p
+                id="delete-list-description"
+                className="mt-2 text-sm"
+                style={{ color: 'var(--dv-muted)' }}
+              >
+                Delete “{catToDelete.name}” and its {catToDelete.tasks.length}{' '}
+                {catToDelete.tasks.length === 1 ? 'task' : 'tasks'}? This can’t be undone.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className="dv-btn" autoFocus onClick={() => setCatToDelete(null)}>
+                Cancel
+              </button>
+              <button className="dv-btn danger" onClick={() => deleteCategory(catToDelete)}>
+                Delete list
+              </button>
             </div>
           </section>
         </div>
