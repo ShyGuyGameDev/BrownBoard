@@ -250,7 +250,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   } | null>(null)
   const [assignees, setAssignees] = useState<TaskAssignee[]>([])
   const [menu, setMenu] = useState<MenuState | null>(null)
-  const [optForm, setOptForm] = useState<{ label: string; color: string } | null>(null)
 
   const [dragId, setDragId] = useState<string | null>(null)
   const dragRef = useRef<{ taskId: string } | null>(null)
@@ -482,7 +481,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         searchRef.current?.focus()
       } else if (e.key === 'Escape') {
         setMenu(null)
-        setOptForm(null)
         if (fieldToRemove) setFieldToRemove(null)
         else if (defaultFieldToRemove) setDefaultFieldToRemove(null)
         else setSettingsOpen(false)
@@ -707,7 +705,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   ) => {
     e.stopPropagation()
     const r = e.currentTarget.getBoundingClientRect()
-    setOptForm(null)
     setMenu({
       kind,
       taskId,
@@ -732,39 +729,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       })
     }
     setMenu(null)
-    setOptForm(null)
   }
 
   const pickDueDate = (value: string) => {
     if (!menu || menu.kind !== 'due_date') return
     patchTask(menu.taskId, { dueDate: value || null })
     setMenu(null)
-  }
-
-  const createOption = async () => {
-    if (!menu || !optForm || (menu.kind !== 'status' && menu.kind !== 'urgency')) return
-    const label = cleanLine(optForm.label, LIMITS.optionLabel)
-    if (!label) return
-    const pool = menu.kind === 'status' ? statusOptions : urgencyOptions
-    const value = slugify(label)
-    const existing = pool.find((o) => o.value === value)
-    if (existing) return pick(existing.value)
-    const { data, error: err } = await supabase
-      .from('task_options')
-      .insert({
-        type: menu.kind,
-        value,
-        label,
-        color: cleanHexColor(optForm.color, '#71717a'),
-        room_id: roomId,
-      })
-      .select()
-      .single()
-    if (err) return fail(err.message)
-    const opt = rowToOption(data)
-    if (menu.kind === 'status') setCustomStatus((p) => [...p, opt])
-    else setCustomUrgency((p) => [...p, opt])
-    pick(opt.value)
   }
 
   const addCustomField = async () => {
@@ -2846,7 +2816,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             className="fixed inset-0 z-40"
             onPointerDown={() => {
               setMenu(null)
-              setOptForm(null)
             }}
           />
           <div className="dv-menu fixed z-50 w-56" style={{ left: menu.x, top: menu.y }}>
@@ -2947,56 +2916,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                     )}
                   </button>
                 ))}
-                {menu.kind !== 'custom' && (
-                  <>
-                    <div className="my-1 h-px" style={{ background: 'var(--dv-border)' }} />
-                    {optForm ? (
-                      <div className="flex flex-col gap-2 p-2">
-                        <input
-                          autoFocus
-                          className="dv-input"
-                          placeholder={menu.kind === 'status' ? 'Status name' : 'Urgency name'}
-                          value={optForm.label}
-                          onChange={(e) => setOptForm({ ...optForm, label: e.target.value })}
-                          onKeyDown={(e) => e.key === 'Enter' && createOption()}
-                        />
-                        <label
-                          className="flex items-center justify-between text-xs"
-                          style={{ color: 'var(--dv-muted)' }}
-                        >
-                          Color
-                          <input
-                            type="color"
-                            value={optForm.color}
-                            onChange={(e) => setOptForm({ ...optForm, color: e.target.value })}
-                            className="h-7 w-12 cursor-pointer rounded border-0 bg-transparent"
-                          />
-                        </label>
-                        <div className="flex justify-end gap-2">
-                          <button className="dv-btn" onClick={() => setOptForm(null)}>
-                            Back
-                          </button>
-                          <button
-                            className="dv-btn primary"
-                            disabled={!optForm.label.trim()}
-                            onClick={createOption}
-                          >
-                            Create
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <button
-                        className="dv-menu-item"
-                        style={{ color: 'var(--dv-accent)' }}
-                        onClick={() => setOptForm({ label: '', color: '#3b82f6' })}
-                      >
-                        <Plus size={13} />
-                        New {menu.kind}
-                      </button>
-                    )}
-                  </>
-                )}
               </>
             )}
           </div>
