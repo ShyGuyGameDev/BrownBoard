@@ -564,6 +564,25 @@ body.dv-grabbing * {
   box-shadow: var(--dv-shadow);
 }
 
+.dv-upload-toast {
+  background: var(--dv-panel);
+  color: var(--dv-text);
+  border: 1px solid var(--dv-border);
+  padding: 10px 14px;
+  border-radius: var(--dv-radius-lg);
+  font-size: var(--dv-text-md);
+  box-shadow: var(--dv-shadow);
+}
+.dv-upload-spinner {
+  color: var(--dv-accent);
+  animation: dv-upload-spin 1s linear infinite;
+}
+@keyframes dv-upload-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .dv-drag {
   -webkit-app-region: drag;
 }

@@ -4,6 +4,7 @@ import {
   Check,
   Copy,
   Kanban,
+  LoaderCircle,
   LogIn,
   LogOut,
   Moon,
@@ -367,6 +368,7 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
     }
   }, [on, setRoomName, setAllowGuests, setIsOwner, roomId, roomName, user, isGuest, signOut])
   const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const [uploads, setUploads] = useState<Map<number, string>>(() => new Map())
   const toastTimer = useRef<number | null>(null)
 
   // A guest's untitled room isn't kept: closing or reloading the tab gets the browser's
@@ -422,6 +424,16 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
       if (toastTimer.current) window.clearTimeout(toastTimer.current)
       toastTimer.current = window.setTimeout(() => setToastMsg(null), 3200)
     })
+    const offUploadStart = bus.on('upload:start', ({ id, label }: { id: number; label: string }) =>
+      setUploads((current) => new Map(current).set(id, label)),
+    )
+    const offUploadEnd = bus.on('upload:end', ({ id }: { id: number }) =>
+      setUploads((current) => {
+        const next = new Map(current)
+        next.delete(id)
+        return next
+      }),
+    )
     // Electron's Edit menu: undo/redo either go to the focused text field or to the canvas.
     const onHistory = (e: Event) => {
       const dir = (e as CustomEvent).detail as 'undo' | 'redo'
@@ -439,6 +451,8 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
       window.removeEventListener('devboard:history', onHistory)
       offNav()
       offToast()
+      offUploadStart()
+      offUploadEnd()
     }
   }, [go, openShare])
 
@@ -703,6 +717,21 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
       {toastMsg && (
         <div className="pointer-events-none fixed bottom-6 left-1/2 z-[100] -translate-x-1/2">
           <div className="dv-toast">{toastMsg}</div>
+        </div>
+      )}
+      {uploads.size > 0 && (
+        <div
+          className="pointer-events-none fixed bottom-6 right-6 z-[101]"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="dv-upload-toast flex items-center gap-2.5">
+            <LoaderCircle className="dv-upload-spinner shrink-0" size={16} aria-hidden="true" />
+            <span>
+              {[...uploads.values()].at(-1)}
+              {uploads.size > 1 && ` (+${uploads.size - 1} more)`}
+            </span>
+          </div>
         </div>
       )}
     </div>

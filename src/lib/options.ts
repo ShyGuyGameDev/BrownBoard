@@ -85,12 +85,24 @@ export const rowToOption = (row: any): TaskOption => ({
   isCustom: true,
 })
 
-/** Splits raw task_options rows into custom status / urgency lists (ignoring ones that shadow a default). */
+/** Combines room-specific option rows with the built-in options they override. */
 export const splitCustom = (rows: any[]) => {
-  const ds = new Set(DEFAULT_STATUS.map((o) => o.value))
-  const du = new Set(DEFAULT_URGENCY.map((o) => o.value))
+  const merge = (defaults: TaskOption[], type: TaskOptionType) => {
+    const typeRows = rows.filter((row) => row.type === type)
+    const options = defaults.map((option) => {
+      const override = typeRows.find((row) => row.value === option.value)
+      return override
+        ? { ...option, id: override.id, label: override.label, color: override.color }
+        : option
+    })
+    const builtInValues = new Set(defaults.map((option) => option.value))
+    return [
+      ...options,
+      ...typeRows.filter((row) => !builtInValues.has(row.value)).map(rowToOption),
+    ]
+  }
   return {
-    status: rows.filter((r) => r.type === 'status' && !ds.has(r.value)).map(rowToOption),
-    urgency: rows.filter((r) => r.type === 'urgency' && !du.has(r.value)).map(rowToOption),
+    status: merge(DEFAULT_STATUS, 'status'),
+    urgency: merge(DEFAULT_URGENCY, 'urgency'),
   }
 }

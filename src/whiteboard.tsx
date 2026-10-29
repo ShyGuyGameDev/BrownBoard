@@ -28,7 +28,7 @@ import {
 import { HexColorPicker } from 'react-colorful'
 import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room'
-import { bus, isTyping, setLinkCounts, toast } from './lib/bus'
+import { bus, isTyping, setLinkCounts, toast, withUploadFeedback } from './lib/bus'
 import { formatDueDate, type TaskLite, useRoomTasks } from './lib/tasks'
 import { clearCanvas as clearRoomCanvas } from './lib/rooms'
 import { canvas, font, noteColors, noteInk, swatches } from './design/tokens'
@@ -899,8 +899,12 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         const w = b.maxX - b.minX
         const h = b.maxY - b.minY
         const task = el.taskId ? taskRef.current.byId.get(el.taskId) : undefined
-        const urg = task ? taskRef.current.urgencyOpt(task.urgency) : null
-        const stat = task ? taskRef.current.statusOpt(task.status) : null
+        const urg =
+          task && taskRef.current.urgencyEnabled
+            ? taskRef.current.urgencyOpt(task.urgency)
+            : null
+        const stat =
+          task && taskRef.current.statusEnabled ? taskRef.current.statusOpt(task.status) : null
         const done = task?.status === 'completed'
         if (done) {
           // Greyed out, like completed cards on the board.
@@ -1598,32 +1602,34 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   const addFile = async (file: File, at?: Pt) => {
     if (file.size > MAX_FILE_BYTES)
       return toast(`"${file.name}" is ${formatBytes(file.size)}. Files must be under 50 MB.`)
-    if (file.type.startsWith('image/') && (await addImage(file, at))) return
-    let a: Attachment
-    try {
-      a = await uploadRoomFile(file, roomId)
-    } catch (e) {
-      return toast(e instanceof Error ? e.message : 'Could not add that file.')
-    }
-    const c = at ?? viewCenter()
-    const el: El = {
-      id: uid(),
-      type: 'file',
-      userId: me.id,
-      points: [
-        { x: c.x - FILE_CARD.w / 2, y: c.y - FILE_CARD.h / 2 },
-        { x: c.x + FILE_CARD.w / 2, y: c.y + FILE_CARD.h / 2 },
-      ],
-      src: a.url,
-      name: a.name,
-      mime: a.type,
-      size: a.size,
-    }
-    const added = withFocus([el])
-    commit({ added, removed: [], before: [], after: [] })
-    opAdd(added)
-    setSel(new Set([el.id]))
-    setTool('select')
+    return withUploadFeedback('Uploading file to whiteboard…', async () => {
+      if (file.type.startsWith('image/') && (await addImage(file, at))) return
+      let a: Attachment
+      try {
+        a = await uploadRoomFile(file, roomId)
+      } catch (e) {
+        return toast(e instanceof Error ? e.message : 'Could not add that file.')
+      }
+      const c = at ?? viewCenter()
+      const el: El = {
+        id: uid(),
+        type: 'file',
+        userId: me.id,
+        points: [
+          { x: c.x - FILE_CARD.w / 2, y: c.y - FILE_CARD.h / 2 },
+          { x: c.x + FILE_CARD.w / 2, y: c.y + FILE_CARD.h / 2 },
+        ],
+        src: a.url,
+        name: a.name,
+        mime: a.type,
+        size: a.size,
+      }
+      const added = withFocus([el])
+      commit({ added, removed: [], before: [], after: [] })
+      opAdd(added)
+      setSel(new Set([el.id]))
+      setTool('select')
+    })
   }
 
   /** Several files at once (a drop), fanned out a little so they don't stack exactly. */
@@ -2928,10 +2934,10 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
                   </p>
                 )}
                 {filteredTasks.map((t) => {
-                  const s = taskData.statusOpt(t.status)
+                  const s = taskData.statusEnabled ? taskData.statusOpt(t.status) : null
                   return (
                     <button key={t.id} className="dv-menu-item" onClick={() => addTaskCard(t.id)}>
-                      <span className="dv-dot" style={{ background: s.color }} />
+                      {s && <span className="dv-dot" style={{ background: s.color }} />}
                       <span className="flex-1 truncate">{t.title}</span>
                     </button>
                   )

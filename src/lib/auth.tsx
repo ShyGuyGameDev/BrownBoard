@@ -3,6 +3,7 @@ import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 import { rememberReturnRoom } from './room'
 import { markLeavingToSignIn, rememberLastAccount } from './sign-in-intent'
+import { withUploadFeedback } from './bus'
 import { removeOldAvatars, uploadAvatar } from './upload'
 
 /**
@@ -226,7 +227,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updateAvatar = useCallback(
     async (file: File | null) => {
       if (!userId) fail('Sign in to set a profile picture.')
-      const url = file ? await uploadAvatar(file, userId!) : null
+      const url = file
+        ? await withUploadFeedback('Uploading profile picture…', () => uploadAvatar(file, userId!))
+        : null
       const { error } = await supabase.rpc('update_profile_avatar', { p_url: url })
       if (error) fail(error.message)
       setProfile((current) => (current ? { ...current, avatar_url: url } : current))

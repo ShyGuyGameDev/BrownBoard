@@ -69,16 +69,28 @@ export function useRoomTasks() {
   const { roomId, on } = useRoom()
   const [list, setList] = useState<TaskLite[]>([])
   const [assignees, setAssignees] = useState<TaskAssignee[]>([])
+  const [fieldVisibility, setFieldVisibility] = useState({ status: true, urgency: true })
   const [custom, setCustom] = useState<{ status: TaskOption[]; urgency: TaskOption[] }>({
-    status: [],
-    urgency: [],
+    status: DEFAULT_STATUS,
+    urgency: DEFAULT_URGENCY,
   })
 
   const load = useCallback(async () => {
-    const [t, o] = await Promise.all([
+    const [t, o, fields] = await Promise.all([
       supabase.from('tasks').select('*').eq('room_id', roomId),
       supabase.from('task_options').select('*').eq('room_id', roomId),
+      supabase
+        .from('task_field_category_names')
+        .select('field_type, is_deleted')
+        .eq('room_id', roomId),
     ])
+    if (fields.error) toast(fields.error.message)
+    else if (fields.data) {
+      setFieldVisibility({
+        status: fields.data.find((field) => field.field_type === 'status')?.is_deleted !== true,
+        urgency: fields.data.find((field) => field.field_type === 'urgency')?.is_deleted !== true,
+      })
+    }
     let people: TaskAssignee[] = []
     try {
       people = await loadRoomTaskAssignees(roomId)
@@ -111,13 +123,21 @@ export function useRoomTasks() {
 
   const byId = useMemo(() => new Map(list.map((t) => [t.id, t])), [list])
   const statusOpt = useCallback(
-    (v: string) => resolveOption([...DEFAULT_STATUS, ...custom.status], v, 'status'),
+    (v: string) => resolveOption(custom.status, v, 'status'),
     [custom],
   )
   const urgencyOpt = useCallback(
-    (v: string) => resolveOption([...DEFAULT_URGENCY, ...custom.urgency], v, 'urgency'),
+    (v: string) => resolveOption(custom.urgency, v, 'urgency'),
     [custom],
   )
 
-  return { list, byId, statusOpt, urgencyOpt, assignees }
+  return {
+    list,
+    byId,
+    statusOpt,
+    urgencyOpt,
+    assignees,
+    statusEnabled: fieldVisibility.status,
+    urgencyEnabled: fieldVisibility.urgency,
+  }
 }

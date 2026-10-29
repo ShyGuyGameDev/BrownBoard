@@ -22,6 +22,19 @@ export const bus = {
 
 export const toast = (message: string) => bus.emit('toast', message)
 
+let nextUploadId = 0
+
+/** Keeps the app-wide upload indicator visible for the duration of a file upload. */
+export async function withUploadFeedback<T>(label: string, upload: () => Promise<T>): Promise<T> {
+  const id = ++nextUploadId
+  bus.emit('upload:start', { id, label })
+  try {
+    return await upload()
+  } finally {
+    bus.emit('upload:end', { id })
+  }
+}
+
 /** True when the keyboard event came from a text field, so global shortcuts should stay out of the way. */
 export const isTyping = (e: Event) => {
   const el = e.target as HTMLElement | null

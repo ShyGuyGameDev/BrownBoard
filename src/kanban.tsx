@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
 import { colorFor, useRoom } from './lib/room'
-import { bus, getLinkCounts, isTyping, toast } from './lib/bus'
+import { bus, getLinkCounts, isTyping, toast, withUploadFeedback } from './lib/bus'
 import {
   type Attachment,
   cleanAttachment,
@@ -209,16 +209,44 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     description: string
   } | null>(null)
 
-  const [customStatus, setCustomStatus] = useState<TaskOption[]>([])
-  const [customUrgency, setCustomUrgency] = useState<TaskOption[]>([])
+  const [customStatus, setCustomStatus] = useState<TaskOption[]>(DEFAULT_STATUS)
+  const [customUrgency, setCustomUrgency] = useState<TaskOption[]>(DEFAULT_URGENCY)
+  const [defaultFieldConfig, setDefaultFieldConfig] = useState<
+    Record<TaskOptionType, { name: string; defaultValue: string; deleted: boolean }>
+  >({
+    status: { name: 'Status', defaultValue: 'not_started', deleted: false },
+    urgency: { name: 'Urgency', defaultValue: 'medium', deleted: false },
+  })
   const [customFields, setCustomFields] = useState<CustomTaskField[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [fieldToRemove, setFieldToRemove] = useState<CustomTaskField | null>(null)
+  const [defaultFieldToRemove, setDefaultFieldToRemove] = useState<TaskOptionType | null>(null)
   const [newFieldName, setNewFieldName] = useState('')
   const [newFieldOption, setNewFieldOption] = useState<{
     fieldId: string
+    type?: TaskOptionType
     label: string
     color: string
+  } | null>(null)
+  const [editingFieldName, setEditingFieldName] = useState<{ id: string; name: string } | null>(
+    null,
+  )
+  const [editingOptionLabel, setEditingOptionLabel] = useState<{
+    fieldId: string
+    optionId: string
+    label: string
+    color: string
+    type?: TaskOptionType
+  } | null>(null)
+  const [editingDefaultOption, setEditingDefaultOption] = useState<{
+    type: TaskOptionType
+    value: string
+    label: string
+    color: string
+  } | null>(null)
+  const [editingDefaultFieldName, setEditingDefaultFieldName] = useState<{
+    type: TaskOptionType
+    name: string
   } | null>(null)
   const [assignees, setAssignees] = useState<TaskAssignee[]>([])
   const [menu, setMenu] = useState<MenuState | null>(null)
@@ -266,8 +294,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     setActivity('kanban', active ? activity : null, settingsOpen ? 3 : 2)
   }, [active, activity, settingsOpen, setActivity])
 
-  const statusOptions = useMemo(() => [...DEFAULT_STATUS, ...customStatus], [customStatus])
-  const urgencyOptions = useMemo(() => [...DEFAULT_URGENCY, ...customUrgency], [customUrgency])
+  const statusOptions = useMemo(() => customStatus, [customStatus])
+  const urgencyOptions = useMemo(() => customUrgency, [customUrgency])
   const assigneesById = useMemo(
     () => new Map(assignees.map((person) => [person.id, person])),
     [assignees],
@@ -303,7 +331,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const loadBoard = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true)
-      const [c, t, o, f, fo] = await Promise.all([
+      const [c, t, o, f, fo, fn] = await Promise.all([
         supabase
           .from('categories')
           .select('*')
@@ -328,14 +356,19 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           .from('task_custom_field_options')
           .select('*')
           .order('created_at', { ascending: true }),
+        supabase
+          .from('task_field_category_names')
+          .select('field_type, name, default_value, is_deleted')
+          .eq('room_id', roomId),
       ])
-      if (c.error || t.error || o.error || f.error || fo.error) {
+      if (c.error || t.error || o.error || f.error || fo.error || fn.error) {
         setError(
           c.error?.message ||
             t.error?.message ||
             o.error?.message ||
             f.error?.message ||
             fo.error?.message ||
+            fn.error?.message ||
             'Unable to load the board',
         )
         setLoading(false)
@@ -347,6 +380,22 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         const split = splitCustom(o.data)
         setCustomStatus(split.status)
         setCustomUrgency(split.urgency)
+      }
+      if (fn.data) {
+        setDefaultFieldConfig({
+          status: {
+            name: fn.data.find((row) => row.field_type === 'status')?.name ?? 'Status',
+            defaultValue:
+              fn.data.find((row) => row.field_type === 'status')?.default_value ?? 'not_started',
+            deleted: fn.data.find((row) => row.field_type === 'status')?.is_deleted ?? false,
+          },
+          urgency: {
+            name: fn.data.find((row) => row.field_type === 'urgency')?.name ?? 'Urgency',
+            defaultValue:
+              fn.data.find((row) => row.field_type === 'urgency')?.default_value ?? 'medium',
+            deleted: fn.data.find((row) => row.field_type === 'urgency')?.is_deleted ?? false,
+          },
+        })
       }
       if (f.data && fo.data) {
         setCustomFields(
@@ -435,12 +484,13 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         setMenu(null)
         setOptForm(null)
         if (fieldToRemove) setFieldToRemove(null)
+        else if (defaultFieldToRemove) setDefaultFieldToRemove(null)
         else setSettingsOpen(false)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [active, fieldToRemove])
+  }, [active, defaultFieldToRemove, fieldToRemove])
 
   // ---------- categories ----------
 
@@ -514,8 +564,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       .from('tasks')
       .insert({
         title,
-        status: 'not_started',
-        urgency: 'medium',
+        status: defaultFieldConfig.status.defaultValue,
+        urgency: defaultFieldConfig.urgency.defaultValue,
         category_id: categoryId,
         position,
         room_id: roomId,
@@ -605,14 +655,24 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const addFiles = async (taskId: string, files: File[]) => {
     if (!files.length) return
     setUploadingId(taskId)
-    // Keep whatever uploaded even if one file fails.
-    const results = await Promise.allSettled(files.map((f) => uploadRoomFile(f, roomId, 'tasks')))
-    const added = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
-    const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
-    const current = findTask(taskId)
-    if (current && added.length) await patchTask(taskId, { files: [...current.files, ...added] })
-    if (failed) fail(failed.reason?.message || 'Upload failed')
-    setUploadingId(null)
+    try {
+      await withUploadFeedback(
+        `Uploading ${files.length === 1 ? 'file' : `${files.length} files`} to card…`,
+        async () => {
+          // Keep whatever uploaded even if one file fails.
+          const results = await Promise.allSettled(
+            files.map((f) => uploadRoomFile(f, roomId, 'tasks')),
+          )
+          const added = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+          const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+          const current = findTask(taskId)
+          if (current && added.length) await patchTask(taskId, { files: [...current.files, ...added] })
+          if (failed) fail(failed.reason?.message || 'Upload failed')
+        },
+      )
+    } finally {
+      setUploadingId(null)
+    }
   }
 
   const removeFile = (taskId: string, url: string) => {
@@ -760,6 +820,56 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (!newFieldOption) return
     const label = cleanLine(newFieldOption.label, LIMITS.optionLabel)
     if (!label) return
+    if (newFieldOption.type) {
+      const type = newFieldOption.type
+      const options = type === 'status' ? statusOptions : urgencyOptions
+      const value = slugify(label)
+      if (options.some((option) => option.value === value)) {
+        return fail('A status with that name already exists')
+      }
+      const { data, error: err } = await supabase
+        .from('task_options')
+        .insert({
+          type,
+          value,
+          label,
+          color: cleanHexColor(newFieldOption.color, '#71717a'),
+          room_id: roomId,
+        })
+        .select()
+        .single()
+      if (err) return fail(err.message)
+      const newOption = rowToOption(data)
+      if (type === 'status') setCustomStatus((items) => [...items, newOption])
+      else setCustomUrgency((items) => [...items, newOption])
+      const fieldConfig = defaultFieldConfig[type]
+      if (!fieldConfig.defaultValue || !options.some((option) => option.value === fieldConfig.defaultValue)) {
+        const { error: defaultError } = await supabase
+          .from('task_field_category_names')
+          .upsert(
+            {
+              room_id: roomId,
+              field_type: type,
+              name: fieldConfig.name,
+              default_value: value,
+              is_deleted: fieldConfig.deleted,
+            },
+            { onConflict: 'room_id,field_type' },
+          )
+        if (defaultError) {
+          fail(defaultError.message)
+          loadBoard(true)
+          return
+        }
+        setDefaultFieldConfig((previous) => ({
+          ...previous,
+          [type]: { ...previous[type], defaultValue: value },
+        }))
+      }
+      setNewFieldOption(null)
+      sync()
+      return
+    }
     const field = customFields.find((item) => item.id === newFieldOption.fieldId)
     if (!field) return
     const value = slugify(label)
@@ -821,6 +931,212 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     setCustomFields((fields) =>
       fields.map((item) => (item.id === field.id ? { ...item, defaultValue: value } : item)),
     )
+    sync()
+  }
+
+  const setDefaultFieldValue = async (type: TaskOptionType, value: string) => {
+    const options = type === 'status' ? statusOptions : urgencyOptions
+    if (!options.some((option) => option.value === value)) return
+    const config = defaultFieldConfig[type]
+    const { error: err } = await supabase.from('task_field_category_names').upsert(
+      {
+        room_id: roomId,
+        field_type: type,
+        name: config.name,
+        default_value: value,
+        is_deleted: config.deleted,
+      },
+      { onConflict: 'room_id,field_type' },
+    )
+    if (err) return fail(err.message)
+    setDefaultFieldConfig((previous) => ({
+      ...previous,
+      [type]: { ...previous[type], defaultValue: value },
+    }))
+    sync()
+  }
+
+  const removeDefaultField = async (type: TaskOptionType) => {
+    const config = defaultFieldConfig[type]
+    const { error: err } = await supabase.from('task_field_category_names').upsert(
+      {
+        room_id: roomId,
+        field_type: type,
+        name: config.name,
+        default_value: config.defaultValue,
+        is_deleted: true,
+      },
+      { onConflict: 'room_id,field_type' },
+    )
+    if (err) return fail(err.message)
+    setDefaultFieldConfig((previous) => ({
+      ...previous,
+      [type]: { ...previous[type], deleted: true },
+    }))
+    setDefaultFieldToRemove(null)
+    sync()
+  }
+
+  const restoreDefaultField = async (type: TaskOptionType) => {
+    const config = defaultFieldConfig[type]
+    const { error: err } = await supabase.from('task_field_category_names').upsert(
+      {
+        room_id: roomId,
+        field_type: type,
+        name: config.name,
+        default_value: config.defaultValue,
+        is_deleted: false,
+      },
+      { onConflict: 'room_id,field_type' },
+    )
+    if (err) return fail(err.message)
+    setDefaultFieldConfig((previous) => ({
+      ...previous,
+      [type]: { ...previous[type], deleted: false },
+    }))
+    sync()
+  }
+
+  const saveCustomFieldName = async () => {
+    if (!editingFieldName) return
+    const name = cleanLine(editingFieldName.name, LIMITS.optionLabel)
+    if (!name) return
+    const { error: err } = await supabase
+      .from('task_custom_fields')
+      .update({ name })
+      .eq('id', editingFieldName.id)
+      .eq('room_id', roomId)
+    if (err) return fail(err.message)
+    setCustomFields((fields) =>
+      fields.map((field) =>
+        field.id === editingFieldName.id ? { ...field, name } : field,
+      ),
+    )
+    setEditingFieldName(null)
+    sync()
+  }
+
+  const saveCustomOptionLabel = async () => {
+    if (!editingOptionLabel) return
+    const label = cleanLine(editingOptionLabel.label, LIMITS.optionLabel)
+    if (!label) return
+    const color = cleanHexColor(editingOptionLabel.color, '#71717a')
+    if (editingOptionLabel.type) {
+      const { error: err } = await supabase
+        .from('task_options')
+        .update({ label, color })
+        .eq('id', editingOptionLabel.optionId)
+        .eq('room_id', roomId)
+      if (err) return fail(err.message)
+      const update = (options: TaskOption[]) =>
+        options.map((option) =>
+          option.id === editingOptionLabel.optionId ? { ...option, label, color } : option,
+        )
+      if (editingOptionLabel.type === 'status') setCustomStatus(update)
+      else setCustomUrgency(update)
+      setEditingOptionLabel(null)
+      sync()
+      return
+    }
+    const field = customFields.find((item) => item.id === editingOptionLabel.fieldId)
+    if (!field) return
+    if (
+      field.options.some(
+        (option) =>
+          option.id !== editingOptionLabel.optionId &&
+          option.label.toLocaleLowerCase() === label.toLocaleLowerCase(),
+      )
+    ) {
+      return fail('A status with that name already exists')
+    }
+    const { error: err } = await supabase
+      .from('task_custom_field_options')
+      .update({ label, color })
+      .eq('id', editingOptionLabel.optionId)
+      .eq('field_id', editingOptionLabel.fieldId)
+    if (err) return fail(err.message)
+    setCustomFields((fields) =>
+      fields.map((item) =>
+        item.id === editingOptionLabel.fieldId
+          ? {
+              ...item,
+              options: item.options.map((option) =>
+                option.id === editingOptionLabel.optionId ? { ...option, label, color } : option,
+              ),
+            }
+          : item,
+      ),
+    )
+    setEditingOptionLabel(null)
+    sync()
+  }
+
+  const saveDefaultOption = async () => {
+    if (!editingDefaultOption) return
+    const label = cleanLine(editingDefaultOption.label, LIMITS.optionLabel)
+    if (!label) return
+    const color = cleanHexColor(editingDefaultOption.color, '#71717a')
+    const currentOptions =
+      editingDefaultOption.type === 'status' ? statusOptions : urgencyOptions
+    const current = currentOptions.find((option) => option.value === editingDefaultOption.value)
+    const write = current?.id
+      ? supabase
+          .from('task_options')
+          .update({ label, color })
+          .eq('id', current.id)
+          .eq('room_id', roomId)
+      : supabase
+          .from('task_options')
+          .insert({
+            type: editingDefaultOption.type,
+            value: editingDefaultOption.value,
+            label,
+            color,
+            room_id: roomId,
+          })
+          .select()
+          .single()
+    const result = await write
+    if (result.error) return fail(result.error.message)
+    const row = 'data' in result ? result.data : null
+    const updateOption = (options: TaskOption[]) =>
+      options.map((option) =>
+        option.value === editingDefaultOption.value
+          ? {
+              ...option,
+              ...(row ? { id: row.id } : {}),
+              label,
+              color,
+            }
+          : option,
+      )
+    if (editingDefaultOption.type === 'status') setCustomStatus(updateOption)
+    else setCustomUrgency(updateOption)
+    setEditingDefaultOption(null)
+    sync()
+  }
+
+  const saveDefaultFieldName = async () => {
+    if (!editingDefaultFieldName) return
+    const name = cleanLine(editingDefaultFieldName.name, LIMITS.optionLabel)
+    if (!name) return
+    const type = editingDefaultFieldName.type
+    const { error: err } = await supabase.from('task_field_category_names').upsert(
+      {
+        room_id: roomId,
+        field_type: type,
+        name,
+        default_value: defaultFieldConfig[type].defaultValue,
+        is_deleted: defaultFieldConfig[type].deleted,
+      },
+      { onConflict: 'room_id,field_type' },
+    )
+    if (err) return fail(err.message)
+    setDefaultFieldConfig((previous) => ({
+      ...previous,
+      [type]: { ...previous[type], name },
+    }))
+    setEditingDefaultFieldName(null)
     sync()
   }
 
@@ -1207,6 +1523,206 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             : menuTask.assigneeId
     : null
 
+  const renderDefaultOptions = (type: TaskOptionType, options: TaskOption[]) => (
+    <div
+      className="rounded-xl border p-3"
+      style={{ borderColor: 'var(--dv-border)', background: 'var(--dv-panel-2)' }}
+    >
+      <div className="flex min-h-8 items-center justify-between gap-2">
+        {editingDefaultFieldName?.type === type ? (
+          <form
+            className="flex min-w-0 flex-1 items-center gap-1.5"
+            onSubmit={(e) => {
+              e.preventDefault()
+              saveDefaultFieldName()
+            }}
+          >
+            <input
+              autoFocus
+              className="dv-input !h-8 min-w-0 flex-1"
+              aria-label={`Edit ${type} category name`}
+              maxLength={LIMITS.optionLabel}
+              value={editingDefaultFieldName.name}
+              onChange={(e) =>
+                setEditingDefaultFieldName({ ...editingDefaultFieldName, name: e.target.value })
+              }
+            />
+            <button
+              className="dv-btn primary !h-8"
+              disabled={!editingDefaultFieldName.name.trim()}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="dv-btn !h-8"
+              onClick={() => setEditingDefaultFieldName(null)}
+            >
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <button
+            type="button"
+            className="group flex min-w-0 items-center gap-1.5 text-left"
+              title={`Edit ${defaultFieldConfig[type].name} category`}
+            onClick={() =>
+                setEditingDefaultFieldName({ type, name: defaultFieldConfig[type].name })
+            }
+          >
+              <h3 className="m-0 truncate text-sm font-semibold">{defaultFieldConfig[type].name}</h3>
+            <Pencil
+              size={12}
+              className="shrink-0 opacity-50 group-hover:opacity-100"
+              aria-hidden
+            />
+          </button>
+        )}
+        <div className="flex items-center gap-1">
+          <button
+            className="dv-btn !h-7"
+            onClick={() =>
+              setNewFieldOption({ fieldId: '', type, label: '', color: '#3b82f6' })
+            }
+          >
+            <Plus size={13} />
+            Add status
+          </button>
+          <button
+            type="button"
+            className="dv-iconbtn danger !h-7 !w-7"
+            title={`Delete ${defaultFieldConfig[type].name}`}
+            aria-label={`Delete ${defaultFieldConfig[type].name}`}
+            onClick={() => setDefaultFieldToRemove(type)}
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {options.map((option) =>
+          editingDefaultOption?.type === type && editingDefaultOption.value === option.value ? (
+            <form
+              key={option.value}
+              className="flex items-center gap-1"
+              onSubmit={(e) => {
+                e.preventDefault()
+                saveDefaultOption()
+              }}
+            >
+              <input
+                autoFocus
+                className="dv-input !h-7 w-32"
+                aria-label={`Edit ${option.label} ${type} name`}
+                maxLength={LIMITS.optionLabel}
+                value={editingDefaultOption.label}
+                onChange={(e) =>
+                  setEditingDefaultOption({ ...editingDefaultOption, label: e.target.value })
+                }
+              />
+              <input
+                type="color"
+                aria-label={`${option.label} ${type} color`}
+                value={editingDefaultOption.color}
+                onChange={(e) =>
+                  setEditingDefaultOption({ ...editingDefaultOption, color: e.target.value })
+                }
+                className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent"
+              />
+              <button className="dv-btn primary !h-7" disabled={!editingDefaultOption.label.trim()}>
+                Save
+              </button>
+              <button
+                type="button"
+                className="dv-btn !h-7"
+                onClick={() => setEditingDefaultOption(null)}
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <span key={option.value} className="dv-chip" style={badgeStyle(option.color)}>
+              <span className="dv-dot" style={{ background: option.color }} />
+              {option.label}
+              {defaultFieldConfig[type].defaultValue === option.value && (
+                <span className="ml-1 text-[10px]">Default</span>
+              )}
+              <button
+                type="button"
+                className="ml-1 opacity-60 hover:opacity-100"
+                title={`Edit ${option.label}`}
+                aria-label={`Edit ${option.label} ${type}`}
+                onClick={() =>
+                  setEditingDefaultOption({
+                    type,
+                    value: option.value,
+                    label: option.label,
+                    color: option.color,
+                  })
+                }
+              >
+                <Pencil size={10} />
+              </button>
+            </span>
+          ),
+        )}
+      </div>
+      <label
+        className="mt-3 flex items-center gap-2 text-xs font-medium"
+        style={{ color: 'var(--dv-muted)' }}
+      >
+        Default status
+        <select
+          className="dv-input min-w-0 flex-1"
+          aria-label={`${defaultFieldConfig[type].name} default status`}
+          value={defaultFieldConfig[type].defaultValue}
+          onChange={(e) => setDefaultFieldValue(type, e.target.value)}
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {newFieldOption?.type === type && (
+        <form
+          className="mt-3 flex flex-wrap items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            addCustomFieldOption()
+          }}
+        >
+          <input
+            autoFocus
+            className="dv-input min-w-0 flex-1"
+            aria-label={`${defaultFieldConfig[type].name} status name`}
+            placeholder="Status name"
+            maxLength={LIMITS.optionLabel}
+            value={newFieldOption.label}
+            onChange={(e) => setNewFieldOption({ ...newFieldOption, label: e.target.value })}
+          />
+          <label className="flex items-center gap-1 text-xs" style={{ color: 'var(--dv-muted)' }}>
+            Color
+            <input
+              type="color"
+              aria-label={`${defaultFieldConfig[type].name} status color`}
+              value={newFieldOption.color}
+              onChange={(e) => setNewFieldOption({ ...newFieldOption, color: e.target.value })}
+              className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent"
+            />
+          </label>
+          <button className="dv-btn primary" disabled={!newFieldOption.label.trim()}>
+            Create
+          </button>
+          <button type="button" className="dv-btn" onClick={() => setNewFieldOption(null)}>
+            Cancel
+          </button>
+        </form>
+      )}
+    </div>
+  )
+
   return (
     <div
       className="flex h-full min-h-0 flex-col"
@@ -1497,7 +2013,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                       >
                         <span
                           className="dv-card-bar"
-                          style={{ background: urgency.color }}
+                          style={{
+                            background: defaultFieldConfig.urgency.deleted
+                              ? 'var(--dv-border)'
+                              : urgency.color,
+                          }}
                           title={`Urgency: ${urgency.label}`}
                         />
                         {isEditing ? (
@@ -1673,23 +2193,27 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               </p>
                             )}
                             <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                              <button
-                                className="dv-chip"
-                                style={badgeStyle(status.color)}
-                                title="Change status"
-                                onClick={(e) => openMenu(e, 'status', task.id, cat.id)}
-                              >
-                                <span className="dv-dot" style={{ background: status.color }} />
-                                {status.label}
-                              </button>
-                              <button
-                                className="dv-chip"
-                                style={badgeStyle(urgency.color)}
-                                title="Change urgency"
-                                onClick={(e) => openMenu(e, 'urgency', task.id, cat.id)}
-                              >
-                                {urgency.label}
-                              </button>
+                              {!defaultFieldConfig.status.deleted && (
+                                <button
+                                  className="dv-chip"
+                                  style={badgeStyle(status.color)}
+                                  title={`Change ${defaultFieldConfig.status.name}`}
+                                  onClick={(e) => openMenu(e, 'status', task.id, cat.id)}
+                                >
+                                  <span className="dv-dot" style={{ background: status.color }} />
+                                  {status.label}
+                                </button>
+                              )}
+                              {!defaultFieldConfig.urgency.deleted && (
+                                <button
+                                  className="dv-chip"
+                                  style={badgeStyle(urgency.color)}
+                                  title={`Change ${defaultFieldConfig.urgency.name}`}
+                                  onClick={(e) => openMenu(e, 'urgency', task.id, cat.id)}
+                                >
+                                  {urgency.label}
+                                </button>
+                              )}
                               {customFields
                                 .filter((field) => field.defaultValue)
                                 .map((field) => {
@@ -1768,13 +2292,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                 {assignee?.name ?? 'Assign'}
                               </button>
                               <div className="dv-actions ml-auto flex items-center">
-                                <button
-                                  className="dv-iconbtn !h-6 !w-6"
-                                  title="Attach files"
-                                  onClick={() => pickFiles(task.id)}
-                                >
-                                  <Paperclip size={13} />
-                                </button>
                                 <button
                                   className="dv-iconbtn !h-6 !w-6"
                                   title={links.has(task.id) ? 'Focus on canvas' : 'Send to canvas'}
@@ -1961,7 +2478,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   Kanban settings
                 </h2>
                 <p className="mt-1 text-xs" style={{ color: 'var(--dv-muted)' }}>
-                  Add custom task categories, their statuses, and a default status for each.
+                  Manage categories and edit their statuses, colors, and defaults.
                 </p>
               </div>
               <button
@@ -1995,6 +2512,20 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             </form>
 
             <div className="dv-scroll flex max-h-[45vh] flex-col gap-3 overflow-y-auto">
+              {(['status', 'urgency'] as const).map((type) =>
+                defaultFieldConfig[type].deleted ? (
+                  <button
+                    key={type}
+                    className="dv-btn self-start"
+                    onClick={() => restoreDefaultField(type)}
+                  >
+                    <Plus size={13} />
+                    Restore {defaultFieldConfig[type].name}
+                  </button>
+                ) : (
+                  <div key={type}>{renderDefaultOptions(type, type === 'status' ? statusOptions : urgencyOptions)}</div>
+                ),
+              )}
               {customFields.map((field) => (
                 <div
                   key={field.id}
@@ -2002,7 +2533,50 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   style={{ borderColor: 'var(--dv-border)', background: 'var(--dv-panel-2)' }}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <h3 className="m-0 text-sm font-semibold">{field.name}</h3>
+                    {editingFieldName?.id === field.id ? (
+                      <form
+                        className="flex min-w-0 flex-1 items-center gap-1.5"
+                        onSubmit={(e) => {
+                          e.preventDefault()
+                          saveCustomFieldName()
+                        }}
+                      >
+                        <input
+                          autoFocus
+                          className="dv-input !h-8"
+                          aria-label="Edit category name"
+                          maxLength={LIMITS.optionLabel}
+                          value={editingFieldName.name}
+                          onChange={(e) =>
+                            setEditingFieldName({ ...editingFieldName, name: e.target.value })
+                          }
+                        />
+                        <button className="dv-btn primary !h-8" disabled={!editingFieldName.name.trim()}>
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="dv-btn !h-8"
+                          onClick={() => setEditingFieldName(null)}
+                        >
+                          Cancel
+                        </button>
+                      </form>
+                    ) : (
+                      <button
+                        type="button"
+                        className="group flex min-w-0 items-center gap-1.5 text-left"
+                        title={`Edit ${field.name}`}
+                        onClick={() => setEditingFieldName({ id: field.id, name: field.name })}
+                      >
+                        <h3 className="m-0 truncate text-sm font-semibold">{field.name}</h3>
+                        <Pencil
+                          size={12}
+                          className="shrink-0 opacity-50 group-hover:opacity-100"
+                          aria-hidden
+                        />
+                      </button>
+                    )}
                     <div className="flex items-center gap-1">
                       <button
                         className="dv-btn !h-7"
@@ -2024,15 +2598,85 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                     </div>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-1.5">
-                    {field.options.map((option) => (
-                      <span key={option.id} className="dv-chip" style={badgeStyle(option.color)}>
-                        <span className="dv-dot" style={{ background: option.color }} />
-                        {option.label}
-                        {(field.defaultValue ?? field.options[0]?.value) === option.value && (
-                          <span className="ml-1 text-[10px]">Default</span>
-                        )}
-                      </span>
-                    ))}
+                    {field.options.map((option) =>
+                      editingOptionLabel?.optionId === option.id ? (
+                        <form
+                          key={option.id}
+                          className="flex items-center gap-1"
+                          onSubmit={(e) => {
+                            e.preventDefault()
+                            saveCustomOptionLabel()
+                          }}
+                        >
+                          <input
+                            autoFocus
+                            className="dv-input !h-7 w-32"
+                            aria-label="Edit status name"
+                            maxLength={LIMITS.optionLabel}
+                            value={editingOptionLabel.label}
+                            onChange={(e) =>
+                              setEditingOptionLabel({
+                                ...editingOptionLabel,
+                                label: e.target.value,
+                              })
+                            }
+                          />
+                            <input
+                              type="color"
+                              aria-label={`${option.label} status color`}
+                              value={editingOptionLabel.color}
+                              onChange={(e) =>
+                                setEditingOptionLabel({
+                                  ...editingOptionLabel,
+                                  color: e.target.value,
+                                })
+                              }
+                              className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent"
+                            />
+                          <button
+                            className="dv-btn primary !h-7"
+                            disabled={!editingOptionLabel.label.trim()}
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            className="dv-btn !h-7"
+                            onClick={() => setEditingOptionLabel(null)}
+                          >
+                            Cancel
+                          </button>
+                        </form>
+                      ) : (
+                        <span
+                          key={option.id}
+                          className="dv-chip"
+                          style={badgeStyle(option.color)}
+                        >
+                          <span className="dv-dot" style={{ background: option.color }} />
+                          {option.label}
+                          {(field.defaultValue ?? field.options[0]?.value) === option.value && (
+                            <span className="ml-1 text-[10px]">Default</span>
+                          )}
+                          <button
+                            type="button"
+                            className="ml-1 opacity-60 hover:opacity-100"
+                            title={`Edit ${option.label}`}
+                            aria-label={`Edit ${option.label} status`}
+                            onClick={() =>
+                              setEditingOptionLabel({
+                                fieldId: field.id,
+                                optionId: option.id,
+                                label: option.label,
+                                color: option.color,
+                              })
+                            }
+                          >
+                            <Pencil size={10} />
+                          </button>
+                        </span>
+                      ),
+                    )}
                     {field.options.length === 0 && (
                       <span className="text-xs" style={{ color: 'var(--dv-muted)' }}>
                         Add a status before assigning this category to tasks.
@@ -2158,6 +2802,43 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         </div>
       )}
 
+      {defaultFieldToRemove && (
+        <div
+          className="dv-modal-backdrop z-[80]"
+          onPointerDown={(e) => {
+            if (e.target === e.currentTarget) setDefaultFieldToRemove(null)
+          }}
+        >
+          <section
+            className="dv-floating dv-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="remove-default-category-title"
+          >
+            <div>
+              <h2 id="remove-default-category-title" className="m-0 text-lg font-semibold">
+                Remove category?
+              </h2>
+              <p className="mt-2 text-sm" style={{ color: 'var(--dv-muted)' }}>
+                Remove “{defaultFieldConfig[defaultFieldToRemove].name}” from task cards? Its task
+                values will be kept if you restore the category later.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className="dv-btn" onClick={() => setDefaultFieldToRemove(null)}>
+                Cancel
+              </button>
+              <button
+                className="dv-btn danger"
+                onClick={() => removeDefaultField(defaultFieldToRemove)}
+              >
+                Remove category
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {/* Task fields menu (fixed so column scrolling can't clip it) */}
       {menu && (
         <>
@@ -2245,9 +2926,9 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   style={{ color: 'var(--dv-muted)' }}
                 >
                   {menu.kind === 'status'
-                    ? 'Set status'
+                    ? `Set ${defaultFieldConfig.status.name.toLowerCase()}`
                     : menu.kind === 'urgency'
-                      ? 'Set urgency'
+                      ? `Set ${defaultFieldConfig.urgency.name.toLowerCase()}`
                       : customFields.find((field) => field.id === menu.fieldId)?.name}
                 </div>
                 {menuOptions.map((o) => (
