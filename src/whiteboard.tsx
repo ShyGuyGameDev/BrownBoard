@@ -1079,7 +1079,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         ctx.beginPath()
         ctx.roundRect(b.minX, b.minY, w, h, 10)
         ctx.clip()
-        ctx.fillStyle = urg?.color ?? pal.border
+        ctx.fillStyle = (task && taskRef.current.barColor(task)) ?? pal.border
         ctx.fillRect(b.minX, b.minY, 5, h)
         ctx.restore()
         const layout = layoutTaskCard(el, w)
@@ -2487,6 +2487,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     taskData.statusOpt,
     taskData.urgencyOpt,
     taskData.isDone,
+    taskData.barColor,
     peers,
     requestDraw,
   ])

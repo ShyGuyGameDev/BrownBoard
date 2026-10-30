@@ -7,6 +7,7 @@ import {
   CircleCheck,
   Crosshair,
   ListFilter,
+  Palette,
   GripVertical,
   Pencil,
   PenTool,
@@ -56,7 +57,8 @@ import {
 import { ArchivePanel } from './archive-panel'
 import { takePendingCard } from './notifications'
 import {
-  DEFAULT_DONE,
+  type BoardSettings,
+  DEFAULT_BOARD_SETTINGS,
   DEFAULT_STATUS,
   DEFAULT_URGENCY,
   type DoneRule,
@@ -67,7 +69,7 @@ import {
   isTaskDone,
   readCustomFields,
   resolveOption,
-  rowToDoneRule,
+  readBoardSettings,
   rowToOption,
   slugify,
   splitCustom,
@@ -182,12 +184,16 @@ const mapTask = (t: DbTask): Task => ({
 })
 
 /** Done tasks sink to the bottom of their list; order is otherwise kept. */
-const sinkDone = (tasks: Task[], rule: DoneRule): Task[] => [
-  ...tasks.filter((t) => !isTaskDone(rule, t)),
-  ...tasks.filter((t) => isTaskDone(rule, t)),
+const sinkDone = (tasks: Task[], crossoffs: DoneRule[]): Task[] => [
+  ...tasks.filter((t) => !isTaskDone(crossoffs, t)),
+  ...tasks.filter((t) => isTaskDone(crossoffs, t)),
 ]
 
-const buildBoard = (categories: DbCategory[], tasks: DbTask[], rule: DoneRule): Category[] => {
+const buildBoard = (
+  categories: DbCategory[],
+  tasks: DbTask[],
+  crossoffs: DoneRule[],
+): Category[] => {
   const cats = categories
     .filter((c) => !c.archived_at)
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
@@ -201,7 +207,7 @@ const buildBoard = (categories: DbCategory[], tasks: DbTask[], rule: DoneRule): 
     id: c.id,
     name: c.name,
     position: c.position ?? 0,
-    tasks: sinkDone(buckets.get(c.id) ?? [], rule),
+    tasks: sinkDone(buckets.get(c.id) ?? [], crossoffs),
   }))
 }
 
@@ -275,11 +281,14 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const userIdRef = useRef(userId)
   userIdRef.current = userId
   useEffect(() => saveFilters(roomId, filters), [roomId, filters])
-  const [doneRule, setDoneRule] = useState<DoneRule>(DEFAULT_DONE)
-  const doneRuleRef = useRef(doneRule)
-  doneRuleRef.current = doneRule
-  /** The "Marks done" status picker in settings, for one category. */
+  const [boardSettings, setBoardSettings] = useState<BoardSettings>(DEFAULT_BOARD_SETTINGS)
+  const crossoffs = boardSettings.crossoffs
+  const crossoffsRef = useRef(crossoffs)
+  crossoffsRef.current = crossoffs
+  /** The Crossoff status picker in settings, for one category. */
   const [doneMenu, setDoneMenu] = useState<{ field: string; x: number; y: number } | null>(null)
+  /** The "Color" picker in settings: which category colours the card stripe. */
+  const [colorMenu, setColorMenu] = useState<{ x: number; y: number } | null>(null)
 
   const [customStatus, setCustomStatus] = useState<TaskOption[]>(DEFAULT_STATUS)
   const [customUrgency, setCustomUrgency] = useState<TaskOption[]>(DEFAULT_URGENCY)
@@ -479,9 +488,9 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       }
       setError(null)
       // Missing table (migration not run yet) or no row yet: Status / Completed.
-      const rule = bs.error ? DEFAULT_DONE : rowToDoneRule(bs.data)
-      setDoneRule(rule)
-      setCategories(buildBoard(c.data || [], t.data || [], rule))
+      const settings = bs.error ? DEFAULT_BOARD_SETTINGS : readBoardSettings(bs.data)
+      setBoardSettings(settings)
+      setCategories(buildBoard(c.data || [], t.data || [], settings.crossoffs))
       setArchived({
         lists: (c.data || []).filter((x) => x.archived_at),
         tasks: (t.data || []).filter((x) => x.archived_at),
@@ -684,30 +693,64 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     return f?.defaultValue ?? f?.options[0]?.value ?? null
   }
 
-  /** Sets which category + status marks a card done, and re-sorts every list to match. */
-  const saveDoneRule = async (rule: DoneRule) => {
+  /**
+   * Sets (or with null, turns off) one category's Crossoff status and re-sorts every list to
+   * match. Each category has at most one; a card is crossed off when any of them matches.
+   */
+  const saveCrossoff = async (field: string, value: string | null) => {
     setDoneMenu(null)
-    if (rule.field === doneRule.field && rule.value === doneRule.value) return
-    const prevRule = doneRule
-    setDoneRule(rule)
-    doneRuleRef.current = rule
+    const current = crossoffs.find((r) => r.field === field)?.value ?? null
+    if (current === value) return
+    const next = [
+      ...crossoffs.filter((r) => r.field !== field),
+      ...(value ? [{ field, value }] : []),
+    ]
+    const prevSettings = boardSettings
+    setBoardSettings({ ...boardSettings, crossoffs: next })
+    crossoffsRef.current = next
     const prev = categoriesRef.current
-    const next = prev.map((c) => ({
+    const sorted = prev.map((c) => ({
       ...c,
-      tasks: sinkDone(c.tasks, rule).map((t, i) => ({ ...t, position: i })),
+      tasks: sinkDone(c.tasks, next).map((t, i) => ({ ...t, position: i })),
     }))
-    setCategories(next)
+    setCategories(sorted)
     const { error: err } = await supabase
       .from('task_board_settings')
-      .upsert({ room_id: roomId, done_field: rule.field, done_value: rule.value })
+      .upsert({ room_id: roomId, crossoffs: next })
     if (err) {
-      setDoneRule(prevRule)
-      doneRuleRef.current = prevRule
+      setBoardSettings(prevSettings)
+      crossoffsRef.current = prevSettings.crossoffs
       setCategories(prev)
       return fail(err.message)
     }
-    savePositions(prev, next)
+    savePositions(prev, sorted)
     sync()
+  }
+
+  /** Which category colours the stripe on the left of each card (null = none). */
+  const saveColorField = async (field: string | null) => {
+    setColorMenu(null)
+    if (field === boardSettings.colorField) return
+    const prevSettings = boardSettings
+    setBoardSettings({ ...boardSettings, colorField: field })
+    const { error: err } = await supabase
+      .from('task_board_settings')
+      .upsert({ room_id: roomId, color_field: field })
+    if (err) {
+      setBoardSettings(prevSettings)
+      return fail(err.message)
+    }
+    sync()
+  }
+
+  /** The stripe colour for a card, from the chosen category; null when it isn't on the card. */
+  const barColorOf = (task: Task): string | null => {
+    const field = boardSettings.colorField
+    if (!field) return null
+    const value = categoryValue(task, field)
+    if (value === null) return null
+    const f = boardFields().find((x) => x.field === field)
+    return f ? resolveOption(f.options, value, 'status').color : null
   }
 
   // ---------- tasks ----------
@@ -717,15 +760,22 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (!title) return
     const cat = categories.find((c) => c.id === categoryId)
     const position = cat ? cat.tasks.length : 0
-    // New cards start with just the category that marks them done, at its default.
-    const start = defaultValueOf(doneRule.field)
-    const customValues: Record<string, string> =
-      start && isCustomField(doneRule.field) ? { [doneRule.field]: start } : {}
+    // New cards start with just the Crossoff categories, each at its default.
+    const start = (field: string) =>
+      crossoffs.some((r) => r.field === field) ? defaultValueOf(field) : null
+    const customValues: Record<string, string> = Object.fromEntries(
+      crossoffs
+        .filter((r) => isCustomField(r.field))
+        .flatMap((r) => {
+          const v = defaultValueOf(r.field)
+          return v ? [[r.field, v]] : []
+        }),
+    )
     setNewTaskInputs((prev) => ({ ...prev, [categoryId]: '' }))
     const row = {
       title,
-      status: doneRule.field === 'status' ? start : null,
-      urgency: doneRule.field === 'urgency' ? start : null,
+      status: start('status'),
+      urgency: start('urgency'),
       category_id: categoryId,
       position,
       room_id: roomId,
@@ -749,7 +799,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       const mapped = mapTask(data)
       setCategories((prev) =>
         prev.map((c) =>
-          c.id === categoryId ? { ...c, tasks: sinkDone([...c.tasks, mapped], doneRule) } : c,
+          c.id === categoryId ? { ...c, tasks: sinkDone([...c.tasks, mapped], crossoffs) } : c,
         ),
       )
       sync()
@@ -784,7 +834,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       if (!resort) return { ...c, tasks }
       return {
         ...c,
-        tasks: sinkDone(tasks, doneRuleRef.current).map((t, i) => ({ ...t, position: i })),
+        tasks: sinkDone(tasks, crossoffsRef.current).map((t, i) => ({ ...t, position: i })),
       }
     })
     setCategories(next)
@@ -932,6 +982,19 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     } else sync()
   }
 
+  const setOpenCardCommentCount = useCallback(
+    (count: number) => {
+      if (!openCardId) return
+      setCommentCounts((prev) => {
+        if ((prev.get(openCardId) ?? 0) === count) return prev
+        const next = new Map(prev)
+        next.set(openCardId, count)
+        return next
+      })
+    },
+    [openCardId],
+  )
+
   const toggleWatch = async (taskId: string) => {
     if (!userId) return
     const on = watched.has(taskId)
@@ -1064,10 +1127,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     sync()
   }
 
-  /** The category that marks cards done can't go: cards would stay done with nothing showing why. */
+  /** A category with a Crossoff can't go: cards would stay crossed off with nothing showing why. */
   const blockIfDoneField = (field: string, name: string) => {
-    if (doneRule.field !== field) return false
-    toast(`“${name}” is the Crossoff category. Set Crossoff on another category first.`)
+    if (!crossoffs.some((r) => r.field === field)) return false
+    toast(`“${name}” has a Crossoff. Turn its Crossoff off first.`)
     return true
   }
 
@@ -1389,10 +1452,13 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       return toast(`“${option.label}” is the default status. Choose another default first.`)
     }
     if (
-      doneRule.field === (isDefaultField ? category : category.id) &&
-      doneRule.value === option.value
+      crossoffs.some(
+        (r) => r.field === (isDefaultField ? category : category.id) && r.value === option.value,
+      )
     ) {
-      return toast(`“${option.label}” is the Crossoff status. Pick another Crossoff status first.`)
+      return toast(
+        `“${option.label}” is a Crossoff status. Pick another or turn the Crossoff off first.`,
+      )
     }
 
     if (isDefaultField && (category === 'status' ? statusOptions : urgencyOptions).length <= 1) {
@@ -1599,7 +1665,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       if (c.id === target.cat) tasks.splice(index, 0, { ...task, categoryId: target.cat })
       return {
         ...c,
-        tasks: sinkDone(tasks, doneRuleRef.current).map((t, i) => ({ ...t, position: i })),
+        tasks: sinkDone(tasks, crossoffsRef.current).map((t, i) => ({ ...t, position: i })),
       }
     })
     setCategories(next)
@@ -1845,11 +1911,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     })
   const matches = (t: Task) =>
     matchesQuery(t) &&
-    matchesFilters(filters, t, isTaskDone(doneRule, t), (field) => categoryValue(t, field))
+    matchesFilters(filters, t, isTaskDone(crossoffs, t), (field) => categoryValue(t, field))
   const totals = useMemo(() => {
     const all = categories.flatMap((c) => c.tasks)
-    return { all: all.length, done: all.filter((t) => isTaskDone(doneRule, t)).length }
-  }, [categories, doneRule])
+    return { all: all.length, done: all.filter((t) => isTaskDone(crossoffs, t)).length }
+  }, [categories, crossoffs])
 
   // ---------- render ----------
 
@@ -1895,9 +1961,9 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             : null
     : null
 
-  /** "Crossoff": opens the list of this category's statuses; the one picked marks cards done. */
+  /** "Crossoff": opens the list of this category's statuses; the one picked crosses cards off. */
   const renderDoneButton = (field: string, name: string, options: { value: string }[]) => {
-    const active = doneRule.field === field
+    const active = crossoffs.some((r) => r.field === field)
     return (
       <button
         type="button"
@@ -1908,8 +1974,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         aria-pressed={active}
         title={
           active
-            ? `${name} decides when a card is done. Click to change the status.`
-            : `Make ${name} decide when a card is done`
+            ? `${name} has a Crossoff. Click to change or turn it off.`
+            : `Cross off cards when ${name} is set to a status you pick`
         }
         onClick={(e) => {
           const r = e.currentTarget.getBoundingClientRect()
@@ -1927,10 +1993,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     )
   }
 
-  /** Under the Crossoff category: which of its statuses greys out and crosses off a card. */
+  /** Under a category with a Crossoff: which of its statuses greys out and crosses off a card. */
   const renderDoneNote = (field: string, options: TaskOption[]) => {
-    if (doneRule.field !== field) return null
-    const option = options.find((o) => o.value === doneRule.value)
+    const rule = crossoffs.find((r) => r.field === field)
+    if (!rule) return null
+    const option = options.find((o) => o.value === rule.value)
     return (
       <p className="dv-done-note">
         <CircleCheck size={13} aria-hidden />
@@ -2393,7 +2460,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                     task.urgency && !defaultFieldConfig.urgency.deleted
                       ? resolveOption(urgencyOptions, task.urgency, 'urgency')
                       : null
-                  const done = isTaskDone(doneRule, task)
+                  const done = isTaskDone(crossoffs, task)
+                  const barColor = barColorOf(task)
                   const due = task.dueDate ? dueState(task.dueDate, done) : null
                   const cardLabels = task.labelIds
                     .map((id) => labelsById.get(id))
@@ -2520,12 +2588,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                       >
                         <span
                           className="dv-card-bar"
-                          style={{ background: urgency?.color ?? 'var(--dv-border)' }}
-                          title={
-                            urgency
-                              ? `${defaultFieldConfig.urgency.name}: ${urgency.label}`
-                              : undefined
-                          }
+                          style={{ background: barColor ?? 'var(--dv-border)' }}
                         />
                         <div className="dv-actions dv-card-float">
                           <button
@@ -2879,6 +2942,35 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                 onClick={() => setSettingsOpen(false)}
               >
                 <X size={14} />
+              </button>
+            </div>
+
+            <div className="dv-settings-row">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">Card color</div>
+                <div className="text-xs" style={{ color: 'var(--dv-muted)' }}>
+                  The stripe on the left of each card takes the color of this category’s status.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="dv-btn shrink-0"
+                aria-haspopup="menu"
+                aria-expanded={!!colorMenu}
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect()
+                  setColorMenu({
+                    x: Math.min(r.right - 248, window.innerWidth - 256),
+                    y: Math.min(r.bottom + 4, window.innerHeight - 320),
+                  })
+                }}
+              >
+                <Palette size={14} />
+                Color
+                <span className="dv-color-current">
+                  {boardFields().find((f) => f.field === boardSettings.colorField)?.name ?? 'None'}
+                </span>
+                <ChevronDown size={12} aria-hidden />
               </button>
             </div>
 
@@ -3252,13 +3344,14 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           key={openCard.task.id}
           task={openCard.task}
           listName={openCard.list}
-          done={isTaskDone(doneRule, openCard.task)}
-          doneRule={doneRule}
+          done={isTaskDone(crossoffs, openCard.task)}
+          crossoffs={crossoffs}
           fields={boardFields()}
           defaultValueOf={defaultValueOf}
           labels={labels}
           people={assignees}
           userId={userId}
+          authorId={user?.id ?? null}
           watching={watched.has(openCard.task.id)}
           onToggleWatch={() => toggleWatch(openCard.task.id)}
           onPatch={(patch) => patchTask(openCard.task.id, patch)}
@@ -3276,6 +3369,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           onCreateLabel={createLabel}
           onUpdateLabel={updateLabel}
           onDeleteLabel={deleteLabel}
+          onCommentCount={setOpenCardCommentCount}
           onClose={() => setOpenCardId(null)}
         />
       )}
@@ -3324,12 +3418,68 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
               people={assignees}
               userId={userId}
               fields={boardFields()}
-              doneLabel={(() => {
-                const f = boardFields().find((x) => x.field === doneRule.field)
-                const o = f?.options.find((x) => x.value === doneRule.value)
-                return f && o ? `${f.name}: ${o.label}` : ''
-              })()}
+              doneLabel={crossoffs
+                .map((r) => {
+                  const f = boardFields().find((x) => x.field === r.field)
+                  const o = f?.options.find((x) => x.value === r.value)
+                  return f && o ? o.label : ''
+                })
+                .filter(Boolean)
+                .join(', ')}
             />
+          </div>
+        </>
+      )}
+
+      {/* "Color" picker: which category colours the card stripe (above the settings dialog) */}
+      {colorMenu && (
+        <>
+          <div className="fixed inset-0 z-[90]" onPointerDown={() => setColorMenu(null)} />
+          <div
+            className="dv-menu fixed z-[91]"
+            role="menu"
+            aria-label="Card color"
+            style={{ left: colorMenu.x, top: colorMenu.y, width: 248 }}
+          >
+            <div className="dv-menu-head">Color each card’s stripe by…</div>
+            {boardFields().map((f) => {
+              const current = boardSettings.colorField === f.field
+              return (
+                <button
+                  key={f.field}
+                  role="menuitemradio"
+                  aria-checked={current}
+                  className="dv-menu-item"
+                  data-selected={current}
+                  onClick={() => saveColorField(f.field)}
+                >
+                  <span className="dv-color-preview" aria-hidden>
+                    {f.options.slice(0, 5).map((o) => (
+                      <span key={o.value} style={{ background: o.color }} />
+                    ))}
+                  </span>
+                  <span className="flex-1 truncate">{f.name}</span>
+                  {current && <Check size={14} />}
+                </button>
+              )
+            })}
+            <div className="dv-menu-sep" />
+            <button
+              role="menuitemradio"
+              aria-checked={boardSettings.colorField === null}
+              className="dv-menu-item"
+              data-selected={boardSettings.colorField === null}
+              onClick={() => saveColorField(null)}
+            >
+              <span className="dv-color-preview" aria-hidden>
+                <span style={{ background: 'var(--dv-border)' }} />
+              </span>
+              <span className="flex-1">None</span>
+              {boardSettings.colorField === null && <Check size={14} />}
+            </button>
+            <p className="m-0 px-2 pb-1.5 pt-1 text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+              Cards without that category get a plain stripe.
+            </p>
           </div>
         </>
       )}
@@ -3353,28 +3503,52 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                 >
                   Cross off cards when {field.name} is…
                 </div>
-                {field.options.map((o) => {
-                  const current = doneRule.field === field.field && doneRule.value === o.value
+                {(() => {
+                  const currentValue = crossoffs.find((r) => r.field === field.field)?.value ?? null
                   return (
-                    <button
-                      key={o.value}
-                      role="menuitemradio"
-                      aria-checked={current}
-                      className="dv-menu-item"
-                      data-selected={current}
-                      onClick={() => saveDoneRule({ field: field.field, value: o.value })}
-                    >
-                      <span className="dv-dot" style={{ background: o.color }} />
-                      <span className="flex-1 truncate">{o.label}</span>
-                      {current && <CircleCheck size={14} style={{ color: 'var(--dv-accent)' }} />}
-                    </button>
+                    <>
+                      {field.options.map((o) => {
+                        const current = currentValue === o.value
+                        return (
+                          <button
+                            key={o.value}
+                            role="menuitemradio"
+                            aria-checked={current}
+                            className="dv-menu-item"
+                            data-selected={current}
+                            onClick={() => saveCrossoff(field.field, o.value)}
+                          >
+                            <span className="dv-dot" style={{ background: o.color }} />
+                            <span className="flex-1 truncate">{o.label}</span>
+                            {current && (
+                              <CircleCheck size={14} style={{ color: 'var(--dv-accent)' }} />
+                            )}
+                          </button>
+                        )
+                      })}
+                      {currentValue !== null && (
+                        <>
+                          <div className="dv-menu-sep" />
+                          <button
+                            className="dv-menu-item"
+                            role="menuitemradio"
+                            aria-checked={false}
+                            onClick={() => saveCrossoff(field.field, null)}
+                          >
+                            <X size={14} />
+                            No Crossoff for {field.name}
+                          </button>
+                        </>
+                      )}
+                    </>
                   )
-                })}
+                })()}
                 <p
                   className="m-0 px-2 pb-1.5 pt-1 text-[11px]"
                   style={{ color: 'var(--dv-muted)' }}
                 >
-                  Only one category can be the Crossoff at a time.
+                  Each category can have its own Crossoff. A card is crossed off when any of them
+                  matches.
                 </p>
               </div>
             </>

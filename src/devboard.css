@@ -2408,3 +2408,38 @@ body.dv-grabbing * {
   outline: 2px solid var(--dv-danger);
   outline-offset: 2px;
 }
+
+/* ---------- Kanban settings: card color ---------- */
+.dv-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--dv-border);
+  border-radius: var(--dv-radius-xl);
+  background: var(--dv-panel-2);
+}
+.dv-color-current {
+  max-width: 140px;
+  padding: 1px 7px;
+  overflow: hidden;
+  border-radius: var(--dv-radius-full);
+  background: var(--dv-panel-2);
+  color: var(--dv-muted);
+  font-size: var(--dv-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A mini stripe of the category's colours, like the bar on a card. */
+.dv-color-preview {
+  display: inline-flex;
+  flex-direction: column;
+  width: 5px;
+  height: 20px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 3px;
+}
+.dv-color-preview > span {
+  flex: 1;
+}

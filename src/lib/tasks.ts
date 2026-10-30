@@ -4,15 +4,16 @@ import { type Attachment, taskFiles } from './files'
 import { useRoom } from './room'
 import { toast } from './bus'
 import {
-  DEFAULT_DONE,
+  type BoardSettings,
+  DEFAULT_BOARD_SETTINGS,
   DEFAULT_STATUS,
   DEFAULT_URGENCY,
-  type DoneRule,
   type TaskOption,
+  categoryValue,
   isTaskDone,
   readCustomFields,
   resolveOption,
-  rowToDoneRule,
+  readBoardSettings,
   splitCustom,
 } from './options.ts'
 
@@ -79,7 +80,9 @@ export function useRoomTasks() {
   const { roomId, on } = useRoom()
   const [list, setList] = useState<TaskLite[]>([])
   const [assignees, setAssignees] = useState<TaskAssignee[]>([])
-  const [doneRule, setDoneRule] = useState<DoneRule>(DEFAULT_DONE)
+  const [settings, setSettings] = useState<BoardSettings>(DEFAULT_BOARD_SETTINGS)
+  /** Custom category id → its statuses' colours, for the card stripe. */
+  const [customColors, setCustomColors] = useState<Map<string, Map<string, string>>>(new Map())
   const [fieldVisibility, setFieldVisibility] = useState({ status: true, urgency: true })
   const [custom, setCustom] = useState<{ status: TaskOption[]; urgency: TaskOption[] }>({
     status: DEFAULT_STATUS,
@@ -87,7 +90,7 @@ export function useRoomTasks() {
   })
 
   const load = useCallback(async () => {
-    const [t, o, fields, board] = await Promise.all([
+    const [t, o, fields, board, cf] = await Promise.all([
       supabase.from('tasks').select('*').eq('room_id', roomId),
       supabase
         .from('task_options')
@@ -99,9 +102,26 @@ export function useRoomTasks() {
         .select('field_type, is_deleted')
         .eq('room_id', roomId),
       supabase.from('task_board_settings').select('*').eq('room_id', roomId).maybeSingle(),
+      supabase
+        .from('task_custom_fields')
+        .select('id, task_custom_field_options(value, color)')
+        .eq('room_id', roomId),
     ])
-    // Missing table (migration not run yet) or no row: the default rule.
-    setDoneRule(board.error ? DEFAULT_DONE : rowToDoneRule(board.data))
+    // Missing table (migration not run yet) or no row: the defaults.
+    setSettings(board.error ? DEFAULT_BOARD_SETTINGS : readBoardSettings(board.data))
+    if (cf.data)
+      setCustomColors(
+        new Map(
+          cf.data.map((f) => [
+            f.id,
+            new Map(
+              ((f.task_custom_field_options ?? []) as { value: string; color: string }[]).map(
+                (o) => [o.value, o.color],
+              ),
+            ),
+          ]),
+        ),
+      )
     if (fields.error) toast(fields.error.message)
     else if (fields.data) {
       setFieldVisibility({
@@ -149,7 +169,27 @@ export function useRoomTasks() {
 
   const byId = useMemo(() => new Map(list.map((t) => [t.id, t])), [list])
   const statusOpt = useCallback((v: string) => resolveOption(custom.status, v, 'status'), [custom])
-  const isDone = useCallback((t: TaskLite) => isTaskDone(doneRule, t), [doneRule])
+  const isDone = useCallback(
+    (t: TaskLite) => isTaskDone(settings.crossoffs, t),
+    [settings.crossoffs],
+  )
+  /** The card stripe's colour (from the category chosen in board settings), or null for none. */
+  const barColor = useCallback(
+    (t: TaskLite): string | null => {
+      const field = settings.colorField
+      if (!field) return null
+      const value = categoryValue(t, field)
+      if (value === null) return null
+      if (field === 'status')
+        return fieldVisibility.status ? resolveOption(custom.status, value, 'status').color : null
+      if (field === 'urgency')
+        return fieldVisibility.urgency
+          ? resolveOption(custom.urgency, value, 'urgency').color
+          : null
+      return customColors.get(field)?.get(value) ?? null
+    },
+    [settings.colorField, custom, customColors, fieldVisibility],
+  )
   const urgencyOpt = useCallback(
     (v: string) => resolveOption(custom.urgency, v, 'urgency'),
     [custom],
@@ -161,6 +201,7 @@ export function useRoomTasks() {
     statusOpt,
     urgencyOpt,
     isDone,
+    barColor,
     assignees,
     statusEnabled: fieldVisibility.status,
     urgencyEnabled: fieldVisibility.urgency,

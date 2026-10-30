@@ -22,7 +22,7 @@ import {
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
 import { colorFor, useRoom } from './lib/room'
-import { toast, undoToast } from './lib/bus'
+import { isTyping, toast, undoToast } from './lib/bus'
 import { type Attachment, isImageFile } from './lib/files'
 import { LIMITS, cleanLine, cleanMultiline } from './lib/sanitize'
 import { type DoneRule, type TaskOption, badgeStyle, resolveOption } from './lib/options'
@@ -93,13 +93,16 @@ interface Props {
   task: CardTask
   listName: string
   done: boolean
-  doneRule: DoneRule
+  /** Category + status pairs that cross a card off (any one is enough). */
+  crossoffs: DoneRule[]
   fields: CardField[]
   defaultValueOf: (field: string) => string | null
   labels: Label[]
   people: TaskAssignee[]
   /** This viewer's account id; null for guests (who can't be members or watch). */
   userId: string | null
+  /** Who this viewer is when commenting: guests too, so they can edit their own comments. */
+  authorId: string | null
   watching: boolean
   onToggleWatch: () => void
   onPatch: (patch: CardPatch) => void
@@ -112,6 +115,8 @@ interface Props {
   onCreateLabel: (name: string, color: string) => Promise<Label | null>
   onUpdateLabel: (label: Label) => void
   onDeleteLabel: (label: Label) => void
+  /** The card's comment count changed (posted, deleted, or loaded with a teammate's new one). */
+  onCommentCount: (count: number) => void
   onClose: () => void
 }
 
@@ -154,6 +159,19 @@ export const CardDetail: React.FC<Props> = (props) => {
   useEffect(() => {
     dialogRef.current?.focus()
   }, [])
+
+  // Esc closes an open picker, then the card, wherever focus is (posting a comment, for one,
+  // leaves focus outside the dialog).
+  const popOpen = !!pop
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || isTyping(e)) return
+      if (popOpen) setPop(null)
+      else onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [popOpen, onClose])
 
   const openPop = (e: React.MouseEvent<HTMLElement>, p: Pop, width = 272) => {
     e.stopPropagation()
@@ -207,6 +225,12 @@ export const CardDetail: React.FC<Props> = (props) => {
   const [comments, setComments] = useState<Comment[]>([])
   const [activity, setActivity] = useState<Activity[]>([])
   const [feedError, setFeedError] = useState(false)
+  // Keep the badge on the card front in step with what's here; skipped until the first load.
+  const commentsLoaded = useRef(false)
+  const { onCommentCount } = props
+  useEffect(() => {
+    if (commentsLoaded.current) onCommentCount(comments.length)
+  }, [comments.length, onCommentCount])
   const [showDetails, setShowDetails] = useState(() => {
     try {
       return localStorage.getItem(SHOW_DETAILS_KEY) !== 'false'
@@ -230,7 +254,10 @@ export const CardDetail: React.FC<Props> = (props) => {
         .limit(100),
     ])
     setFeedError(!!(c.error || a.error))
-    if (c.data) setComments(c.data.map(rowToComment))
+    if (c.data) {
+      commentsLoaded.current = true
+      setComments(c.data.map(rowToComment))
+    }
     if (a.data) setActivity(a.data.map(rowToActivity))
   }, [task.id])
 
@@ -338,11 +365,13 @@ export const CardDetail: React.FC<Props> = (props) => {
         aria-modal="true"
         aria-labelledby="card-detail-title"
         onKeyDown={(e) => {
+          // Esc in a field just leaves it; closing is handled on the window (below).
           if (e.key !== 'Escape' || e.defaultPrevented) return
           const el = e.target as HTMLElement
-          if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return el.blur()
-          if (pop) return setPop(null)
-          onClose()
+          if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+            e.preventDefault()
+            el.blur()
+          }
         }}
         onPaste={(e) => {
           const files = [...e.clipboardData.files]
@@ -451,14 +480,18 @@ export const CardDetail: React.FC<Props> = (props) => {
                     <span className="truncate">{option.label}</span>
                     <ChevronDown size={11} aria-hidden />
                   </button>
-                  {props.doneRule.field === f.field && (
-                    <span
-                      className="dv-prop-done"
-                      title={`Setting ${f.name} to “${resolveOption(f.options, props.doneRule.value, 'status').label}” crosses this card off`}
-                    >
-                      <CircleCheck size={13} aria-hidden />
-                    </span>
-                  )}
+                  {(() => {
+                    const rule = props.crossoffs.find((r) => r.field === f.field)
+                    if (!rule) return null
+                    return (
+                      <span
+                        className="dv-prop-done"
+                        title={`Setting ${f.name} to “${resolveOption(f.options, rule.value, 'status').label}” crosses this card off`}
+                      >
+                        <CircleCheck size={13} aria-hidden />
+                      </span>
+                    )
+                  })()}
                   <button
                     className="dv-iconbtn dv-prop-remove !h-6 !w-6"
                     title={`Remove ${f.name} from this card`}
@@ -770,7 +803,7 @@ export const CardDetail: React.FC<Props> = (props) => {
                   key={`c${item.c.id}`}
                   comment={item.c}
                   people={people}
-                  mine={!!userId && item.c.authorId === userId}
+                  mine={!!props.authorId && item.c.authorId === props.authorId}
                   onEdit={(body) => editComment(item.c, body)}
                   onDelete={() => deleteComment(item.c)}
                 />

@@ -111,22 +111,61 @@ export const splitCustom = (rows: any[]) => {
 }
 
 /**
- * Which category + status marks a task done (greyed out, crossed off, sunk to the bottom).
- * `field` is 'status', 'urgency', or a custom category's id. One per room.
+ * A Crossoff: a category + status that marks a task done (greyed out, crossed off, sunk to the
+ * bottom). `field` is 'status', 'urgency', or a custom category's id. A room can have one per
+ * category; a task is done when any of them matches.
  */
 export interface DoneRule {
   field: string
   value: string
 }
 
-export const DEFAULT_DONE: DoneRule = { field: 'status', value: 'completed' }
+export const DEFAULT_CROSSOFFS: DoneRule[] = [{ field: 'status', value: 'completed' }]
 
-export const rowToDoneRule = (
-  row: { done_field?: unknown; done_value?: unknown } | null,
-): DoneRule =>
-  row && typeof row.done_field === 'string' && typeof row.done_value === 'string'
-    ? { field: row.done_field, value: row.done_value }
-    : DEFAULT_DONE
+/** Urgency coloured the card stripe before it was a setting. */
+export const DEFAULT_COLOR_FIELD = 'urgency'
+
+export interface BoardSettings {
+  crossoffs: DoneRule[]
+  /** The category whose colour is the stripe on each card; null = no colour. */
+  colorField: string | null
+}
+
+export const DEFAULT_BOARD_SETTINGS: BoardSettings = {
+  crossoffs: DEFAULT_CROSSOFFS,
+  colorField: DEFAULT_COLOR_FIELD,
+}
+
+/** A task_board_settings row (or none, or a database from before these columns) as settings. */
+export const readBoardSettings = (
+  row: {
+    crossoffs?: unknown
+    color_field?: unknown
+    done_field?: unknown
+    done_value?: unknown
+  } | null,
+): BoardSettings => {
+  if (!row) return DEFAULT_BOARD_SETTINGS
+  let crossoffs = DEFAULT_CROSSOFFS
+  if (Array.isArray(row.crossoffs)) {
+    const seen = new Set<string>()
+    crossoffs = row.crossoffs.flatMap((r): DoneRule[] => {
+      if (!r || typeof r.field !== 'string' || typeof r.value !== 'string' || seen.has(r.field))
+        return []
+      seen.add(r.field)
+      return [{ field: r.field, value: r.value }]
+    })
+  } else if (typeof row.done_field === 'string' && typeof row.done_value === 'string') {
+    crossoffs = [{ field: row.done_field, value: row.done_value }]
+  }
+  const colorField =
+    'color_field' in row
+      ? typeof row.color_field === 'string'
+        ? row.color_field
+        : null
+      : DEFAULT_COLOR_FIELD
+  return { crossoffs, colorField }
+}
 
 /** The fields a task carries for its categories; null / missing = that category isn't on it. */
 export interface TaskCategoryValues {
@@ -142,8 +181,8 @@ export const categoryValue = (task: TaskCategoryValues, field: string): string |
       ? task.urgency
       : (task.customFields[field] ?? null)
 
-export const isTaskDone = (rule: DoneRule, task: TaskCategoryValues) =>
-  categoryValue(task, rule.field) === rule.value
+export const isTaskDone = (crossoffs: DoneRule[], task: TaskCategoryValues) =>
+  crossoffs.some((rule) => categoryValue(task, rule.field) === rule.value)
 
 /** Custom category values from a task row's custom_fields JSON (strings only). */
 export const readCustomFields = (raw: unknown): Record<string, string> =>
