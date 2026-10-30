@@ -118,7 +118,7 @@ export const RoomSettingsForm: React.FC<{
           })
         }}
       >
-        <span className="dv-label">Name</span>
+        <span className="text-[12px] font-semibold">Name</span>
         <div className="flex gap-2">
           <input
             className="dv-input"
@@ -172,7 +172,7 @@ export const RoomSettingsForm: React.FC<{
           if (confirmName.trim() === roomName) run('delete', actions.remove)
         }}
       >
-        <span className="dv-label" style={{ color: 'var(--dv-danger)' }}>
+        <span className="text-[12px] font-semibold" style={{ color: 'var(--dv-danger)' }}>
           Delete room
         </span>
         <p className="text-[11px] leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
@@ -245,7 +245,7 @@ export const LeaveRoomSection: React.FC<{
       className={`flex flex-col gap-2 ${divider ? 'border-t pt-3' : ''}`}
       style={{ borderColor: 'var(--dv-border)' }}
     >
-      {heading && <span className="dv-label">Leave room</span>}
+      {heading && <span className="text-[12px] font-semibold">Leave room</span>}
       <p className="m-0 text-[11px] leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
         {isOwner
           ? 'You own this room, so choose someone to take it over first. They can then rename it, delete it and decide who can join.'
