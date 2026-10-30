@@ -376,7 +376,7 @@ textarea.dv-input {
   outline: none;
 }
 
-/* ---------- "Prioritize" (the category that marks cards done) ---------- */
+/* ---------- "Crossoff" (the category that marks cards done) ---------- */
 .dv-done-btn[data-active='true'] {
   border-color: color-mix(in srgb, var(--dv-accent) 45%, var(--dv-border));
   background: var(--dv-accent-soft);

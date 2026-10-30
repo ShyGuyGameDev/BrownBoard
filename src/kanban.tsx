@@ -1067,7 +1067,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   /** The category that marks cards done can't go: cards would stay done with nothing showing why. */
   const blockIfDoneField = (field: string, name: string) => {
     if (doneRule.field !== field) return false
-    toast(`“${name}” marks cards as done. Prioritize another category first.`)
+    toast(`“${name}” is the Crossoff category. Set Crossoff on another category first.`)
     return true
   }
 
@@ -1392,7 +1392,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       doneRule.field === (isDefaultField ? category : category.id) &&
       doneRule.value === option.value
     ) {
-      return toast(`“${option.label}” marks cards as done. Prioritize another status first.`)
+      return toast(`“${option.label}” is the Crossoff status. Pick another Crossoff status first.`)
     }
 
     if (isDefaultField && (category === 'status' ? statusOptions : urgencyOptions).length <= 1) {
@@ -1895,7 +1895,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             : null
     : null
 
-  /** "Prioritize": opens the list of this category's statuses; the one picked marks cards done. */
+  /** "Crossoff": opens the list of this category's statuses; the one picked marks cards done. */
   const renderDoneButton = (field: string, name: string, options: { value: string }[]) => {
     const active = doneRule.field === field
     return (
@@ -1921,13 +1921,13 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         }}
       >
         <CircleCheck size={13} />
-        {active ? 'Prioritized' : 'Prioritize'}
+        Crossoff
         <ChevronDown size={12} aria-hidden />
       </button>
     )
   }
 
-  /** Under the prioritized category: which of its statuses greys out and crosses off a card. */
+  /** Under the Crossoff category: which of its statuses greys out and crosses off a card. */
   const renderDoneNote = (field: string, options: TaskOption[]) => {
     if (doneRule.field !== field) return null
     const option = options.find((o) => o.value === doneRule.value)
@@ -3334,7 +3334,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         </>
       )}
 
-      {/* "Prioritize" status picker (above the settings dialog) */}
+      {/* "Crossoff" status picker (above the settings dialog) */}
       {doneMenu &&
         (() => {
           const field = boardFields().find((f) => f.field === doneMenu.field)
@@ -3374,7 +3374,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   className="m-0 px-2 pb-1.5 pt-1 text-[11px]"
                   style={{ color: 'var(--dv-muted)' }}
                 >
-                  Only one category can be prioritized at a time.
+                  Only one category can be the Crossoff at a time.
                 </p>
               </div>
             </>
