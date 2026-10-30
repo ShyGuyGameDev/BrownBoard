@@ -395,9 +395,6 @@ textarea.dv-input {
   font-size: var(--dv-text-xs);
   color: var(--dv-muted);
 }
-.dv-done-note > svg {
-  color: var(--dv-accent);
-}
 
 /* ---------- board ---------- */
 .dv-col {

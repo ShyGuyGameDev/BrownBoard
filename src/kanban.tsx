@@ -2000,7 +2000,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     const option = options.find((o) => o.value === rule.value)
     return (
       <p className="dv-done-note">
-        <CircleCheck size={13} aria-hidden />
         Cards are crossed off when set to
         {option ? (
           <span className="dv-chip !cursor-default" style={badgeStyle(option.color)}>
