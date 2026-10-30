@@ -4,18 +4,25 @@ import { type Attachment, taskFiles } from './files'
 import { useRoom } from './room'
 import { toast } from './bus'
 import {
+  DEFAULT_DONE,
   DEFAULT_STATUS,
   DEFAULT_URGENCY,
+  type DoneRule,
   type TaskOption,
+  isTaskDone,
+  readCustomFields,
   resolveOption,
+  rowToDoneRule,
   splitCustom,
 } from './options.ts'
 
 export interface TaskLite {
   id: string
   title: string
-  status: string
-  urgency: string
+  /** null = the category isn't on this task */
+  status: string | null
+  urgency: string | null
+  customFields: Record<string, string>
   description: string
   files: Attachment[]
   dueDate: string | null
@@ -41,11 +48,13 @@ export async function loadRoomTaskAssignees(roomId: string): Promise<TaskAssigne
     if (!person || typeof person !== 'object') return []
     const row = person as Record<string, unknown>
     if (typeof row.id !== 'string' || typeof row.name !== 'string') return []
-    return [{
-      id: row.id,
-      name: row.name,
-      avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : null,
-    }]
+    return [
+      {
+        id: row.id,
+        name: row.name,
+        avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : null,
+      },
+    ]
   })
 }
 
@@ -69,6 +78,7 @@ export function useRoomTasks() {
   const { roomId, on } = useRoom()
   const [list, setList] = useState<TaskLite[]>([])
   const [assignees, setAssignees] = useState<TaskAssignee[]>([])
+  const [doneRule, setDoneRule] = useState<DoneRule>(DEFAULT_DONE)
   const [fieldVisibility, setFieldVisibility] = useState({ status: true, urgency: true })
   const [custom, setCustom] = useState<{ status: TaskOption[]; urgency: TaskOption[] }>({
     status: DEFAULT_STATUS,
@@ -76,7 +86,7 @@ export function useRoomTasks() {
   })
 
   const load = useCallback(async () => {
-    const [t, o, fields] = await Promise.all([
+    const [t, o, fields, board] = await Promise.all([
       supabase.from('tasks').select('*').eq('room_id', roomId),
       supabase
         .from('task_options')
@@ -87,7 +97,10 @@ export function useRoomTasks() {
         .from('task_field_category_names')
         .select('field_type, is_deleted')
         .eq('room_id', roomId),
+      supabase.from('task_board_settings').select('*').eq('room_id', roomId).maybeSingle(),
     ])
+    // Missing table (migration not run yet) or no row: the default rule.
+    setDoneRule(board.error ? DEFAULT_DONE : rowToDoneRule(board.data))
     if (fields.error) toast(fields.error.message)
     else if (fields.data) {
       setFieldVisibility({
@@ -107,8 +120,9 @@ export function useRoomTasks() {
         t.data.map((r: any) => ({
           id: r.id,
           title: r.title,
-          status: r.status,
-          urgency: r.urgency ?? 'medium',
+          status: r.status ?? null,
+          urgency: r.urgency ?? null,
+          customFields: readCustomFields(r.custom_fields),
           description: r.description ?? '',
           files: taskFiles(r),
           dueDate: r.due_date ?? null,
@@ -126,10 +140,8 @@ export function useRoomTasks() {
   }, [load, on])
 
   const byId = useMemo(() => new Map(list.map((t) => [t.id, t])), [list])
-  const statusOpt = useCallback(
-    (v: string) => resolveOption(custom.status, v, 'status'),
-    [custom],
-  )
+  const statusOpt = useCallback((v: string) => resolveOption(custom.status, v, 'status'), [custom])
+  const isDone = useCallback((t: TaskLite) => isTaskDone(doneRule, t), [doneRule])
   const urgencyOpt = useCallback(
     (v: string) => resolveOption(custom.urgency, v, 'urgency'),
     [custom],
@@ -140,6 +152,7 @@ export function useRoomTasks() {
     byId,
     statusOpt,
     urgencyOpt,
+    isDone,
     assignees,
     statusEnabled: fieldVisibility.status,
     urgencyEnabled: fieldVisibility.urgency,

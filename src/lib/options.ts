@@ -109,3 +109,46 @@ export const splitCustom = (rows: any[]) => {
     urgency: pick(DEFAULT_URGENCY, 'urgency'),
   }
 }
+
+/**
+ * Which category + status marks a task done (greyed out, crossed off, sunk to the bottom).
+ * `field` is 'status', 'urgency', or a custom category's id. One per room.
+ */
+export interface DoneRule {
+  field: string
+  value: string
+}
+
+export const DEFAULT_DONE: DoneRule = { field: 'status', value: 'completed' }
+
+export const rowToDoneRule = (
+  row: { done_field?: unknown; done_value?: unknown } | null,
+): DoneRule =>
+  row && typeof row.done_field === 'string' && typeof row.done_value === 'string'
+    ? { field: row.done_field, value: row.done_value }
+    : DEFAULT_DONE
+
+/** The fields a task carries for its categories; null / missing = that category isn't on it. */
+export interface TaskCategoryValues {
+  status: string | null
+  urgency: string | null
+  customFields: Record<string, string>
+}
+
+export const categoryValue = (task: TaskCategoryValues, field: string): string | null =>
+  field === 'status'
+    ? task.status
+    : field === 'urgency'
+      ? task.urgency
+      : (task.customFields[field] ?? null)
+
+export const isTaskDone = (rule: DoneRule, task: TaskCategoryValues) =>
+  categoryValue(task, rule.field) === rule.value
+
+/** Custom category values from a task row's custom_fields JSON (strings only). */
+export const readCustomFields = (raw: unknown): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(raw && typeof raw === 'object' ? raw : {}).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ),
+  )

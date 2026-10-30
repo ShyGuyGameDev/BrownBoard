@@ -290,6 +290,115 @@ textarea.dv-input {
   flex-shrink: 0;
 }
 
+/* ---------- card categories (while editing a card) ---------- */
+.dv-props {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--dv-border);
+  border-radius: var(--dv-radius-md);
+  background: var(--dv-panel-2);
+}
+.dv-props-title {
+  padding: 0 4px 2px;
+  font-size: 10.5px;
+  font-weight: var(--dv-weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dv-muted);
+}
+.dv-prop-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 2px 0 4px;
+  border-radius: var(--dv-radius-sm);
+}
+.dv-prop-row:hover {
+  background: var(--dv-panel);
+}
+.dv-prop-name {
+  width: 76px;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--dv-text-xs);
+  color: var(--dv-muted);
+}
+.dv-prop-value {
+  min-width: 0;
+  max-width: 100%;
+}
+.dv-prop-value svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.dv-prop-done {
+  flex-shrink: 0;
+  color: var(--dv-muted);
+}
+.dv-prop-remove {
+  margin-left: auto;
+  opacity: 0;
+}
+.dv-prop-row:hover .dv-prop-remove,
+.dv-prop-remove:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .dv-prop-remove {
+    opacity: 1;
+  }
+}
+.dv-prop-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  height: 26px;
+  margin-top: 2px;
+  padding: 0 8px;
+  border: 1px dashed var(--dv-border);
+  border-radius: var(--dv-radius-full);
+  background: transparent;
+  color: var(--dv-muted);
+  font-size: var(--dv-text-xs);
+  font-weight: var(--dv-weight-medium);
+  cursor: pointer;
+}
+.dv-prop-add:hover,
+.dv-prop-add:focus-visible {
+  border-color: var(--dv-accent);
+  color: var(--dv-accent);
+  outline: none;
+}
+
+/* ---------- "Prioritize" (the category that marks cards done) ---------- */
+.dv-done-btn[data-active='true'] {
+  border-color: color-mix(in srgb, var(--dv-accent) 45%, var(--dv-border));
+  background: var(--dv-accent-soft);
+  color: var(--dv-accent);
+}
+.dv-done-btn[data-active='true']:hover:not(:disabled) {
+  background: var(--dv-accent-soft);
+  filter: brightness(0.97);
+}
+.dv-done-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+  font-size: var(--dv-text-xs);
+  color: var(--dv-muted);
+}
+.dv-done-note > svg {
+  color: var(--dv-accent);
+}
+
 /* ---------- board ---------- */
 .dv-col {
   position: relative;

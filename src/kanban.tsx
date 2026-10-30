@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   CalendarDays,
+  ChevronDown,
+  CircleCheck,
   Crosshair,
   GripVertical,
   Paperclip,
@@ -28,12 +30,18 @@ import { formatDueDate, loadRoomTaskAssignees, type TaskAssignee } from './lib/t
 import { LIMITS, cleanHexColor, cleanLine, cleanMultiline } from './lib/sanitize'
 import { FileChip, FileIcon, FileViewer } from './file-viewer'
 import {
+  DEFAULT_DONE,
   DEFAULT_STATUS,
   DEFAULT_URGENCY,
+  type DoneRule,
   type TaskOption,
   type TaskOptionType,
   badgeStyle,
+  categoryValue,
+  isTaskDone,
+  readCustomFields,
   resolveOption,
+  rowToDoneRule,
   rowToOption,
   slugify,
   splitCustom,
@@ -44,7 +52,7 @@ type DbTask = {
   id: string
   title: string
   description: string | null
-  status: string
+  status: string | null
   urgency?: string | null
   images?: unknown
   attachments?: unknown
@@ -73,8 +81,9 @@ interface Task {
   id: string
   title: string
   description: string
-  status: string
-  urgency: string
+  /** null = this category isn't on the card (same for a custom category missing from customFields) */
+  status: string | null
+  urgency: string | null
   files: Attachment[]
   categoryId: string
   position: number
@@ -117,27 +126,23 @@ const mapTask = (t: DbTask): Task => ({
   id: t.id,
   title: t.title,
   description: t.description || '',
-  status: t.status,
-  urgency: t.urgency ?? 'medium',
+  status: t.status ?? null,
+  urgency: t.urgency ?? null,
   files: taskFiles(t),
   categoryId: t.category_id,
   position: t.position ?? 0,
   dueDate: t.due_date ?? null,
   assigneeId: t.assignee_id ?? null,
-  customFields: Object.fromEntries(
-    Object.entries(t.custom_fields ?? {}).filter(
-      (entry): entry is [string, string] => typeof entry[1] === 'string',
-    ),
-  ),
+  customFields: readCustomFields(t.custom_fields),
 })
 
-/** Completed tasks sink to the bottom of their list; order is otherwise kept. */
-const sinkDone = (tasks: Task[]): Task[] => [
-  ...tasks.filter((t) => t.status !== 'completed'),
-  ...tasks.filter((t) => t.status === 'completed'),
+/** Done tasks sink to the bottom of their list; order is otherwise kept. */
+const sinkDone = (tasks: Task[], rule: DoneRule): Task[] => [
+  ...tasks.filter((t) => !isTaskDone(rule, t)),
+  ...tasks.filter((t) => isTaskDone(rule, t)),
 ]
 
-const buildBoard = (categories: DbCategory[], tasks: DbTask[]): Category[] => {
+const buildBoard = (categories: DbCategory[], tasks: DbTask[], rule: DoneRule): Category[] => {
   const cats = [...categories].sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
   const buckets = new Map<string, Task[]>(cats.map((c) => [c.id, []]))
   tasks
@@ -148,7 +153,7 @@ const buildBoard = (categories: DbCategory[], tasks: DbTask[]): Category[] => {
     id: c.id,
     name: c.name,
     position: c.position ?? 0,
-    tasks: sinkDone(buckets.get(c.id) ?? []),
+    tasks: sinkDone(buckets.get(c.id) ?? [], rule),
   }))
 }
 
@@ -179,12 +184,25 @@ interface ColDrag {
 const SETTLE = 'transform 260ms var(--dv-ease)'
 
 interface MenuState {
-  kind: TaskOptionType | 'due_date' | 'assignee' | 'custom'
+  /** add_field: the "+ Add category" list while editing a card */
+  kind: TaskOptionType | 'due_date' | 'assignee' | 'custom' | 'add_field'
   taskId: string
   categoryId: string
   fieldId?: string
+  /** Picks go into the card being edited (saved with it) rather than straight to the task. */
+  draft?: boolean
   x: number
   y: number
+}
+
+/** A card being edited. Its categories are saved with the title and notes, so Cancel undoes them. */
+interface TaskDraft {
+  id: string
+  title: string
+  description: string
+  status: string | null
+  urgency: string | null
+  customFields: Record<string, string>
 }
 
 export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) => {
@@ -203,11 +221,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const [newListName, setNewListName] = useState('')
   const [renamingCat, setRenamingCat] = useState<{ id: string; name: string } | null>(null)
   const [newTaskInputs, setNewTaskInputs] = useState<Record<string, string>>({})
-  const [editingTask, setEditingTask] = useState<{
-    id: string
-    title: string
-    description: string
-  } | null>(null)
+  const [editingTask, setEditingTask] = useState<TaskDraft | null>(null)
+  const [doneRule, setDoneRule] = useState<DoneRule>(DEFAULT_DONE)
+  const doneRuleRef = useRef(doneRule)
+  doneRuleRef.current = doneRule
+  /** The "Marks done" status picker in settings, for one category. */
+  const [doneMenu, setDoneMenu] = useState<{ field: string; x: number; y: number } | null>(null)
 
   const [customStatus, setCustomStatus] = useState<TaskOption[]>(DEFAULT_STATUS)
   const [customUrgency, setCustomUrgency] = useState<TaskOption[]>(DEFAULT_URGENCY)
@@ -345,7 +364,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const loadBoard = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true)
-      const [c, t, o, f, fo, fn] = await Promise.all([
+      const [c, t, o, f, fo, fn, bs] = await Promise.all([
         supabase
           .from('categories')
           .select('*')
@@ -374,6 +393,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           .from('task_field_category_names')
           .select('field_type, name, default_value, is_deleted')
           .eq('room_id', roomId),
+        supabase.from('task_board_settings').select('*').eq('room_id', roomId).maybeSingle(),
       ])
       if (c.error || t.error || o.error || f.error || fo.error || fn.error) {
         setError(
@@ -389,7 +409,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         return
       }
       setError(null)
-      setCategories(buildBoard(c.data || [], t.data || []))
+      // Missing table (migration not run yet) or no row yet: Status / Completed.
+      const rule = bs.error ? DEFAULT_DONE : rowToDoneRule(bs.data)
+      setDoneRule(rule)
+      setCategories(buildBoard(c.data || [], t.data || [], rule))
       if (o.data) {
         const split = splitCustom(o.data)
         setCustomStatus(split.status)
@@ -565,6 +588,67 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     } else sync()
   }
 
+  // ---------- task categories ----------
+
+  const isCustomField = (field: string) => field !== 'status' && field !== 'urgency'
+
+  /** Categories a card can carry: Status / Urgency unless removed from the board, plus custom ones with statuses. */
+  const boardFields = (): { field: string; name: string; options: TaskOption[] }[] => [
+    ...(['status', 'urgency'] as const)
+      .filter((type) => !defaultFieldConfig[type].deleted)
+      .map((type) => ({
+        field: type,
+        name: defaultFieldConfig[type].name,
+        options: type === 'status' ? statusOptions : urgencyOptions,
+      })),
+    ...customFields
+      .filter((f) => f.options.length > 0)
+      .map((f) => ({
+        field: f.id,
+        name: f.name,
+        options: f.options.map((o) => ({ ...o, type: 'status' as const })),
+      })),
+  ]
+
+  const defaultValueOf = (field: string): string | null => {
+    if (field === 'status' || field === 'urgency') {
+      const config = defaultFieldConfig[field]
+      const options = field === 'status' ? statusOptions : urgencyOptions
+      if (config.deleted) return null
+      return options.some((o) => o.value === config.defaultValue)
+        ? config.defaultValue
+        : (options[0]?.value ?? null)
+    }
+    const f = customFields.find((item) => item.id === field)
+    return f?.defaultValue ?? f?.options[0]?.value ?? null
+  }
+
+  /** Sets which category + status marks a card done, and re-sorts every list to match. */
+  const saveDoneRule = async (rule: DoneRule) => {
+    setDoneMenu(null)
+    if (rule.field === doneRule.field && rule.value === doneRule.value) return
+    const prevRule = doneRule
+    setDoneRule(rule)
+    doneRuleRef.current = rule
+    const prev = categoriesRef.current
+    const next = prev.map((c) => ({
+      ...c,
+      tasks: sinkDone(c.tasks, rule).map((t, i) => ({ ...t, position: i })),
+    }))
+    setCategories(next)
+    const { error: err } = await supabase
+      .from('task_board_settings')
+      .upsert({ room_id: roomId, done_field: rule.field, done_value: rule.value })
+    if (err) {
+      setDoneRule(prevRule)
+      doneRuleRef.current = prevRule
+      setCategories(prev)
+      return fail(err.message)
+    }
+    savePositions(prev, next)
+    sync()
+  }
+
   // ---------- tasks ----------
 
   const addTask = async (categoryId: string) => {
@@ -572,29 +656,39 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (!title) return
     const cat = categories.find((c) => c.id === categoryId)
     const position = cat ? cat.tasks.length : 0
-    const customValues = Object.fromEntries(
-      customFields.flatMap((field) => (field.defaultValue ? [[field.id, field.defaultValue]] : [])),
-    )
+    // New cards start with just the category that marks them done, at its default.
+    const start = defaultValueOf(doneRule.field)
+    const customValues: Record<string, string> =
+      start && isCustomField(doneRule.field) ? { [doneRule.field]: start } : {}
     setNewTaskInputs((prev) => ({ ...prev, [categoryId]: '' }))
-    const { data, error: err } = await supabase
-      .from('tasks')
-      .insert({
-        title,
-        status: defaultFieldConfig.status.defaultValue,
-        urgency: defaultFieldConfig.urgency.defaultValue,
-        category_id: categoryId,
-        position,
-        room_id: roomId,
-        custom_fields: customValues,
-      })
-      .select()
-      .single()
+    const row = {
+      title,
+      status: doneRule.field === 'status' ? start : null,
+      urgency: doneRule.field === 'urgency' ? start : null,
+      category_id: categoryId,
+      position,
+      room_id: roomId,
+      custom_fields: customValues,
+    }
+    let { data, error: err } = await supabase.from('tasks').insert(row).select().single()
+    // 23502 = not-null violation: a database without 20261030_optional_task_categories.sql
+    // still requires Status and Urgency, so fill them in.
+    if (err?.code === '23502')
+      ({ data, error: err } = await supabase
+        .from('tasks')
+        .insert({
+          ...row,
+          status: row.status ?? defaultFieldConfig.status.defaultValue,
+          urgency: row.urgency ?? defaultFieldConfig.urgency.defaultValue,
+        })
+        .select()
+        .single())
     if (err) return fail(err.message)
     if (data) {
       const mapped = mapTask(data)
       setCategories((prev) =>
         prev.map((c) =>
-          c.id === categoryId ? { ...c, tasks: sinkDone([...c.tasks, mapped]) } : c,
+          c.id === categoryId ? { ...c, tasks: sinkDone([...c.tasks, mapped], doneRule) } : c,
         ),
       )
       sync()
@@ -618,14 +712,19 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     >,
   ) => {
     const prev = categoriesRef.current
+    // Any category can be the one that marks a card done, so changing one may re-sort the list.
+    const resort = 'status' in patch || 'urgency' in patch || 'customFields' in patch
     const next = prev.map((c) => {
       if (!c.tasks.some((t) => t.id === taskId)) return c
       const tasks = c.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t))
-      if (!('status' in patch)) return { ...c, tasks }
-      return { ...c, tasks: sinkDone(tasks).map((t, i) => ({ ...t, position: i })) }
+      if (!resort) return { ...c, tasks }
+      return {
+        ...c,
+        tasks: sinkDone(tasks, doneRuleRef.current).map((t, i) => ({ ...t, position: i })),
+      }
     })
     setCategories(next)
-    if ('status' in patch) savePositions(prev, next)
+    if (resort) savePositions(prev, next)
     const { files, dueDate, assigneeId, customFields: fields, ...rest } = patch
     const dbPatch: Record<string, unknown> = { ...rest }
     if ('dueDate' in patch) dbPatch.due_date = dueDate
@@ -646,11 +745,30 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     } else sync()
   }
 
+  const startEdit = (task: Task) =>
+    setEditingTask({
+      id: task.id,
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      urgency: task.urgency,
+      customFields: { ...task.customFields },
+    })
+
   const saveEdit = () => {
     if (!editingTask) return
     const title = cleanLine(editingTask.title, LIMITS.taskTitle)
     const description = cleanMultiline(editingTask.description, LIMITS.taskDescription)
-    if (title) patchTask(editingTask.id, { title, description })
+    const task = findTask(editingTask.id)
+    if (title && task) {
+      // Only what changed, so a teammate's change to another category isn't overwritten.
+      const patch: Parameters<typeof patchTask>[1] = { title, description }
+      if (editingTask.status !== task.status) patch.status = editingTask.status
+      if (editingTask.urgency !== task.urgency) patch.urgency = editingTask.urgency
+      if (JSON.stringify(editingTask.customFields) !== JSON.stringify(task.customFields))
+        patch.customFields = editingTask.customFields
+      patchTask(editingTask.id, patch)
+    }
     setEditingTask(null)
   }
 
@@ -682,7 +800,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           const added = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
           const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
           const current = findTask(taskId)
-          if (current && added.length) await patchTask(taskId, { files: [...current.files, ...added] })
+          if (current && added.length)
+            await patchTask(taskId, { files: [...current.files, ...added] })
           if (failed) fail(failed.reason?.message || 'Upload failed')
         },
       )
@@ -720,6 +839,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     taskId: string,
     categoryId: string,
     fieldId?: string,
+    draft = false,
   ) => {
     e.stopPropagation()
     const r = e.currentTarget.getBoundingClientRect()
@@ -728,14 +848,30 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       taskId,
       categoryId,
       fieldId,
+      draft,
       x: Math.min(r.left, window.innerWidth - 232),
       y: Math.min(r.bottom + 4, window.innerHeight - 340),
     })
   }
 
+  /** Sets (or with null, removes) one category on the card being edited. */
+  const setDraftField = (field: string, value: string | null) =>
+    setEditingTask((draft) => {
+      if (!draft) return draft
+      if (field === 'status' || field === 'urgency') return { ...draft, [field]: value }
+      const customFields = { ...draft.customFields }
+      if (value) customFields[field] = value
+      else delete customFields[field]
+      return { ...draft, customFields }
+    })
+
   const pick = (value: string) => {
     if (!menu) return
-    if (menu.kind === 'status') patchTask(menu.taskId, { status: value })
+    if (menu.draft) {
+      // add_field picks a category (added at its default); the others pick that category's status.
+      if (menu.kind === 'add_field') setDraftField(value, defaultValueOf(value))
+      else setDraftField(menu.kind === 'custom' ? (menu.fieldId ?? '') : menu.kind, value)
+    } else if (menu.kind === 'status') patchTask(menu.taskId, { status: value })
     else if (menu.kind === 'urgency') patchTask(menu.taskId, { urgency: value })
     else if (menu.kind === 'assignee') patchTask(menu.taskId, { assigneeId: value || null })
     else if (menu.kind === 'custom' && menu.fieldId && menuTask) {
@@ -772,7 +908,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     sync()
   }
 
+  /** The category that marks cards done can't go: cards would stay done with nothing showing why. */
+  const blockIfDoneField = (field: string, name: string) => {
+    if (doneRule.field !== field) return false
+    toast(`“${name}” marks cards as done. Prioritize another category first.`)
+    return true
+  }
+
   const removeCustomField = async (field: CustomTaskField) => {
+    if (blockIfDoneField(field.id, field.name)) return setFieldToRemove(null)
     const { data: tasks, error: taskError } = await supabase
       .from('tasks')
       .select('id, custom_fields')
@@ -831,19 +975,20 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       if (type === 'status') setCustomStatus((items) => [...items, newOption])
       else setCustomUrgency((items) => [...items, newOption])
       const fieldConfig = defaultFieldConfig[type]
-      if (!fieldConfig.defaultValue || !options.some((option) => option.value === fieldConfig.defaultValue)) {
-        const { error: defaultError } = await supabase
-          .from('task_field_category_names')
-          .upsert(
-            {
-              room_id: roomId,
-              field_type: type,
-              name: fieldConfig.name,
-              default_value: value,
-              is_deleted: fieldConfig.deleted,
-            },
-            { onConflict: 'room_id,field_type' },
-          )
+      if (
+        !fieldConfig.defaultValue ||
+        !options.some((option) => option.value === fieldConfig.defaultValue)
+      ) {
+        const { error: defaultError } = await supabase.from('task_field_category_names').upsert(
+          {
+            room_id: roomId,
+            field_type: type,
+            name: fieldConfig.name,
+            default_value: value,
+            is_deleted: fieldConfig.deleted,
+          },
+          { onConflict: 'room_id,field_type' },
+        )
         if (defaultError) {
           fail(defaultError.message)
           loadBoard(true)
@@ -946,6 +1091,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const removeDefaultField = async (type: TaskOptionType) => {
     const config = defaultFieldConfig[type]
+    if (blockIfDoneField(type, config.name)) return setDefaultFieldToRemove(null)
     const { error: err } = await supabase.from('task_field_category_names').upsert(
       {
         room_id: roomId,
@@ -996,9 +1142,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       .eq('room_id', roomId)
     if (err) return fail(err.message)
     setCustomFields((fields) =>
-      fields.map((field) =>
-        field.id === editingFieldName.id ? { ...field, name } : field,
-      ),
+      fields.map((field) => (field.id === editingFieldName.id ? { ...field, name } : field)),
     )
     setEditingFieldName(null)
     sync()
@@ -1088,6 +1232,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (defaultValue === option.value) {
       return toast(`“${option.label}” is the default status. Choose another default first.`)
     }
+    if (
+      doneRule.field === (isDefaultField ? category : category.id) &&
+      doneRule.value === option.value
+    ) {
+      return toast(`“${option.label}” marks cards as done. Prioritize another status first.`)
+    }
 
     if (isDefaultField && (category === 'status' ? statusOptions : urgencyOptions).length <= 1) {
       return toast('A category needs at least one status.')
@@ -1127,8 +1277,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     const label = cleanLine(editingDefaultOption.label, LIMITS.optionLabel)
     if (!label) return
     const color = cleanHexColor(editingDefaultOption.color, '#71717a')
-    const currentOptions =
-      editingDefaultOption.type === 'status' ? statusOptions : urgencyOptions
+    const currentOptions = editingDefaultOption.type === 'status' ? statusOptions : urgencyOptions
     const current = currentOptions.find((option) => option.value === editingDefaultOption.value)
     const write = current?.id
       ? supabase
@@ -1292,7 +1441,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     const next = prev.map((c) => {
       const tasks = c.tasks.filter((t) => t.id !== drag.taskId)
       if (c.id === target.cat) tasks.splice(index, 0, { ...task, categoryId: target.cat })
-      return { ...c, tasks: sinkDone(tasks).map((t, i) => ({ ...t, position: i })) }
+      return {
+        ...c,
+        tasks: sinkDone(tasks, doneRuleRef.current).map((t, i) => ({ ...t, position: i })),
+      }
     })
     setCategories(next)
     savePositions(prev, next)
@@ -1528,14 +1680,14 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     t.title.toLowerCase().includes(q) ||
     t.description.toLowerCase().includes(q) ||
     customFields.some((field) => {
-      const value = t.customFields[field.id] ?? field.defaultValue
+      const value = t.customFields[field.id]
       const option = field.options.find((item) => item.value === value)
       return option?.label.toLowerCase().includes(q) ?? false
     })
   const totals = useMemo(() => {
     const all = categories.flatMap((c) => c.tasks)
-    return { all: all.length, done: all.filter((t) => t.status === 'completed').length }
-  }, [categories])
+    return { all: all.length, done: all.filter((t) => isTaskDone(doneRule, t)).length }
+  }, [categories, doneRule])
 
   // ---------- render ----------
 
@@ -1561,18 +1713,78 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const menuTask = menu
     ? categories.flatMap((c) => c.tasks).find((t) => t.id === menu.taskId)
     : null
-  const menuCurrent = menuTask
-    ? menu!.kind === 'status'
-      ? menuTask.status
-      : menu!.kind === 'urgency'
-        ? menuTask.urgency
-        : menu!.kind === 'due_date'
-          ? menuTask.dueDate
-          : menu!.kind === 'custom'
-            ? (menuTask.customFields[menu!.fieldId ?? ''] ??
-              customFields.find((field) => field.id === menu!.fieldId)?.defaultValue)
-            : menuTask.assigneeId
-    : null
+  const menuCurrent =
+    menu?.draft && editingTask
+      ? categoryValue(editingTask, menu.kind === 'custom' ? (menu.fieldId ?? '') : menu.kind)
+      : menuTask
+        ? menu!.kind === 'status'
+          ? menuTask.status
+          : menu!.kind === 'urgency'
+            ? menuTask.urgency
+            : menu!.kind === 'due_date'
+              ? menuTask.dueDate
+              : menu!.kind === 'custom'
+                ? (menuTask.customFields[menu!.fieldId ?? ''] ?? null)
+                : menuTask.assigneeId
+        : null
+
+  /** Categories on the card being edited, in board order, and the ones that can still be added. */
+  const draftFields = editingTask
+    ? boardFields().map((f) => ({ ...f, value: categoryValue(editingTask, f.field) }))
+    : []
+  const draftMissing = draftFields.filter((f) => f.value === null)
+
+  /** "Prioritize": opens the list of this category's statuses; the one picked marks cards done. */
+  const renderDoneButton = (field: string, name: string, options: { value: string }[]) => {
+    const active = doneRule.field === field
+    return (
+      <button
+        type="button"
+        className="dv-btn dv-done-btn !h-7"
+        data-active={active}
+        disabled={options.length === 0}
+        aria-haspopup="menu"
+        aria-pressed={active}
+        title={
+          active
+            ? `${name} decides when a card is done. Click to change the status.`
+            : `Make ${name} decide when a card is done`
+        }
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect()
+          setDoneMenu({
+            field,
+            x: Math.min(r.left, window.innerWidth - 240),
+            y: Math.min(r.bottom + 4, window.innerHeight - 320),
+          })
+        }}
+      >
+        <CircleCheck size={13} />
+        {active ? 'Prioritized' : 'Prioritize'}
+        <ChevronDown size={12} aria-hidden />
+      </button>
+    )
+  }
+
+  /** Under the prioritized category: which of its statuses greys out and crosses off a card. */
+  const renderDoneNote = (field: string, options: TaskOption[]) => {
+    if (doneRule.field !== field) return null
+    const option = options.find((o) => o.value === doneRule.value)
+    return (
+      <p className="dv-done-note">
+        <CircleCheck size={13} aria-hidden />
+        Cards are crossed off when set to
+        {option ? (
+          <span className="dv-chip !cursor-default" style={badgeStyle(option.color)}>
+            <span className="dv-dot" style={{ background: option.color }} />
+            {option.label}
+          </span>
+        ) : (
+          <span style={{ color: 'var(--dv-danger)' }}>a status that no longer exists</span>
+        )}
+      </p>
+    )
+  }
 
   const renderDefaultOptions = (type: TaskOptionType, options: TaskOption[]) => (
     <div
@@ -1598,10 +1810,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                 setEditingDefaultFieldName({ ...editingDefaultFieldName, name: e.target.value })
               }
             />
-            <button
-              className="dv-btn primary !h-8"
-              disabled={!editingDefaultFieldName.name.trim()}
-            >
+            <button className="dv-btn primary !h-8" disabled={!editingDefaultFieldName.name.trim()}>
               Save
             </button>
             <button
@@ -1616,29 +1825,24 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           <button
             type="button"
             className="group flex min-w-0 items-center gap-1.5 text-left"
-              title={`Edit ${defaultFieldConfig[type].name} category`}
+            title={`Edit ${defaultFieldConfig[type].name} category`}
             onClick={() =>
-                setEditingDefaultFieldName({ type, name: defaultFieldConfig[type].name })
+              setEditingDefaultFieldName({ type, name: defaultFieldConfig[type].name })
             }
           >
-              <h3 className="m-0 truncate text-sm font-semibold">{defaultFieldConfig[type].name}</h3>
-            <Pencil
-              size={12}
-              className="shrink-0 opacity-50 group-hover:opacity-100"
-              aria-hidden
-            />
+            <h3 className="m-0 truncate text-sm font-semibold">{defaultFieldConfig[type].name}</h3>
+            <Pencil size={12} className="shrink-0 opacity-50 group-hover:opacity-100" aria-hidden />
           </button>
         )}
         <div className="flex items-center gap-1">
           <button
             className="dv-btn !h-7"
-            onClick={() =>
-              setNewFieldOption({ fieldId: '', type, label: '', color: '#3b82f6' })
-            }
+            onClick={() => setNewFieldOption({ fieldId: '', type, label: '', color: '#3b82f6' })}
           >
             <Plus size={13} />
             Add status
           </button>
+          {renderDoneButton(type, defaultFieldConfig[type].name, options)}
           <button
             type="button"
             className="dv-iconbtn danger !h-7 !w-7"
@@ -1727,6 +1931,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           ),
         )}
       </div>
+      {renderDoneNote(type, options)}
       <label
         className="mt-3 flex items-center gap-2 text-xs font-medium"
         style={{ color: 'var(--dv-muted)' }}
@@ -1980,11 +2185,17 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
               <div className="dv-scroll dv-card-list min-h-[44px] flex-1 overflow-y-auto px-2">
                 {visible.map((task, index) => {
-                  const status = resolveOption(statusOptions, task.status, 'status')
-                  const urgency = resolveOption(urgencyOptions, task.urgency, 'urgency')
+                  const status =
+                    task.status && !defaultFieldConfig.status.deleted
+                      ? resolveOption(statusOptions, task.status, 'status')
+                      : null
+                  const urgency =
+                    task.urgency && !defaultFieldConfig.urgency.deleted
+                      ? resolveOption(urgencyOptions, task.urgency, 'urgency')
+                      : null
                   const assignee = task.assigneeId ? assigneesById.get(task.assigneeId) : null
                   const isEditing = editingTask?.id === task.id
-                  const done = task.status === 'completed'
+                  const done = isTaskDone(doneRule, task)
                   const editors = peersByTask.get(task.id)
                   return (
                     <div
@@ -2075,23 +2286,16 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                           setDragId(task.id)
                         }}
                         onDragEnd={endDrag}
-                        onDoubleClick={() =>
-                          !isEditing &&
-                          setEditingTask({
-                            id: task.id,
-                            title: task.title,
-                            description: task.description,
-                          })
-                        }
+                        onDoubleClick={() => !isEditing && startEdit(task)}
                       >
                         <span
                           className="dv-card-bar"
-                          style={{
-                            background: defaultFieldConfig.urgency.deleted
-                              ? 'var(--dv-border)'
-                              : urgency.color,
-                          }}
-                          title={`Urgency: ${urgency.label}`}
+                          style={{ background: urgency?.color ?? 'var(--dv-border)' }}
+                          title={
+                            urgency
+                              ? `${defaultFieldConfig.urgency.name}: ${urgency.label}`
+                              : undefined
+                          }
                         />
                         {isEditing ? (
                           <div className="flex flex-col gap-2">
@@ -2128,6 +2332,81 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveEdit()
                               }}
                             />
+                            {draftFields.length > 0 && (
+                              <div className="dv-props" role="group" aria-label="Categories">
+                                <span className="dv-props-title">Categories</span>
+                                {draftFields
+                                  .filter((f) => f.value !== null)
+                                  .map((f) => {
+                                    const option = resolveOption(f.options, f.value, 'status')
+                                    const marksDone = doneRule.field === f.field
+                                    return (
+                                      <div key={f.field} className="dv-prop-row">
+                                        <span className="dv-prop-name" title={f.name}>
+                                          {f.name}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          className="dv-chip dv-prop-value"
+                                          style={badgeStyle(option.color)}
+                                          title={`Change ${f.name}`}
+                                          onClick={(e) =>
+                                            openMenu(
+                                              e,
+                                              isCustomField(f.field)
+                                                ? 'custom'
+                                                : (f.field as TaskOptionType),
+                                              task.id,
+                                              cat.id,
+                                              isCustomField(f.field) ? f.field : undefined,
+                                              true,
+                                            )
+                                          }
+                                        >
+                                          <span
+                                            className="dv-dot"
+                                            style={{ background: option.color }}
+                                          />
+                                          <span className="truncate">{option.label}</span>
+                                          <ChevronDown size={11} aria-hidden />
+                                        </button>
+                                        {marksDone && (
+                                          <CircleCheck
+                                            size={13}
+                                            className="dv-prop-done"
+                                            aria-label={`${f.name} decides when this card is done`}
+                                          >
+                                            <title>
+                                              {`Setting ${f.name} to “${resolveOption(f.options, doneRule.value, 'status').label}” marks the card done`}
+                                            </title>
+                                          </CircleCheck>
+                                        )}
+                                        <button
+                                          type="button"
+                                          className="dv-iconbtn dv-prop-remove !h-6 !w-6"
+                                          title={`Remove ${f.name} from this card`}
+                                          aria-label={`Remove ${f.name} from this card`}
+                                          onClick={() => setDraftField(f.field, null)}
+                                        >
+                                          <X size={12} />
+                                        </button>
+                                      </div>
+                                    )
+                                  })}
+                                {draftMissing.length > 0 && (
+                                  <button
+                                    type="button"
+                                    className="dv-prop-add"
+                                    onClick={(e) =>
+                                      openMenu(e, 'add_field', task.id, cat.id, undefined, true)
+                                    }
+                                  >
+                                    <Plus size={12} />
+                                    Add category
+                                  </button>
+                                )}
+                              </div>
+                            )}
                             <div className="flex flex-wrap gap-1.5">
                               {task.files.map((f) => (
                                 <div
@@ -2266,7 +2545,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               </p>
                             )}
                             <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                              {!defaultFieldConfig.status.deleted && (
+                              {status && (
                                 <button
                                   className="dv-chip"
                                   style={badgeStyle(status.color)}
@@ -2277,7 +2556,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                   {status.label}
                                 </button>
                               )}
-                              {!defaultFieldConfig.urgency.deleted && (
+                              {urgency && (
                                 <button
                                   className="dv-chip"
                                   style={badgeStyle(urgency.color)}
@@ -2288,12 +2567,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                 </button>
                               )}
                               {customFields
-                                .filter((field) => field.defaultValue)
+                                .filter((field) => field.id in task.customFields)
                                 .map((field) => {
                                   const selected = field.options.find(
-                                    (option) =>
-                                      option.value ===
-                                      (task.customFields[field.id] ?? field.defaultValue),
+                                    (option) => option.value === task.customFields[field.id],
                                   )
                                   return (
                                     <button
@@ -2383,13 +2660,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                                 <button
                                   className="dv-iconbtn !h-6 !w-6"
                                   title="Edit"
-                                  onClick={() =>
-                                    setEditingTask({
-                                      id: task.id,
-                                      title: task.title,
-                                      description: task.description,
-                                    })
-                                  }
+                                  onClick={() => startEdit(task)}
                                 >
                                   <Pencil size={13} />
                                 </button>
@@ -2596,7 +2867,9 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                     Restore {defaultFieldConfig[type].name}
                   </button>
                 ) : (
-                  <div key={type}>{renderDefaultOptions(type, type === 'status' ? statusOptions : urgencyOptions)}</div>
+                  <div key={type}>
+                    {renderDefaultOptions(type, type === 'status' ? statusOptions : urgencyOptions)}
+                  </div>
                 ),
               )}
               {customFields.map((field) => (
@@ -2624,7 +2897,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                             setEditingFieldName({ ...editingFieldName, name: e.target.value })
                           }
                         />
-                        <button className="dv-btn primary !h-8" disabled={!editingFieldName.name.trim()}>
+                        <button
+                          className="dv-btn primary !h-8"
+                          disabled={!editingFieldName.name.trim()}
+                        >
                           Save
                         </button>
                         <button
@@ -2660,6 +2936,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                         <Plus size={13} />
                         Add status
                       </button>
+                      {renderDoneButton(field.id, field.name, field.options)}
                       <button
                         className="dv-iconbtn danger !h-7 !w-7"
                         title={`Remove ${field.name}`}
@@ -2694,18 +2971,18 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               })
                             }
                           />
-                            <input
-                              type="color"
-                              aria-label={`${option.label} status color`}
-                              value={editingOptionLabel.color}
-                              onChange={(e) =>
-                                setEditingOptionLabel({
-                                  ...editingOptionLabel,
-                                  color: e.target.value,
-                                })
-                              }
-                              className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent"
-                            />
+                          <input
+                            type="color"
+                            aria-label={`${option.label} status color`}
+                            value={editingOptionLabel.color}
+                            onChange={(e) =>
+                              setEditingOptionLabel({
+                                ...editingOptionLabel,
+                                color: e.target.value,
+                              })
+                            }
+                            className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent"
+                          />
                           <button
                             className="dv-btn primary !h-7"
                             disabled={!editingOptionLabel.label.trim()}
@@ -2721,11 +2998,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                           </button>
                         </form>
                       ) : (
-                        <span
-                          key={option.id}
-                          className="dv-chip"
-                          style={badgeStyle(option.color)}
-                        >
+                        <span key={option.id} className="dv-chip" style={badgeStyle(option.color)}>
                           <span className="dv-dot" style={{ background: option.color }} />
                           {option.label}
                           {(field.defaultValue ?? field.options[0]?.value) === option.value && (
@@ -2765,6 +3038,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                       </span>
                     )}
                   </div>
+                  {renderDoneNote(
+                    field.id,
+                    field.options.map((o) => ({ ...o, type: 'status' as const })),
+                  )}
                   <label
                     className="mt-3 flex items-center gap-2 text-xs font-medium"
                     style={{ color: 'var(--dv-muted)' }}
@@ -2960,6 +3237,53 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         </div>
       )}
 
+      {/* "Prioritize" status picker (above the settings dialog) */}
+      {doneMenu &&
+        (() => {
+          const field = boardFields().find((f) => f.field === doneMenu.field)
+          if (!field) return null
+          return (
+            <>
+              <div className="fixed inset-0 z-[90]" onPointerDown={() => setDoneMenu(null)} />
+              <div
+                className="dv-menu fixed z-[91] w-60"
+                role="menu"
+                style={{ left: doneMenu.x, top: doneMenu.y }}
+              >
+                <div
+                  className="px-2 pb-1 pt-1.5 text-xs font-semibold"
+                  style={{ color: 'var(--dv-muted)' }}
+                >
+                  Cross off cards when {field.name} is…
+                </div>
+                {field.options.map((o) => {
+                  const current = doneRule.field === field.field && doneRule.value === o.value
+                  return (
+                    <button
+                      key={o.value}
+                      role="menuitemradio"
+                      aria-checked={current}
+                      className="dv-menu-item"
+                      data-selected={current}
+                      onClick={() => saveDoneRule({ field: field.field, value: o.value })}
+                    >
+                      <span className="dv-dot" style={{ background: o.color }} />
+                      <span className="flex-1 truncate">{o.label}</span>
+                      {current && <CircleCheck size={14} style={{ color: 'var(--dv-accent)' }} />}
+                    </button>
+                  )
+                })}
+                <p
+                  className="m-0 px-2 pb-1.5 pt-1 text-[11px]"
+                  style={{ color: 'var(--dv-muted)' }}
+                >
+                  Only one category can be prioritized at a time.
+                </p>
+              </div>
+            </>
+          )
+        })()}
+
       {/* Task fields menu (fixed so column scrolling can't clip it) */}
       {menu && (
         <>
@@ -3039,6 +3363,30 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   </p>
                 )}
               </div>
+            ) : menu.kind === 'add_field' ? (
+              <>
+                <div
+                  className="px-2 pb-1 pt-1.5 text-xs font-semibold"
+                  style={{ color: 'var(--dv-muted)' }}
+                >
+                  Add to this card
+                </div>
+                {draftMissing.map((f) => {
+                  const start = resolveOption(f.options, defaultValueOf(f.field), 'status')
+                  return (
+                    <button key={f.field} className="dv-menu-item" onClick={() => pick(f.field)}>
+                      <Plus size={14} />
+                      <span className="flex-1 truncate">{f.name}</span>
+                      <span
+                        className="dv-chip !h-[18px] !cursor-inherit"
+                        style={badgeStyle(start.color)}
+                      >
+                        {start.label}
+                      </span>
+                    </button>
+                  )
+                })}
+              </>
             ) : (
               <>
                 <div

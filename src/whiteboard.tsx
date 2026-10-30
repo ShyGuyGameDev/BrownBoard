@@ -37,7 +37,14 @@ import { bus, isTyping, setLinkCounts, toast, withUploadFeedback } from './lib/b
 import { formatDueDate, type TaskLite, useRoomTasks } from './lib/tasks'
 import { clearCanvas as clearRoomCanvas } from './lib/rooms'
 import { canvas, font, noteColors, noteInk, swatches } from './design/tokens'
-import { LIMITS, cleanInk, cleanLine, cleanMultiline, isSafeImageSrc, safeExtension } from './lib/sanitize'
+import {
+  LIMITS,
+  cleanInk,
+  cleanLine,
+  cleanMultiline,
+  isSafeImageSrc,
+  safeExtension,
+} from './lib/sanitize'
 import {
   type Attachment,
   type FileKind,
@@ -1044,12 +1051,14 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         const h = b.maxY - b.minY
         const task = el.taskId ? taskRef.current.byId.get(el.taskId) : undefined
         const urg =
-          task && taskRef.current.urgencyEnabled
+          task?.urgency && taskRef.current.urgencyEnabled
             ? taskRef.current.urgencyOpt(task.urgency)
             : null
         const stat =
-          task && taskRef.current.statusEnabled ? taskRef.current.statusOpt(task.status) : null
-        const done = task?.status === 'completed'
+          task?.status && taskRef.current.statusEnabled
+            ? taskRef.current.statusOpt(task.status)
+            : null
+        const done = !!task && taskRef.current.isDone(task)
         if (done) {
           // Greyed out, like completed cards on the board.
           ctx.globalAlpha *= 0.55
@@ -2477,6 +2486,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     taskData.byId,
     taskData.statusOpt,
     taskData.urgencyOpt,
+    taskData.isDone,
     peers,
     requestDraw,
   ])
@@ -2776,12 +2786,16 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   )
   const ShapeIcon = shapeIcons[shapeKind]
   const singleFile =
-    selEls.length === 1 && (selEls[0].type === 'file' || selEls[0].type === 'image') && selEls[0].src
+    selEls.length === 1 &&
+    (selEls[0].type === 'file' || selEls[0].type === 'image') &&
+    selEls[0].src
       ? toAttachment(selEls[0])
       : null
   const singleTask =
     selEls.length === 1 && selEls[0].type === 'task' && selEls[0].id !== focus ? selEls[0] : null
-  const singleTaskFiles = singleTask?.taskId ? (taskData.byId.get(singleTask.taskId)?.files ?? []) : []
+  const singleTaskFiles = singleTask?.taskId
+    ? (taskData.byId.get(singleTask.taskId)?.files ?? [])
+    : []
   const focusCard = focus ? st.map.get(focus) : undefined
   const focusTaskInfo = focusCard?.taskId ? taskData.byId.get(focusCard.taskId) : undefined
   const focusLinked = st.focusSet
@@ -2991,7 +3005,10 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           <span className="dv-label truncate" title={singleFile.name}>
             {singleFile.name}
           </span>
-          <button className="dv-btn primary justify-center" onClick={() => setViewing({ files: [singleFile], index: 0 })}>
+          <button
+            className="dv-btn primary justify-center"
+            onClick={() => setViewing({ files: [singleFile], index: 0 })}
+          >
             <Eye size={14} />
             Open
           </button>
@@ -3323,7 +3340,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
                   </p>
                 )}
                 {filteredTasks.map((t) => {
-                  const s = taskData.statusEnabled ? taskData.statusOpt(t.status) : null
+                  const s = taskData.statusEnabled && t.status ? taskData.statusOpt(t.status) : null
                   return (
                     <button key={t.id} className="dv-menu-item" onClick={() => addTaskCard(t.id)}>
                       {s && <span className="dv-dot" style={{ background: s.color }} />}
