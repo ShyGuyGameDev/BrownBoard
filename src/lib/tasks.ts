@@ -28,6 +28,7 @@ export interface TaskLite {
   dueDate: string | null
   assigneeId: string | null
   assigneeName: string | null
+  memberIds: string[]
 }
 
 export interface TaskAssignee {
@@ -117,18 +118,25 @@ export function useRoomTasks() {
     setAssignees(people)
     if (t.data) {
       setList(
-        t.data.map((r: any) => ({
-          id: r.id,
-          title: r.title,
-          status: r.status ?? null,
-          urgency: r.urgency ?? null,
-          customFields: readCustomFields(r.custom_fields),
-          description: r.description ?? '',
-          files: taskFiles(r),
-          dueDate: r.due_date ?? null,
-          assigneeId: r.assignee_id ?? null,
-          assigneeName: people.find((p) => p.id === r.assignee_id)?.name ?? null,
-        })),
+        t.data
+          .filter((r: any) => !r.archived_at)
+          .map((r: any) => ({
+            id: r.id,
+            title: r.title,
+            status: r.status ?? null,
+            urgency: r.urgency ?? null,
+            customFields: readCustomFields(r.custom_fields),
+            description: r.description ?? '',
+            files: taskFiles(r),
+            dueDate: r.due_date ?? null,
+            assigneeId: r.assignee_id ?? null,
+            assigneeName: people.find((p) => p.id === r.assignee_id)?.name ?? null,
+            memberIds: Array.isArray(r.member_ids)
+              ? r.member_ids
+              : r.assignee_id
+                ? [r.assignee_id]
+                : [],
+          })),
       )
     }
     if (o.data) setCustom(splitCustom(o.data))

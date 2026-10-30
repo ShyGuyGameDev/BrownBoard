@@ -22,6 +22,15 @@ export const bus = {
 
 export const toast = (message: string) => bus.emit('toast', message)
 
+export interface ToastAction {
+  label: string
+  run: () => void
+}
+
+/** A toast with an Undo button, for actions that are easy to reverse (archiving, deleting a checklist). */
+export const undoToast = (message: string, undo: () => void) =>
+  bus.emit('toast', { message, action: { label: 'Undo', run: undo } })
+
 let nextUploadId = 0
 
 /** Keeps the app-wide upload indicator visible for the duration of a file upload. */

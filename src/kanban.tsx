@@ -1,23 +1,25 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  Archive,
   CalendarDays,
+  Check,
   ChevronDown,
   CircleCheck,
   Crosshair,
+  ListFilter,
   GripVertical,
-  Paperclip,
   Pencil,
   PenTool,
   Plus,
   Search,
   Settings2,
   Trash2,
-  UserRound,
   X,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
 import { colorFor, useRoom, type Peer } from './lib/room'
-import { bus, getLinkCounts, isTyping, toast, withUploadFeedback } from './lib/bus'
+import { bus, getLinkCounts, isTyping, toast, undoToast, withUploadFeedback } from './lib/bus'
+import { useAuth } from './lib/auth'
 import {
   type Attachment,
   cleanAttachment,
@@ -26,9 +28,33 @@ import {
   uploadRoomFile,
 } from './lib/files'
 import { Avatar } from './avatar'
-import { formatDueDate, loadRoomTaskAssignees, type TaskAssignee } from './lib/tasks'
+import { loadRoomTaskAssignees, type TaskAssignee } from './lib/tasks'
 import { LIMITS, cleanHexColor, cleanLine, cleanMultiline } from './lib/sanitize'
-import { FileChip, FileIcon, FileViewer } from './file-viewer'
+import { FileViewer } from './file-viewer'
+import {
+  type Checklist,
+  type Cover,
+  type Label,
+  checklistProgress,
+  dueLabel,
+  dueState,
+  dueTitle,
+  readChecklists,
+  readCover,
+  readIds,
+} from './lib/cards'
+import { CardBadges, CardDetail } from './card-detail'
+import {
+  ActiveFilters,
+  type BoardFilters,
+  FilterMenu,
+  activeFilterCount,
+  matchesFilters,
+  readFilters,
+  saveFilters,
+} from './board-filters'
+import { ArchivePanel } from './archive-panel'
+import { takePendingCard } from './notifications'
 import {
   DEFAULT_DONE,
   DEFAULT_STATUS,
@@ -47,7 +73,12 @@ import {
   splitCustom,
 } from './lib/options'
 
-type DbCategory = { id: string; name: string; position: number | null }
+type DbCategory = {
+  id: string
+  name: string
+  position: number | null
+  archived_at?: string | null
+}
 type DbTask = {
   id: string
   title: string
@@ -61,6 +92,11 @@ type DbTask = {
   due_date?: string | null
   assignee_id?: string | null
   custom_fields?: Record<string, unknown> | null
+  member_ids?: unknown
+  label_ids?: unknown
+  checklists?: unknown
+  cover?: unknown
+  archived_at?: string | null
 }
 
 interface CustomFieldOption {
@@ -88,7 +124,11 @@ interface Task {
   categoryId: string
   position: number
   dueDate: string | null
-  assigneeId: string | null
+  /** Signed-in people on the card (the first is mirrored to the old single assignee). */
+  memberIds: string[]
+  labelIds: string[]
+  checklists: Checklist[]
+  cover: Cover
   customFields: Record<string, string>
 }
 
@@ -132,7 +172,12 @@ const mapTask = (t: DbTask): Task => ({
   categoryId: t.category_id,
   position: t.position ?? 0,
   dueDate: t.due_date ?? null,
-  assigneeId: t.assignee_id ?? null,
+  // Before the members migration, the single assignee.
+  memberIds:
+    t.member_ids !== undefined ? readIds(t.member_ids) : t.assignee_id ? [t.assignee_id] : [],
+  labelIds: readIds(t.label_ids),
+  checklists: readChecklists(t.checklists),
+  cover: readCover(t.cover),
   customFields: readCustomFields(t.custom_fields),
 })
 
@@ -143,9 +188,12 @@ const sinkDone = (tasks: Task[], rule: DoneRule): Task[] => [
 ]
 
 const buildBoard = (categories: DbCategory[], tasks: DbTask[], rule: DoneRule): Category[] => {
-  const cats = [...categories].sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+  const cats = categories
+    .filter((c) => !c.archived_at)
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
   const buckets = new Map<string, Task[]>(cats.map((c) => [c.id, []]))
   tasks
+    .filter((t) => !t.archived_at)
     .map(mapTask)
     .sort((a, b) => a.position - b.position)
     .forEach((t) => buckets.get(t.categoryId)?.push(t))
@@ -184,25 +232,12 @@ interface ColDrag {
 const SETTLE = 'transform 260ms var(--dv-ease)'
 
 interface MenuState {
-  /** add_field: the "+ Add category" list while editing a card */
-  kind: TaskOptionType | 'due_date' | 'assignee' | 'custom' | 'add_field'
+  kind: TaskOptionType | 'due_date' | 'assignee' | 'custom'
   taskId: string
   categoryId: string
   fieldId?: string
-  /** Picks go into the card being edited (saved with it) rather than straight to the task. */
-  draft?: boolean
   x: number
   y: number
-}
-
-/** A card being edited. Its categories are saved with the title and notes, so Cancel undoes them. */
-interface TaskDraft {
-  id: string
-  title: string
-  description: string
-  status: string | null
-  urgency: string | null
-  customFields: Record<string, string>
 }
 
 export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) => {
@@ -221,7 +256,25 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const [newListName, setNewListName] = useState('')
   const [renamingCat, setRenamingCat] = useState<{ id: string; name: string } | null>(null)
   const [newTaskInputs, setNewTaskInputs] = useState<Record<string, string>>({})
-  const [editingTask, setEditingTask] = useState<TaskDraft | null>(null)
+  /** The card open in the detail view. */
+  const [openCardId, setOpenCardId] = useState<string | null>(null)
+  const [labels, setLabels] = useState<Label[]>([])
+  const labelsById = useMemo(() => new Map(labels.map((l) => [l.id, l])), [labels])
+  const [commentCounts, setCommentCounts] = useState<Map<string, number>>(new Map())
+  /** Cards this viewer watches. */
+  const [watched, setWatched] = useState<Set<string>>(new Set())
+  const [archived, setArchived] = useState<{ lists: DbCategory[]; tasks: DbTask[] }>({
+    lists: [],
+    tasks: [],
+  })
+  const [archiveOpen, setArchiveOpen] = useState(false)
+  const [filters, setFilters] = useState<BoardFilters>(() => readFilters(roomId))
+  const [filterMenu, setFilterMenu] = useState<{ x: number; y: number } | null>(null)
+  const { user, isGuest } = useAuth()
+  const userId = user && !isGuest ? user.id : null
+  const userIdRef = useRef(userId)
+  userIdRef.current = userId
+  useEffect(() => saveFilters(roomId, filters), [roomId, filters])
   const [doneRule, setDoneRule] = useState<DoneRule>(DEFAULT_DONE)
   const doneRuleRef = useRef(doneRule)
   doneRuleRef.current = doneRule
@@ -240,7 +293,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [fieldToRemove, setFieldToRemove] = useState<CustomTaskField | null>(null)
   const [defaultFieldToRemove, setDefaultFieldToRemove] = useState<TaskOptionType | null>(null)
-  const [catToDelete, setCatToDelete] = useState<Category | null>(null)
   const [newFieldName, setNewFieldName] = useState('')
   const [newFieldOption, setNewFieldOption] = useState<{
     fieldId: string
@@ -300,8 +352,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   const activity = settingsOpen
     ? 'Editing board settings'
-    : editingTask
-      ? 'Editing a board task'
+    : openCardId
+      ? 'Viewing a board card'
       : renamingCat
         ? 'Renaming a board list'
         : addingList
@@ -322,7 +374,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const peerIds = peers.map((peer) => peer.id).join(',')
 
   // Share the task you're editing, opening a menu on, or dragging; show everyone else's.
-  const mySelection = active ? [editingTask?.id, menu?.taskId, dragId] : []
+  const mySelection = active ? [openCardId, menu?.taskId, dragId] : []
   const mySelectionKey = [...new Set(mySelection.filter(Boolean))].join(',')
   useEffect(() => {
     setSelection('board', mySelectionKey ? mySelectionKey.split(',') : [])
@@ -395,6 +447,23 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           .eq('room_id', roomId),
         supabase.from('task_board_settings').select('*').eq('room_id', roomId).maybeSingle(),
       ])
+      // Card extras (20261031_cards_labels_comments.sql); a board without them just goes without.
+      const [lb, cm, wt] = await Promise.all([
+        supabase.from('task_labels').select('*').eq('room_id', roomId).order('created_at'),
+        supabase.from('task_comments').select('task_id').eq('room_id', roomId),
+        userIdRef.current
+          ? supabase
+              .from('task_watchers')
+              .select('task_id')
+              .eq('room_id', roomId)
+              .eq('user_id', userIdRef.current)
+          : Promise.resolve({ data: [] as { task_id: string }[], error: null }),
+      ])
+      setLabels((lb.data ?? []).map((l) => ({ id: l.id, name: l.name ?? '', color: l.color })))
+      const counts = new Map<string, number>()
+      for (const row of cm.data ?? []) counts.set(row.task_id, (counts.get(row.task_id) ?? 0) + 1)
+      setCommentCounts(counts)
+      setWatched(new Set((wt.data ?? []).map((row) => row.task_id)))
       if (c.error || t.error || o.error || f.error || fo.error || fn.error) {
         setError(
           c.error?.message ||
@@ -413,6 +482,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       const rule = bs.error ? DEFAULT_DONE : rowToDoneRule(bs.data)
       setDoneRule(rule)
       setCategories(buildBoard(c.data || [], t.data || [], rule))
+      setArchived({
+        lists: (c.data || []).filter((x) => x.archived_at),
+        tasks: (t.data || []).filter((x) => x.archived_at),
+      })
       if (o.data) {
         const split = splitCustom(o.data)
         setCustomStatus(split.status)
@@ -493,6 +566,16 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     }
   }, [on, loadBoard])
 
+  // Open a card from the bell (in this room, or after following a notification to it).
+  useEffect(() => {
+    return bus.on('board:open-card', ({ taskId }: { taskId: string }) => setOpenCardId(taskId))
+  }, [])
+  useEffect(() => {
+    if (loading) return
+    const pending = takePendingCard(roomId)
+    if (pending) setOpenCardId(pending)
+  }, [loading, roomId])
+
   // Jump here from a task card on the canvas.
   useEffect(() => {
     return bus.on('board:focus-task', ({ taskId }: { taskId: string }) => {
@@ -519,15 +602,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         searchRef.current?.focus()
       } else if (e.key === 'Escape') {
         setMenu(null)
-        if (catToDelete) setCatToDelete(null)
-        else if (fieldToRemove) setFieldToRemove(null)
+        setFilterMenu(null)
+        if (fieldToRemove) setFieldToRemove(null)
         else if (defaultFieldToRemove) setDefaultFieldToRemove(null)
         else setSettingsOpen(false)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [active, catToDelete, defaultFieldToRemove, fieldToRemove])
+  }, [active, defaultFieldToRemove, fieldToRemove])
 
   // ---------- categories ----------
 
@@ -562,28 +645,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     const { error: err } = await supabase.from('categories').update({ name }).eq('id', id)
     if (err) {
       fail(err.message)
-      loadBoard(true)
-    } else sync()
-  }
-
-  /** Lists with tasks ask first; empty ones go straight away. */
-  const requestDeleteCategory = (cat: Category) => {
-    if (cat.tasks.length > 0) setCatToDelete(cat)
-    else deleteCategory(cat)
-  }
-
-  const deleteCategory = async (cat: Category) => {
-    setCatToDelete(null)
-    setCategories((prev) => prev.filter((c) => c.id !== cat.id))
-    const r1 = await supabase.from('tasks').delete().eq('category_id', cat.id)
-    if (r1.error) {
-      fail(r1.error.message)
-      loadBoard(true)
-      return
-    }
-    const r2 = await supabase.from('categories').delete().eq('id', cat.id)
-    if (r2.error) {
-      fail(r2.error.message)
       loadBoard(true)
     } else sync()
   }
@@ -706,7 +767,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         | 'description'
         | 'files'
         | 'dueDate'
-        | 'assigneeId'
+        | 'memberIds'
+        | 'labelIds'
+        | 'checklists'
+        | 'cover'
         | 'customFields'
       >
     >,
@@ -725,10 +789,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     })
     setCategories(next)
     if (resort) savePositions(prev, next)
-    const { files, dueDate, assigneeId, customFields: fields, ...rest } = patch
+    const { files, dueDate, memberIds, labelIds, checklists, customFields: fields, ...rest } = patch
     const dbPatch: Record<string, unknown> = { ...rest }
     if ('dueDate' in patch) dbPatch.due_date = dueDate
-    if ('assigneeId' in patch) dbPatch.assignee_id = assigneeId
+    if ('memberIds' in patch) dbPatch.member_ids = memberIds
+    if ('labelIds' in patch) dbPatch.label_ids = labelIds
+    if ('checklists' in patch) dbPatch.checklists = checklists
     if ('customFields' in patch) dbPatch.custom_fields = fields
     if ('title' in patch) dbPatch.title = cleanLine(patch.title ?? '', LIMITS.taskTitle)
     if ('description' in patch)
@@ -745,42 +811,143 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     } else sync()
   }
 
-  const startEdit = (task: Task) =>
-    setEditingTask({
-      id: task.id,
-      title: task.title,
-      description: task.description,
-      status: task.status,
-      urgency: task.urgency,
-      customFields: { ...task.customFields },
-    })
+  // ---------- archive ----------
 
-  const saveEdit = () => {
-    if (!editingTask) return
-    const title = cleanLine(editingTask.title, LIMITS.taskTitle)
-    const description = cleanMultiline(editingTask.description, LIMITS.taskDescription)
-    const task = findTask(editingTask.id)
-    if (title && task) {
-      // Only what changed, so a teammate's change to another category isn't overwritten.
-      const patch: Parameters<typeof patchTask>[1] = { title, description }
-      if (editingTask.status !== task.status) patch.status = editingTask.status
-      if (editingTask.urgency !== task.urgency) patch.urgency = editingTask.urgency
-      if (JSON.stringify(editingTask.customFields) !== JSON.stringify(task.customFields))
-        patch.customFields = editingTask.customFields
-      patchTask(editingTask.id, patch)
-    }
-    setEditingTask(null)
-  }
-
-  const deleteTask = async (taskId: string) => {
+  /** Hides a card from the board (restorable from the archive), with Undo in the toast. */
+  const archiveTask = async (taskId: string) => {
+    const task = findTask(taskId)
+    if (!task) return
+    if (openCardId === taskId) setOpenCardId(null)
     setCategories((prev) =>
       prev.map((c) => ({ ...c, tasks: c.tasks.filter((t) => t.id !== taskId) })),
     )
+    const { error: err } = await supabase
+      .from('tasks')
+      .update({ archived_at: new Date().toISOString() })
+      .eq('id', taskId)
+    if (err) {
+      fail(err.message)
+      return loadBoard(true)
+    }
+    sync()
+    undoToast(`Archived “${task.title}”`, () => restoreTask(taskId))
+  }
+
+  const restoreTask = async (taskId: string) => {
+    const row = archived.tasks.find((t) => t.id === taskId)
+    // A card can't come back into a list that's still archived, so that list comes back too.
+    if (row && archived.lists.some((l) => l.id === row.category_id))
+      await supabase.from('categories').update({ archived_at: null }).eq('id', row.category_id)
+    const { error: err } = await supabase
+      .from('tasks')
+      .update({ archived_at: null })
+      .eq('id', taskId)
+    if (err) return fail(err.message)
+    await loadBoard(true)
+    sync()
+  }
+
+  const deleteTaskForever = async (taskId: string) => {
     const { error: err } = await supabase.from('tasks').delete().eq('id', taskId)
+    if (err) return fail(err.message)
+    await loadBoard(true)
+    sync()
+  }
+
+  const archiveCategory = async (cat: Category) => {
+    setCategories((prev) => prev.filter((c) => c.id !== cat.id))
+    const { error: err } = await supabase
+      .from('categories')
+      .update({ archived_at: new Date().toISOString() })
+      .eq('id', cat.id)
+    if (err) {
+      fail(err.message)
+      return loadBoard(true)
+    }
+    sync()
+    undoToast(`Archived the list “${cat.name}”`, () => restoreCategory(cat.id))
+  }
+
+  const restoreCategory = async (id: string) => {
+    const { error: err } = await supabase
+      .from('categories')
+      .update({ archived_at: null })
+      .eq('id', id)
+    if (err) return fail(err.message)
+    await loadBoard(true)
+    sync()
+  }
+
+  const deleteCategoryForever = async (id: string) => {
+    const r1 = await supabase.from('tasks').delete().eq('category_id', id)
+    if (r1.error) return fail(r1.error.message)
+    const r2 = await supabase.from('categories').delete().eq('id', id)
+    if (r2.error) return fail(r2.error.message)
+    await loadBoard(true)
+    sync()
+  }
+
+  // ---------- labels & watching ----------
+
+  const createLabel = async (name: string, color: string): Promise<Label | null> => {
+    const { data, error: err } = await supabase
+      .from('task_labels')
+      .insert({ room_id: roomId, name, color })
+      .select()
+      .single()
+    if (err) {
+      fail(err.message)
+      return null
+    }
+    const label = { id: data.id, name: data.name, color: data.color }
+    setLabels((prev) => [...prev, label])
+    sync()
+    return label
+  }
+
+  const updateLabel = async (label: Label) => {
+    setLabels((prev) => prev.map((l) => (l.id === label.id ? label : l)))
+    const { error: err } = await supabase
+      .from('task_labels')
+      .update({ name: label.name, color: label.color })
+      .eq('id', label.id)
     if (err) {
       fail(err.message)
       loadBoard(true)
     } else sync()
+  }
+
+  const deleteLabel = async (label: Label) => {
+    setLabels((prev) => prev.filter((l) => l.id !== label.id))
+    setCategories((prev) =>
+      prev.map((c) => ({
+        ...c,
+        tasks: c.tasks.map((t) => ({ ...t, labelIds: t.labelIds.filter((id) => id !== label.id) })),
+      })),
+    )
+    const { error: err } = await supabase.from('task_labels').delete().eq('id', label.id)
+    if (err) {
+      fail(err.message)
+      loadBoard(true)
+    } else sync()
+  }
+
+  const toggleWatch = async (taskId: string) => {
+    if (!userId) return
+    const on = watched.has(taskId)
+    setWatched((prev) => {
+      const next = new Set(prev)
+      if (on) next.delete(taskId)
+      else next.add(taskId)
+      return next
+    })
+    const { error: err } = on
+      ? await supabase.from('task_watchers').delete().eq('task_id', taskId).eq('user_id', userId)
+      : await supabase.from('task_watchers').insert({ task_id: taskId, room_id: roomId })
+    if (err) {
+      fail(err.message)
+      loadBoard(true)
+    }
   }
 
   const findTask = (taskId: string) =>
@@ -839,7 +1006,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     taskId: string,
     categoryId: string,
     fieldId?: string,
-    draft = false,
   ) => {
     e.stopPropagation()
     const r = e.currentTarget.getBoundingClientRect()
@@ -848,33 +1014,23 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       taskId,
       categoryId,
       fieldId,
-      draft,
       x: Math.min(r.left, window.innerWidth - 232),
       y: Math.min(r.bottom + 4, window.innerHeight - 340),
     })
   }
 
-  /** Sets (or with null, removes) one category on the card being edited. */
-  const setDraftField = (field: string, value: string | null) =>
-    setEditingTask((draft) => {
-      if (!draft) return draft
-      if (field === 'status' || field === 'urgency') return { ...draft, [field]: value }
-      const customFields = { ...draft.customFields }
-      if (value) customFields[field] = value
-      else delete customFields[field]
-      return { ...draft, customFields }
-    })
-
   const pick = (value: string) => {
     if (!menu) return
-    if (menu.draft) {
-      // add_field picks a category (added at its default); the others pick that category's status.
-      if (menu.kind === 'add_field') setDraftField(value, defaultValueOf(value))
-      else setDraftField(menu.kind === 'custom' ? (menu.fieldId ?? '') : menu.kind, value)
-    } else if (menu.kind === 'status') patchTask(menu.taskId, { status: value })
+    if (menu.kind === 'status') patchTask(menu.taskId, { status: value })
     else if (menu.kind === 'urgency') patchTask(menu.taskId, { urgency: value })
-    else if (menu.kind === 'assignee') patchTask(menu.taskId, { assigneeId: value || null })
-    else if (menu.kind === 'custom' && menu.fieldId && menuTask) {
+    else if (menu.kind === 'assignee' && menuTask) {
+      // Members: toggles, and the menu stays open so several people can be picked.
+      const ids = menuTask.memberIds
+      patchTask(menu.taskId, {
+        memberIds: ids.includes(value) ? ids.filter((id) => id !== value) : [...ids, value],
+      })
+      return
+    } else if (menu.kind === 'custom' && menu.fieldId && menuTask) {
       const customFields = { ...menuTask.customFields }
       if (value) customFields[menu.fieldId] = value
       else delete customFields[menu.fieldId]
@@ -1675,15 +1831,21 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   // ---------- derived ----------
 
   const q = query.trim().toLowerCase()
-  const matches = (t: Task) =>
+  const filterCount = activeFilterCount(filters)
+  const filtering = !!q || filterCount > 0
+  const matchesQuery = (t: Task) =>
     !q ||
     t.title.toLowerCase().includes(q) ||
     t.description.toLowerCase().includes(q) ||
+    t.labelIds.some((id) => labelsById.get(id)?.name.toLowerCase().includes(q)) ||
     customFields.some((field) => {
       const value = t.customFields[field.id]
       const option = field.options.find((item) => item.value === value)
       return option?.label.toLowerCase().includes(q) ?? false
     })
+  const matches = (t: Task) =>
+    matchesQuery(t) &&
+    matchesFilters(filters, t, isTaskDone(doneRule, t), (field) => categoryValue(t, field))
   const totals = useMemo(() => {
     const all = categories.flatMap((c) => c.tasks)
     return { all: all.length, done: all.filter((t) => isTaskDone(doneRule, t)).length }
@@ -1713,26 +1875,25 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const menuTask = menu
     ? categories.flatMap((c) => c.tasks).find((t) => t.id === menu.taskId)
     : null
-  const menuCurrent =
-    menu?.draft && editingTask
-      ? categoryValue(editingTask, menu.kind === 'custom' ? (menu.fieldId ?? '') : menu.kind)
-      : menuTask
-        ? menu!.kind === 'status'
-          ? menuTask.status
-          : menu!.kind === 'urgency'
-            ? menuTask.urgency
-            : menu!.kind === 'due_date'
-              ? menuTask.dueDate
-              : menu!.kind === 'custom'
-                ? (menuTask.customFields[menu!.fieldId ?? ''] ?? null)
-                : menuTask.assigneeId
-        : null
-
-  /** Categories on the card being edited, in board order, and the ones that can still be added. */
-  const draftFields = editingTask
-    ? boardFields().map((f) => ({ ...f, value: categoryValue(editingTask, f.field) }))
-    : []
-  const draftMissing = draftFields.filter((f) => f.value === null)
+  const openCard = (() => {
+    if (!openCardId) return null
+    for (const c of categories) {
+      const task = c.tasks.find((t) => t.id === openCardId)
+      if (task) return { task, list: c.name }
+    }
+    return null
+  })()
+  const menuCurrent = menuTask
+    ? menu!.kind === 'status'
+      ? menuTask.status
+      : menu!.kind === 'urgency'
+        ? menuTask.urgency
+        : menu!.kind === 'due_date'
+          ? menuTask.dueDate
+          : menu!.kind === 'custom'
+            ? (menuTask.customFields[menu!.fieldId ?? ''] ?? null)
+            : null
+    : null
 
   /** "Prioritize": opens the list of this category's statuses; the one picked marks cards done. */
   const renderDoneButton = (field: string, name: string, options: { value: string }[]) => {
@@ -2014,7 +2175,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             ref={searchRef}
             className="dv-input"
             style={{ paddingLeft: 30, paddingRight: 30 }}
-            placeholder="Filter tasks"
+            placeholder="Search cards"
+            aria-label="Search cards"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -2036,12 +2198,39 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             <span className="dv-kbd absolute right-2 top-[6px]">/</span>
           )}
         </div>
+        <button
+          className="dv-btn shrink-0"
+          data-active={filterCount > 0}
+          aria-haspopup="menu"
+          aria-expanded={!!filterMenu}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect()
+            setFilterMenu(
+              filterMenu ? null : { x: Math.min(r.left, window.innerWidth - 300), y: r.bottom + 6 },
+            )
+          }}
+        >
+          <ListFilter size={14} />
+          Filter
+          {filterCount > 0 && <span className="dv-count">{filterCount}</span>}
+        </button>
         <span className="text-xs" style={{ color: 'var(--dv-muted)' }}>
           {totals.done} of {totals.all} done
         </span>
+        <button
+          className="dv-btn !h-8 ml-auto shrink-0"
+          title="Archived cards and lists"
+          onClick={() => setArchiveOpen(true)}
+        >
+          <Archive size={14} />
+          Archive
+          {archived.tasks.length + archived.lists.length > 0 && (
+            <span className="dv-count muted">{archived.tasks.length + archived.lists.length}</span>
+          )}
+        </button>
         {error && (
           <button
-            className="ml-auto flex items-center gap-1.5 rounded-md px-2 py-1 text-xs"
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs"
             style={{
               background: 'color-mix(in srgb, var(--dv-danger) 14%, transparent)',
               color: 'var(--dv-danger)',
@@ -2054,6 +2243,16 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           </button>
         )}
       </div>
+      <ActiveFilters
+        filters={filters}
+        onChange={setFilters}
+        labels={labels}
+        people={assignees}
+        userId={userId}
+        fields={boardFields()}
+        shown={categories.reduce((n, c) => n + c.tasks.filter(matches).length, 0)}
+        total={totals.all}
+      />
 
       {/* Columns */}
       <div
@@ -2172,14 +2371,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   </h2>
                 )}
                 <span className="text-xs tabular-nums" style={{ color: 'var(--dv-muted)' }}>
-                  {q ? `${visible.length}/${cat.tasks.length}` : cat.tasks.length}
+                  {filtering ? `${visible.length}/${cat.tasks.length}` : cat.tasks.length}
                 </span>
                 <button
-                  className="dv-iconbtn danger !h-6 !w-6 opacity-0 group-hover:opacity-100"
-                  onClick={() => requestDeleteCategory(cat)}
-                  title="Delete list"
+                  className="dv-iconbtn !h-6 !w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                  onClick={() => archiveCategory(cat)}
+                  title="Archive list"
+                  aria-label={`Archive the list ${cat.name}`}
                 >
-                  <Trash2 size={13} />
+                  <Archive size={13} />
                 </button>
               </header>
 
@@ -2193,9 +2393,28 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                     task.urgency && !defaultFieldConfig.urgency.deleted
                       ? resolveOption(urgencyOptions, task.urgency, 'urgency')
                       : null
-                  const assignee = task.assigneeId ? assigneesById.get(task.assigneeId) : null
-                  const isEditing = editingTask?.id === task.id
                   const done = isTaskDone(doneRule, task)
+                  const due = task.dueDate ? dueState(task.dueDate, done) : null
+                  const cardLabels = task.labelIds
+                    .map((id) => labelsById.get(id))
+                    .filter((l): l is Label => !!l)
+                  const cardMembers = task.memberIds
+                    .map((id) => assigneesById.get(id))
+                    .filter((p): p is TaskAssignee => !!p)
+                  const shownCustom = customFields
+                    .filter((field) => field.id in task.customFields)
+                    .map((field) => ({
+                      field,
+                      selected: field.options.find((o) => o.value === task.customFields[field.id]),
+                    }))
+                  const progress = checklistProgress(task.checklists)
+                  const comments = commentCounts.get(task.id) ?? 0
+                  const hasBadges =
+                    !!task.description ||
+                    task.files.length > 0 ||
+                    progress.total > 0 ||
+                    comments > 0 ||
+                    watched.has(task.id)
                   const editors = peersByTask.get(task.id)
                   return (
                     <div
@@ -2238,7 +2457,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                         </div>
                       )}
                       <article
-                        draggable={!isEditing && !q}
+                        // Reordering a filtered list would put cards between hidden ones.
+                        draggable={!filtering}
+                        tabIndex={0}
+                        aria-label={`${task.title}. Open card`}
                         data-dragging={dragId === task.id}
                         data-done={done}
                         className={`dv-card ${flashId === task.id ? 'dv-flash' : ''}`}
@@ -2286,7 +2508,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                           setDragId(task.id)
                         }}
                         onDragEnd={endDrag}
-                        onDoubleClick={() => !isEditing && startEdit(task)}
+                        onClick={(e) => {
+                          // Chips and buttons on the card do their own thing.
+                          if ((e.target as HTMLElement).closest('button, a, input')) return
+                          setOpenCardId(task.id)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.target === e.currentTarget && e.key === 'Enter')
+                            setOpenCardId(task.id)
+                        }}
                       >
                         <span
                           className="dv-card-bar"
@@ -2297,398 +2527,216 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               : undefined
                           }
                         />
-                        {isEditing ? (
-                          <div className="flex flex-col gap-2">
-                            <input
-                              autoFocus
-                              className="dv-input"
-                              value={editingTask.title}
-                              placeholder="Task title"
-                              onChange={(e) =>
-                                setEditingTask({ ...editingTask, title: e.target.value })
-                              }
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') saveEdit()
-                                if (e.key === 'Escape') setEditingTask(null)
-                              }}
-                            />
-                            <textarea
-                              className="dv-input"
-                              rows={3}
-                              value={editingTask.description}
-                              placeholder="Notes, links, context… (paste or drop files here)"
-                              onPaste={(e) => {
-                                const files = [...e.clipboardData.files]
-                                if (files.length) {
-                                  e.preventDefault()
-                                  addFiles(task.id, files)
-                                }
-                              }}
-                              onChange={(e) =>
-                                setEditingTask({ ...editingTask, description: e.target.value })
-                              }
-                              onKeyDown={(e) => {
-                                if (e.key === 'Escape') setEditingTask(null)
-                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveEdit()
-                              }}
-                            />
-                            {draftFields.length > 0 && (
-                              <div className="dv-props" role="group" aria-label="Categories">
-                                <span className="dv-props-title">Categories</span>
-                                {draftFields
-                                  .filter((f) => f.value !== null)
-                                  .map((f) => {
-                                    const option = resolveOption(f.options, f.value, 'status')
-                                    const marksDone = doneRule.field === f.field
-                                    return (
-                                      <div key={f.field} className="dv-prop-row">
-                                        <span className="dv-prop-name" title={f.name}>
-                                          {f.name}
-                                        </span>
-                                        <button
-                                          type="button"
-                                          className="dv-chip dv-prop-value"
-                                          style={badgeStyle(option.color)}
-                                          title={`Change ${f.name}`}
-                                          onClick={(e) =>
-                                            openMenu(
-                                              e,
-                                              isCustomField(f.field)
-                                                ? 'custom'
-                                                : (f.field as TaskOptionType),
-                                              task.id,
-                                              cat.id,
-                                              isCustomField(f.field) ? f.field : undefined,
-                                              true,
-                                            )
-                                          }
-                                        >
-                                          <span
-                                            className="dv-dot"
-                                            style={{ background: option.color }}
-                                          />
-                                          <span className="truncate">{option.label}</span>
-                                          <ChevronDown size={11} aria-hidden />
-                                        </button>
-                                        {marksDone && (
-                                          <CircleCheck
-                                            size={13}
-                                            className="dv-prop-done"
-                                            aria-label={`${f.name} decides when this card is done`}
-                                          >
-                                            <title>
-                                              {`Setting ${f.name} to “${resolveOption(f.options, doneRule.value, 'status').label}” marks the card done`}
-                                            </title>
-                                          </CircleCheck>
-                                        )}
-                                        <button
-                                          type="button"
-                                          className="dv-iconbtn dv-prop-remove !h-6 !w-6"
-                                          title={`Remove ${f.name} from this card`}
-                                          aria-label={`Remove ${f.name} from this card`}
-                                          onClick={() => setDraftField(f.field, null)}
-                                        >
-                                          <X size={12} />
-                                        </button>
-                                      </div>
-                                    )
-                                  })}
-                                {draftMissing.length > 0 && (
-                                  <button
-                                    type="button"
-                                    className="dv-prop-add"
-                                    onClick={(e) =>
-                                      openMenu(e, 'add_field', task.id, cat.id, undefined, true)
-                                    }
-                                  >
-                                    <Plus size={12} />
-                                    Add category
-                                  </button>
-                                )}
-                              </div>
+                        <div className="dv-actions dv-card-float">
+                          <button
+                            className="dv-iconbtn !h-6 !w-6"
+                            title={links.has(task.id) ? 'Focus on canvas' : 'Send to canvas'}
+                            onClick={() =>
+                              links.has(task.id) ? focusOnCanvas(task.id) : sendToCanvas(task.id)
+                            }
+                          >
+                            {links.has(task.id) ? <Crosshair size={13} /> : <PenTool size={13} />}
+                          </button>
+                          <button
+                            className="dv-iconbtn !h-6 !w-6"
+                            title="Open card"
+                            onClick={() => setOpenCardId(task.id)}
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          <button
+                            className="dv-iconbtn !h-6 !w-6"
+                            title="Archive"
+                            onClick={() => archiveTask(task.id)}
+                          >
+                            <Archive size={13} />
+                          </button>
+                        </div>
+                        {task.cover && (
+                          <div
+                            className="dv-card-cover"
+                            data-kind={'url' in task.cover ? 'image' : 'color'}
+                            style={
+                              'color' in task.cover ? { background: task.cover.color } : undefined
+                            }
+                          >
+                            {'url' in task.cover && (
+                              <img src={task.cover.url} alt="" draggable={false} loading="lazy" />
                             )}
-                            <div className="flex flex-wrap gap-1.5">
-                              {task.files.map((f) => (
-                                <div
-                                  key={f.url}
-                                  className="relative h-14 w-16 overflow-hidden rounded-md border"
-                                  style={{ borderColor: 'var(--dv-border)' }}
-                                  title={f.name}
-                                >
-                                  {isImage(f) ? (
-                                    <img
-                                      src={f.url}
-                                      alt=""
-                                      draggable={false}
-                                      className="h-full w-full object-contain"
-                                      style={{ background: 'var(--dv-panel-2)' }}
-                                    />
-                                  ) : (
-                                    <div
-                                      className="flex h-full w-full flex-col items-center justify-center gap-1 px-1"
-                                      style={{
-                                        background: 'var(--dv-panel-2)',
-                                        color: 'var(--dv-muted)',
-                                      }}
-                                    >
-                                      <FileIcon file={f} size={16} />
-                                      <span className="w-full truncate text-center text-[9px]">
-                                        {f.name}
-                                      </span>
-                                    </div>
-                                  )}
-                                  <button
-                                    className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/65 text-white"
-                                    title="Remove file"
-                                    onClick={() => removeFile(task.id, f.url)}
-                                  >
-                                    <X size={10} />
-                                  </button>
-                                </div>
-                              ))}
-                              <button
-                                className="dv-btn !h-14 w-16 justify-center"
-                                title="Attach files"
-                                onClick={() => pickFiles(task.id)}
-                              >
-                                <Paperclip size={16} />
-                              </button>
-                            </div>
-                            <div className="flex justify-end gap-2">
-                              <button className="dv-btn" onClick={() => setEditingTask(null)}>
-                                Cancel
-                              </button>
-                              <button className="dv-btn primary" onClick={saveEdit}>
-                                Save
-                              </button>
-                            </div>
                           </div>
-                        ) : (
-                          <>
-                            <h3
-                              className="text-[13.5px] font-medium leading-snug"
-                              style={{
-                                color: done ? 'var(--dv-muted)' : undefined,
-                                textDecoration: done ? 'line-through' : undefined,
-                              }}
-                            >
-                              {task.title}
-                            </h3>
-                            {task.description && (
-                              <p
-                                className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs leading-relaxed"
-                                style={{ color: 'var(--dv-muted)' }}
+                        )}
+                        {cardLabels.length > 0 && (
+                          <div className="dv-card-labels">
+                            {cardLabels.map((l) => (
+                              <span
+                                key={l.id}
+                                className="dv-label sm"
+                                style={{ '--label': l.color } as React.CSSProperties}
+                                title={l.name || 'Label'}
                               >
-                                {task.description}
-                              </p>
-                            )}
-                            {(() => {
-                              // Images as thumbnails, everything else as chips; one viewer for all, in this order.
-                              const images = task.files.filter(isImage)
-                              const others = task.files.filter((f) => !isImage(f))
-                              const ordered = [...images, ...others]
-                              const open = (f: Attachment) =>
-                                setViewer({ files: ordered, index: ordered.indexOf(f) })
-                              return (
-                                <>
-                                  {images.length > 0 && (
-                                    // Whole images at their own proportions; very tall ones are scaled down, not cropped.
-                                    <div className="mt-2 flex flex-col gap-1.5">
-                                      {images.slice(0, 3).map((f) => (
-                                        <button
-                                          key={f.url}
-                                          className="flex justify-center overflow-hidden rounded-md border"
-                                          style={{
-                                            borderColor: 'var(--dv-border)',
-                                            background: 'var(--dv-panel-2)',
-                                          }}
-                                          title="View image"
-                                          onClick={() => open(f)}
-                                        >
-                                          <img
-                                            src={f.url}
-                                            alt=""
-                                            draggable={false}
-                                            loading="lazy"
-                                            className="block h-auto max-h-80 w-auto max-w-full object-contain"
-                                          />
-                                        </button>
-                                      ))}
-                                      {images.length > 3 && (
-                                        <button
-                                          className="self-start text-[11px]"
-                                          style={{ color: 'var(--dv-muted)' }}
-                                          onClick={() => open(images[3])}
-                                        >
-                                          +{images.length - 3} more image
-                                          {images.length - 3 === 1 ? '' : 's'}
-                                        </button>
-                                      )}
-                                    </div>
-                                  )}
-                                  {others.length > 0 && (
-                                    <div className="mt-2 flex flex-col gap-1">
-                                      {others.map((f) => (
-                                        <FileChip key={f.url} file={f} onClick={() => open(f)} />
-                                      ))}
-                                    </div>
-                                  )}
-                                </>
-                              )
-                            })()}
-                            {uploadingId === task.id && (
-                              <p
-                                className="mt-1.5 text-[11px]"
-                                style={{ color: 'var(--dv-muted)' }}
-                              >
-                                Uploading…
-                              </p>
-                            )}
-                            <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                              {status && (
+                                {l.name}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <h3
+                          className="text-[13.5px] font-medium leading-snug"
+                          style={{
+                            color: done ? 'var(--dv-muted)' : undefined,
+                            textDecoration: done ? 'line-through' : undefined,
+                          }}
+                        >
+                          {task.title}
+                        </h3>
+                        {(() => {
+                          // Images as thumbnails (not the one already used as the cover), other files as chips.
+                          const coverUrl = task.cover && 'url' in task.cover ? task.cover.url : null
+                          const images = task.files.filter((f) => isImage(f) && f.url !== coverUrl)
+                          const ordered = [
+                            ...task.files.filter(isImage),
+                            ...task.files.filter((f) => !isImage(f)),
+                          ]
+                          if (!images.length) return null
+                          return (
+                            <div className="mt-2 flex flex-col gap-1.5">
+                              {images.slice(0, 2).map((f) => (
                                 <button
-                                  className="dv-chip"
-                                  style={badgeStyle(status.color)}
-                                  title={`Change ${defaultFieldConfig.status.name}`}
-                                  onClick={(e) => openMenu(e, 'status', task.id, cat.id)}
+                                  key={f.url}
+                                  className="flex justify-center overflow-hidden rounded-md border"
+                                  style={{
+                                    borderColor: 'var(--dv-border)',
+                                    background: 'var(--dv-panel-2)',
+                                  }}
+                                  title="View image"
+                                  onClick={() =>
+                                    setViewer({ files: ordered, index: ordered.indexOf(f) })
+                                  }
                                 >
-                                  <span className="dv-dot" style={{ background: status.color }} />
-                                  {status.label}
+                                  <img
+                                    src={f.url}
+                                    alt=""
+                                    draggable={false}
+                                    loading="lazy"
+                                    className="block h-auto max-h-60 w-auto max-w-full object-contain"
+                                  />
                                 </button>
-                              )}
-                              {urgency && (
-                                <button
-                                  className="dv-chip"
-                                  style={badgeStyle(urgency.color)}
-                                  title={`Change ${defaultFieldConfig.urgency.name}`}
-                                  onClick={(e) => openMenu(e, 'urgency', task.id, cat.id)}
-                                >
-                                  {urgency.label}
-                                </button>
-                              )}
-                              {customFields
-                                .filter((field) => field.id in task.customFields)
-                                .map((field) => {
-                                  const selected = field.options.find(
-                                    (option) => option.value === task.customFields[field.id],
-                                  )
-                                  return (
-                                    <button
-                                      key={field.id}
-                                      className="dv-chip"
-                                      style={
-                                        selected
-                                          ? badgeStyle(selected.color)
-                                          : {
-                                              background: 'var(--dv-panel-2)',
-                                              color: 'var(--dv-muted)',
-                                            }
-                                      }
-                                      title={`Change ${field.name}`}
-                                      onClick={(e) =>
-                                        openMenu(e, 'custom', task.id, cat.id, field.id)
-                                      }
-                                    >
-                                      {selected ? (
-                                        <>
-                                          <span
-                                            className="dv-dot"
-                                            style={{ background: selected.color }}
-                                          />
-                                          {selected.label}
-                                        </>
-                                      ) : (
-                                        field.name
-                                      )}
-                                    </button>
-                                  )
-                                })}
+                              ))}
+                            </div>
+                          )
+                        })()}
+                        {uploadingId === task.id && (
+                          <p className="mt-1.5 text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+                            Uploading…
+                          </p>
+                        )}
+                        {(status || urgency || shownCustom.length > 0 || task.dueDate) && (
+                          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                            {status && (
                               <button
                                 className="dv-chip"
-                                style={{
-                                  background: 'var(--dv-panel-2)',
-                                  color: 'var(--dv-text)',
-                                }}
-                                title={
-                                  task.dueDate
-                                    ? `Due ${formatDueDate(task.dueDate)}`
-                                    : 'Set due date'
+                                style={badgeStyle(status.color)}
+                                title={`Change ${defaultFieldConfig.status.name}`}
+                                onClick={(e) => openMenu(e, 'status', task.id, cat.id)}
+                              >
+                                <span className="dv-dot" style={{ background: status.color }} />
+                                {status.label}
+                              </button>
+                            )}
+                            {urgency && (
+                              <button
+                                className="dv-chip"
+                                style={badgeStyle(urgency.color)}
+                                title={`Change ${defaultFieldConfig.urgency.name}`}
+                                onClick={(e) => openMenu(e, 'urgency', task.id, cat.id)}
+                              >
+                                {urgency.label}
+                              </button>
+                            )}
+                            {shownCustom.map(({ field, selected }) => (
+                              <button
+                                key={field.id}
+                                className="dv-chip"
+                                style={
+                                  selected
+                                    ? badgeStyle(selected.color)
+                                    : { background: 'var(--dv-panel-2)', color: 'var(--dv-muted)' }
                                 }
+                                title={`Change ${field.name}`}
+                                onClick={(e) => openMenu(e, 'custom', task.id, cat.id, field.id)}
+                              >
+                                {selected ? (
+                                  <>
+                                    <span
+                                      className="dv-dot"
+                                      style={{ background: selected.color }}
+                                    />
+                                    {selected.label}
+                                  </>
+                                ) : (
+                                  field.name
+                                )}
+                              </button>
+                            ))}
+                            {task.dueDate && due && (
+                              <button
+                                className="dv-chip dv-due"
+                                data-state={due}
+                                title={dueTitle(task.dueDate, due)}
                                 onClick={(e) => openMenu(e, 'due_date', task.id, cat.id)}
                               >
                                 <CalendarDays size={12} />
-                                {task.dueDate ? formatDueDate(task.dueDate) : 'Due date'}
-                              </button>
-                              <button
-                                className="dv-chip"
-                                style={{
-                                  background: 'var(--dv-panel-2)',
-                                  color: 'var(--dv-text)',
-                                }}
-                                title={assignee ? `Assigned to ${assignee.name}` : 'Assign task'}
-                                onClick={(e) => openMenu(e, 'assignee', task.id, cat.id)}
-                              >
-                                {assignee ? (
-                                  <Avatar
-                                    name={assignee.name}
-                                    color={colorFor(assignee.id)}
-                                    src={assignee.avatarUrl}
-                                    size={14}
-                                    className="-ml-1"
-                                  />
-                                ) : (
-                                  <UserRound size={12} />
-                                )}
-                                {assignee?.name ?? 'Assign'}
-                              </button>
-                              <div className="dv-actions ml-auto flex items-center">
-                                <button
-                                  className="dv-iconbtn !h-6 !w-6"
-                                  title={links.has(task.id) ? 'Focus on canvas' : 'Send to canvas'}
-                                  onClick={() =>
-                                    links.has(task.id)
-                                      ? focusOnCanvas(task.id)
-                                      : sendToCanvas(task.id)
-                                  }
-                                >
-                                  {links.has(task.id) ? (
-                                    <Crosshair size={13} />
-                                  ) : (
-                                    <PenTool size={13} />
-                                  )}
-                                </button>
-                                <button
-                                  className="dv-iconbtn !h-6 !w-6"
-                                  title="Edit"
-                                  onClick={() => startEdit(task)}
-                                >
-                                  <Pencil size={13} />
-                                </button>
-                                <button
-                                  className="dv-iconbtn danger !h-6 !w-6"
-                                  title="Delete"
-                                  onClick={() => deleteTask(task.id)}
-                                >
-                                  <Trash2 size={13} />
-                                </button>
-                              </div>
-                            </div>
-                            {links.has(task.id) && (
-                              <button
-                                className="mt-2 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] font-medium"
-                                style={{
-                                  background: 'var(--dv-accent-soft)',
-                                  color: 'var(--dv-accent)',
-                                }}
-                                title="Zoom the canvas to this task and everything linked to it"
-                                onClick={() => focusOnCanvas(task.id)}
-                              >
-                                <PenTool size={12} />
-                                On canvas · {links.get(task.id)} linked
-                                <span className="ml-auto">Focus →</span>
+                                {dueLabel(task.dueDate)}
                               </button>
                             )}
-                          </>
+                          </div>
+                        )}
+                        {(hasBadges || cardMembers.length > 0) && (
+                          <div className="dv-card-foot">
+                            <CardBadges
+                              description={!!task.description}
+                              files={task.files.length}
+                              checklist={progress}
+                              comments={comments}
+                              watching={watched.has(task.id)}
+                            />
+                            {cardMembers.length > 0 && (
+                              <button
+                                className="dv-card-members"
+                                title={`Members: ${cardMembers.map((p) => p.name).join(', ')}`}
+                                onClick={(e) => openMenu(e, 'assignee', task.id, cat.id)}
+                              >
+                                {cardMembers.slice(0, 3).map((p) => (
+                                  <Avatar
+                                    key={p.id}
+                                    name={p.name}
+                                    color={colorFor(p.id)}
+                                    src={p.avatarUrl}
+                                    size={22}
+                                  />
+                                ))}
+                                {cardMembers.length > 3 && (
+                                  <span className="dv-card-members-more">
+                                    +{cardMembers.length - 3}
+                                  </span>
+                                )}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        {links.has(task.id) && (
+                          <button
+                            className="mt-2 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] font-medium"
+                            style={{
+                              background: 'var(--dv-accent-soft)',
+                              color: 'var(--dv-accent)',
+                            }}
+                            title="Zoom the canvas to this task and everything linked to it"
+                            onClick={() => focusOnCanvas(task.id)}
+                          >
+                            <PenTool size={12} />
+                            On canvas · {links.get(task.id)} linked
+                            <span className="ml-auto">Focus →</span>
+                          </button>
                         )}
                       </article>
                     </div>
@@ -2699,7 +2747,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                 )}
                 {visible.length === 0 && (
                   <p className="px-1 py-4 text-center text-xs" style={{ color: 'var(--dv-muted)' }}>
-                    {q ? 'No matching tasks' : 'Nothing here yet'}
+                    {filtering ? 'No matching cards' : 'Nothing here yet'}
                   </p>
                 )}
               </div>
@@ -3123,45 +3171,6 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         </div>
       )}
 
-      {catToDelete && (
-        <div
-          className="dv-modal-backdrop z-[80]"
-          onPointerDown={(e) => {
-            if (e.target === e.currentTarget) setCatToDelete(null)
-          }}
-        >
-          <section
-            className="dv-floating dv-modal"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="delete-list-title"
-            aria-describedby="delete-list-description"
-          >
-            <div>
-              <h2 id="delete-list-title" className="m-0 text-lg font-semibold">
-                Delete list?
-              </h2>
-              <p
-                id="delete-list-description"
-                className="mt-2 text-sm"
-                style={{ color: 'var(--dv-muted)' }}
-              >
-                Delete “{catToDelete.name}” and its {catToDelete.tasks.length}{' '}
-                {catToDelete.tasks.length === 1 ? 'task' : 'tasks'}? This can’t be undone.
-              </p>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button className="dv-btn" autoFocus onClick={() => setCatToDelete(null)}>
-                Cancel
-              </button>
-              <button className="dv-btn danger" onClick={() => deleteCategory(catToDelete)}>
-                Delete list
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-
       {fieldToRemove && (
         <div
           className="dv-modal-backdrop z-[80]"
@@ -3235,6 +3244,94 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             </div>
           </section>
         </div>
+      )}
+
+      {/* Card detail */}
+      {openCard && (
+        <CardDetail
+          key={openCard.task.id}
+          task={openCard.task}
+          listName={openCard.list}
+          done={isTaskDone(doneRule, openCard.task)}
+          doneRule={doneRule}
+          fields={boardFields()}
+          defaultValueOf={defaultValueOf}
+          labels={labels}
+          people={assignees}
+          userId={userId}
+          watching={watched.has(openCard.task.id)}
+          onToggleWatch={() => toggleWatch(openCard.task.id)}
+          onPatch={(patch) => patchTask(openCard.task.id, patch)}
+          onArchive={() => archiveTask(openCard.task.id)}
+          onPickFiles={() => pickFiles(openCard.task.id)}
+          onPasteFiles={(files) => addFiles(openCard.task.id, files)}
+          onRemoveFile={(url) => removeFile(openCard.task.id, url)}
+          onOpenFile={(files, index) => setViewer({ files, index })}
+          onSendToCanvas={() => {
+            const id = openCard.task.id
+            setOpenCardId(null)
+            if (links.has(id)) focusOnCanvas(id)
+            else sendToCanvas(id)
+          }}
+          onCreateLabel={createLabel}
+          onUpdateLabel={updateLabel}
+          onDeleteLabel={deleteLabel}
+          onClose={() => setOpenCardId(null)}
+        />
+      )}
+
+      {archiveOpen && (
+        <ArchivePanel
+          cards={archived.tasks.map((t) => {
+            const list =
+              categories.find((c) => c.id === t.category_id) ??
+              archived.lists.find((l) => l.id === t.category_id)
+            return {
+              id: t.id,
+              title: t.title,
+              listName: list?.name ?? 'a deleted list',
+              listArchived: archived.lists.some((l) => l.id === t.category_id),
+              archivedAt: t.archived_at ?? '',
+            }
+          })}
+          lists={archived.lists.map((l) => ({
+            id: l.id,
+            name: l.name,
+            cards: archived.tasks.filter((t) => t.category_id === l.id).length,
+            archivedAt: l.archived_at ?? '',
+          }))}
+          onRestoreCard={restoreTask}
+          onDeleteCard={deleteTaskForever}
+          onRestoreList={restoreCategory}
+          onDeleteList={deleteCategoryForever}
+          onClose={() => setArchiveOpen(false)}
+        />
+      )}
+
+      {filterMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onPointerDown={() => setFilterMenu(null)} />
+          <div
+            className="dv-menu fixed z-50 w-[288px]"
+            role="menu"
+            aria-label="Filter cards"
+            style={{ left: filterMenu.x, top: filterMenu.y }}
+          >
+            <FilterMenu
+              filters={filters}
+              onChange={setFilters}
+              labels={labels}
+              people={assignees}
+              userId={userId}
+              fields={boardFields()}
+              doneLabel={(() => {
+                const f = boardFields().find((x) => x.field === doneRule.field)
+                const o = f?.options.find((x) => x.value === doneRule.value)
+                return f && o ? `${f.name}: ${o.label}` : ''
+              })()}
+            />
+          </div>
+        </>
       )}
 
       {/* "Prioritize" status picker (above the settings dialog) */}
@@ -3321,72 +3418,39 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   className="px-2 pb-1 pt-1.5 text-xs font-semibold"
                   style={{ color: 'var(--dv-muted)' }}
                 >
-                  Assign to
+                  Members
                 </div>
-                <button
-                  className="dv-menu-item"
-                  data-selected={!menuTask?.assigneeId}
-                  onClick={() => pick('')}
-                >
-                  <UserRound size={15} />
-                  <span className="flex-1">Unassigned</span>
-                  {!menuTask?.assigneeId && (
-                    <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
-                      Current
-                    </span>
-                  )}
-                </button>
-                {assignees.map((person) => (
-                  <button
-                    key={person.id}
-                    className="dv-menu-item"
-                    data-selected={menuTask?.assigneeId === person.id}
-                    onClick={() => pick(person.id)}
-                  >
-                    <Avatar
-                      name={person.name}
-                      color={colorFor(person.id)}
-                      src={person.avatarUrl}
-                      size={20}
-                    />
-                    <span className="flex-1 truncate">{person.name}</span>
-                    {menuTask?.assigneeId === person.id && (
-                      <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
-                        Current
+                {assignees.map((person) => {
+                  const on = !!menuTask?.memberIds.includes(person.id)
+                  return (
+                    <button
+                      key={person.id}
+                      className="dv-menu-item"
+                      role="menuitemcheckbox"
+                      aria-checked={on}
+                      data-selected={on}
+                      onClick={() => pick(person.id)}
+                    >
+                      <Avatar
+                        name={person.name}
+                        color={colorFor(person.id)}
+                        src={person.avatarUrl}
+                        size={20}
+                      />
+                      <span className="flex-1 truncate">
+                        {person.name}
+                        {person.id === userId && ' (you)'}
                       </span>
-                    )}
-                  </button>
-                ))}
+                      {on && <Check size={14} />}
+                    </button>
+                  )
+                })}
                 {assignees.length === 0 && (
                   <p className="m-0 px-3 py-2 text-xs" style={{ color: 'var(--dv-muted)' }}>
                     No signed-in people have been on this board yet.
                   </p>
                 )}
               </div>
-            ) : menu.kind === 'add_field' ? (
-              <>
-                <div
-                  className="px-2 pb-1 pt-1.5 text-xs font-semibold"
-                  style={{ color: 'var(--dv-muted)' }}
-                >
-                  Add to this card
-                </div>
-                {draftMissing.map((f) => {
-                  const start = resolveOption(f.options, defaultValueOf(f.field), 'status')
-                  return (
-                    <button key={f.field} className="dv-menu-item" onClick={() => pick(f.field)}>
-                      <Plus size={14} />
-                      <span className="flex-1 truncate">{f.name}</span>
-                      <span
-                        className="dv-chip !h-[18px] !cursor-inherit"
-                        style={badgeStyle(start.color)}
-                      >
-                        {start.label}
-                      </span>
-                    </button>
-                  )
-                })}
-              </>
             ) : (
               <>
                 <div

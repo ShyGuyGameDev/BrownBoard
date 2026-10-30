@@ -24,7 +24,7 @@ import {
   takeReturnRoom,
   useRoom,
 } from './lib/room.tsx'
-import { bus, isTyping, toast } from './lib/bus.ts'
+import { type ToastAction, bus, isTyping, toast } from './lib/bus.ts'
 import {
   clearSignInIntent,
   leavingToSignIn,
@@ -50,6 +50,7 @@ import {
 } from './lib/rooms.ts'
 import { useTheme } from './lib/theme.ts'
 import { Avatar } from './avatar.tsx'
+import { NotificationBell } from './notifications.tsx'
 import {
   InlineEdit,
   InviteScreen,
@@ -367,7 +368,7 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
       offOwner()
     }
   }, [on, setRoomName, setAllowGuests, setIsOwner, roomId, roomName, user, isGuest, signOut])
-  const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const [toastMsg, setToastMsg] = useState<{ message: string; action?: ToastAction } | null>(null)
   const [uploads, setUploads] = useState<Map<number, string>>(() => new Map())
   const toastTimer = useRef<number | null>(null)
 
@@ -419,10 +420,12 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
     window.addEventListener('devboard:navigate', onNavigate)
     window.addEventListener('devboard:share', onShare)
     const offNav = bus.on('nav', (p: Page) => go(p))
-    const offToast = bus.on('toast', (msg: string) => {
-      setToastMsg(msg)
+    const offToast = bus.on('toast', (msg: string | { message: string; action?: ToastAction }) => {
+      const next = typeof msg === 'string' ? { message: msg } : msg
+      setToastMsg(next)
       if (toastTimer.current) window.clearTimeout(toastTimer.current)
-      toastTimer.current = window.setTimeout(() => setToastMsg(null), 3200)
+      // Longer when there's something to click.
+      toastTimer.current = window.setTimeout(() => setToastMsg(null), next.action ? 6000 : 3200)
     })
     const offUploadStart = bus.on('upload:start', ({ id, label }: { id: number; label: string }) =>
       setUploads((current) => new Map(current).set(id, label)),
@@ -651,6 +654,8 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
             )}
           </div>
 
+          {!isGuest && user && <NotificationBell userId={user.id} />}
+
           {(!isGuest || unnamed) && (
             <div className="relative">
               <button
@@ -715,8 +720,25 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
       )}
 
       {toastMsg && (
-        <div className="pointer-events-none fixed bottom-6 left-1/2 z-[100] -translate-x-1/2">
-          <div className="dv-toast">{toastMsg}</div>
+        <div
+          className={`${toastMsg.action ? '' : 'pointer-events-none '}fixed bottom-6 left-1/2 z-[100] -translate-x-1/2`}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="dv-toast flex items-center gap-3">
+            <span>{toastMsg.message}</span>
+            {toastMsg.action && (
+              <button
+                className="dv-toast-action"
+                onClick={() => {
+                  toastMsg.action!.run()
+                  setToastMsg(null)
+                }}
+              >
+                {toastMsg.action.label}
+              </button>
+            )}
+          </div>
         </div>
       )}
       {uploads.size > 0 && (
