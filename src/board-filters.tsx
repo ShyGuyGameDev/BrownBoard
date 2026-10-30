@@ -156,7 +156,7 @@ export const FilterMenu: React.FC<{
           <CircleCheck size={12} /> Progress
         </div>
         <Row on={filters.hideDone} onClick={() => set({ hideDone: !filters.hideDone })}>
-          <span className="flex-1">Hide done cards</span>
+          <span className="flex-1">Hide crossed-off cards</span>
           <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
             {doneLabel}
           </span>
@@ -286,7 +286,7 @@ export const ActiveFilters: React.FC<{
   if (filters.hideDone)
     chips.push({
       key: 'done',
-      text: 'Hiding done',
+      text: 'Hiding crossed-off',
       remove: () => onChange({ ...filters, hideDone: false }),
     })
   for (const d of filters.due)
