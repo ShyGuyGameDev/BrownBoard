@@ -3277,17 +3277,6 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             disabled={!canRedo}
             onClick={redo}
           />
-          {isOwner && (
-            <>
-              <div className="dv-sep" />
-              <ToolBtn
-                icon={<Trash2 size={16} />}
-                label="Clear canvas"
-                danger
-                onClick={clearCanvas}
-              />
-            </>
-          )}
 
           {tool === 'shape' && (
             <div className="dv-floating absolute bottom-full left-1/2 mb-2 flex -translate-x-1/2 flex-col gap-2 p-2.5">
@@ -3464,6 +3453,29 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
                 Space + drag or right-drag to pan. Ctrl/Cmd + scroll to zoom. Shift constrains lines
                 and shapes. Ctrl/Cmd + D duplicates.
               </p>
+              {isOwner && (
+                <div
+                  className="flex flex-col gap-2 border-t pt-4"
+                  style={{ borderColor: 'var(--dv-border)' }}
+                >
+                  <button
+                    className="dv-btn w-full justify-center"
+                    style={{ color: 'var(--dv-danger)' }}
+                    disabled={!st.els.length}
+                    title={st.els.length ? undefined : 'The canvas is already empty'}
+                    onClick={async () => {
+                      setShowSettings(false)
+                      await clearCanvas()
+                    }}
+                  >
+                    <Trash2 size={15} />
+                    Clear canvas
+                  </button>
+                  <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+                    Removes everything for everyone in this room. You can undo it right after.
+                  </span>
+                </div>
+              )}
             </div>
           </>
         )}
