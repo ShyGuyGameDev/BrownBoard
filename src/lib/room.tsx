@@ -27,6 +27,15 @@ export type PeerSelection = Record<SelectionArea, string[]>
 
 export type RoomStatus = 'connecting' | 'live' | 'offline'
 
+/** Minimum ms between presence updates; Realtime closes the channel of a client that tracks often. */
+const TRACK_GAP = 2000
+/** Minimum ms between activity / selection broadcasts. */
+const STATE_GAP = 100
+/** Broadcast event carrying a peer's activity and selection (kept out of presence, see trackIdentity). */
+const PEER_STATE = 'peer:state'
+
+type PeerState = { id: string; activity: string | null; selection: PeerSelection | null }
+
 /** `fromSelf` is true when the event was emitted locally with send(..., true). */
 type Handler = (payload: any, fromSelf: boolean) => void
 
@@ -192,77 +201,175 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   const activities = useRef(new Map<string, { activity: string; priority: number }>())
   const currentActivity = useRef<string | null>(null)
   const selection = useRef<PeerSelection>({ board: [], canvas: [] })
-  const selectionTimer = useRef(0)
+  /** Activity + selection of each peer, which arrive by broadcast rather than presence. */
+  const peerStates = useRef(new Map<string, PeerState>())
+  /** Everyone presence says is here (not including this tab). */
+  const present = useRef<Peer[]>([])
+  const trackTimer = useRef(0)
+  const lastTrackAt = useRef(0)
+  const lastTracked = useRef('')
+  const stateTimer = useRef(0)
+  const lastStateAt = useRef(0)
+  const lastState = useRef('')
 
   const updateStatus = (s: RoomStatus) => {
     statusRef.current = s
     setStatus(s)
   }
 
-  const trackCurrentPresence = useCallback(() => {
-    channelRef.current?.track({
-      ...meRef.current,
-      activity: currentActivity.current,
-      selection: selection.current,
-    })
+  const publishPeers = () =>
+    setPeers(
+      present.current.map((p) => {
+        const s = peerStates.current.get(p.id)
+        return { ...p, activity: s?.activity ?? null, selection: s?.selection ?? null }
+      }),
+    )
+
+  // Realtime closes the channel of a client that updates presence more than a few times in a few
+  // seconds, so presence only says who you are (sent on join and when your name or picture
+  // changes). What you're doing and have selected changes constantly, so it goes by broadcast.
+  const trackIdentity = useCallback(() => {
+    if (trackTimer.current) return
+    const wait = Math.max(0, lastTrackAt.current + TRACK_GAP - Date.now())
+    trackTimer.current = window.setTimeout(() => {
+      trackTimer.current = 0
+      if (statusRef.current !== 'live') return
+      const key = JSON.stringify(meRef.current)
+      if (key === lastTracked.current) return
+      lastTracked.current = key
+      lastTrackAt.current = Date.now()
+      channelRef.current?.track({ ...meRef.current })
+    }, wait)
+  }, [])
+
+  // Selections can change many times a second (marquee drags), so these are batched too.
+  const sendState = useCallback(() => {
+    if (stateTimer.current) return
+    const wait = Math.max(0, lastStateAt.current + STATE_GAP - Date.now())
+    stateTimer.current = window.setTimeout(() => {
+      stateTimer.current = 0
+      if (statusRef.current !== 'live') return
+      const state: PeerState = {
+        id: idRef.current,
+        activity: currentActivity.current,
+        selection: selection.current,
+      }
+      const key = JSON.stringify(state)
+      if (key === lastState.current) return
+      lastState.current = key
+      lastStateAt.current = Date.now()
+      channelRef.current?.send({ type: 'broadcast', event: PEER_STATE, payload: state })
+    }, wait)
   }, [])
 
   useEffect(() => {
-    // Private channel: Realtime checks room membership against the policies on realtime.messages.
-    const channel = supabase.channel(`devboard:${roomId}`, {
-      config: { private: true, presence: { key: idRef.current }, broadcast: { self: false } },
-    })
+    let cancelled = false
+    let channel: RealtimeChannel | null = null
+    let retryTimer = 0
+    let attempts = 0
 
-    channel
-      .on('broadcast', { event: '*' }, (msg: any) => {
+    const join = () => {
+      // Private channel: Realtime checks room membership against the policies on realtime.messages.
+      const ch = supabase.channel(`devboard:${roomId}`, {
+        config: { private: true, presence: { key: idRef.current }, broadcast: { self: false } },
+      })
+      channel = ch
+      channelRef.current = ch
+
+      ch.on('broadcast', { event: '*' }, (msg: any) => {
+        if (msg.event === PEER_STATE) {
+          const s = msg.payload as PeerState
+          if (!s?.id || s.id === idRef.current) return
+          peerStates.current.set(s.id, {
+            id: s.id,
+            activity: s.activity ?? null,
+            selection: s.selection ?? null,
+          })
+          publishPeers()
+          return
+        }
         handlers.current.get(msg.event)?.forEach((fn) => fn(msg.payload, false))
       })
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState<Peer>()
-        const seen = new Map<string, Peer>()
-        Object.values(state)
-          .flat()
-          .forEach((p) => {
-            if (p.id && p.id !== idRef.current)
-              seen.set(p.id, {
-                id: p.id,
-                name: p.name,
-                color: p.color,
-                avatar: p.avatar ?? null,
-                activity: p.activity ?? null,
-                selection: p.selection ?? null,
-              })
-          })
-        setPeers([...seen.values()])
-      })
-    const onStatus = (s: string) => {
-      if (s === 'SUBSCRIBED') {
-        updateStatus('live')
-        trackCurrentPresence()
-      } else if (s === 'CLOSED' || s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') {
-        updateStatus('offline')
+        .on('presence', { event: 'join' }, ({ key }: { key: string }) => {
+          // Someone new: tell them what we're up to (they missed the earlier broadcasts).
+          if (key === idRef.current) return
+          lastState.current = ''
+          sendState()
+        })
+        .on('presence', { event: 'sync' }, () => {
+          const state = ch.presenceState<Peer>()
+          const seen = new Map<string, Peer>()
+          Object.values(state)
+            .flat()
+            .forEach((p) => {
+              if (p.id && p.id !== idRef.current)
+                seen.set(p.id, {
+                  id: p.id,
+                  name: p.name,
+                  color: p.color,
+                  avatar: p.avatar ?? null,
+                })
+            })
+          present.current = [...seen.values()]
+          for (const id of peerStates.current.keys())
+            if (!seen.has(id)) peerStates.current.delete(id)
+          publishPeers()
+        })
+
+      const onStatus = (s: string) => {
+        if (cancelled || channel !== ch) return
+        if (s === 'SUBSCRIBED') {
+          attempts = 0
+          updateStatus('live')
+          // A fresh join has no presence yet, so announce even if nothing changed.
+          lastTracked.current = ''
+          lastState.current = ''
+          trackIdentity()
+          sendState()
+        } else if (s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') {
+          // The client rejoins these by itself.
+          updateStatus('offline')
+        } else if (s === 'CLOSED') {
+          // Closed by the server: it won't come back on its own, so join again on a fresh channel.
+          // (The client already dropped this one, so supabase.channel() won't hand it back.)
+          channel = null
+          channelRef.current = null
+          updateStatus('offline')
+          present.current = []
+          peerStates.current.clear()
+          setPeers([])
+          retryTimer = window.setTimeout(
+            () => {
+              if (!cancelled) join()
+            },
+            Math.min(1000 * 2 ** attempts++, 15000),
+          )
+        }
       }
+
+      // Make sure the socket carries this user's JWT before joining a private channel.
+      supabase.realtime.setAuth().then(() => {
+        if (!cancelled && channel === ch) ch.subscribe(onStatus)
+      })
     }
 
-    channelRef.current = channel
-    let cancelled = false
-    // Make sure the socket carries this user's JWT before joining a private channel.
-    supabase.realtime.setAuth().then(() => {
-      if (!cancelled) channel.subscribe(onStatus)
-    })
+    join()
     return () => {
       cancelled = true
-      window.clearTimeout(selectionTimer.current)
-      selectionTimer.current = 0
+      window.clearTimeout(retryTimer)
+      window.clearTimeout(trackTimer.current)
+      window.clearTimeout(stateTimer.current)
+      trackTimer.current = 0
+      stateTimer.current = 0
       channelRef.current = null
-      supabase.removeChannel(channel)
+      if (channel) supabase.removeChannel(channel)
     }
-  }, [roomId, trackCurrentPresence])
+  }, [roomId, trackIdentity, sendState])
 
   // Re-announce when the display name or picture changes.
   useEffect(() => {
-    if (statusRef.current === 'live') trackCurrentPresence()
-  }, [me, trackCurrentPresence])
+    trackIdentity()
+  }, [me, trackIdentity])
 
   const setActivity = useCallback(
     (source: string, activity: string | null, priority = 1) => {
@@ -271,24 +378,19 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       currentActivity.current =
         [...activities.current.values()].sort((a, b) => b.priority - a.priority)[0]?.activity ??
         null
-      if (statusRef.current === 'live') trackCurrentPresence()
+      sendState()
     },
-    [trackCurrentPresence],
+    [sendState],
   )
 
-  // Selections can change many times a second (marquee drags), so presence updates are batched.
   const setSelection = useCallback(
     (area: SelectionArea, ids: string[]) => {
       const cur = selection.current[area]
       if (cur.length === ids.length && cur.every((id, i) => id === ids[i])) return
       selection.current = { ...selection.current, [area]: ids.slice(0, 100) }
-      if (selectionTimer.current) return
-      selectionTimer.current = window.setTimeout(() => {
-        selectionTimer.current = 0
-        if (statusRef.current === 'live') trackCurrentPresence()
-      }, 120)
+      sendState()
     },
-    [trackCurrentPresence],
+    [sendState],
   )
 
   const on = useCallback((event: string, handler: Handler) => {
