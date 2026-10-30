@@ -23,6 +23,7 @@ import {
   goToRoom,
   takeReturnRoom,
   useRoom,
+  type Peer,
 } from './lib/room.tsx'
 import { type ToastAction, bus, isTyping, toast } from './lib/bus.ts'
 import {
@@ -296,6 +297,7 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
     status,
     me,
     setActivity,
+    setPlace,
     on,
     send,
   } = useRoom()
@@ -459,6 +461,18 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
     }
   }, [go, openShare])
 
+  useEffect(() => setPlace({ page }), [page, setPlace])
+
+  // Clicking someone takes you to where they are: their page, the card they have open, or
+  // their spot and zoom on the canvas.
+  const jumpTo = (p: Peer) => {
+    const place = p.place
+    if (!place?.page) return
+    go(place.page)
+    if (place.page === 'canvas' && place.canvas) bus.emit('canvas:goto', place.canvas)
+    if (place.page === 'board' && place.card) bus.emit('board:open-card', { taskId: place.card })
+  }
+
   useEffect(() => {
     const workspace = page === 'board' ? 'On the board' : 'On the whiteboard'
     setActivity('workspace', workspace, 1)
@@ -480,7 +494,11 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
     status === 'live' ? 'Live' : status === 'connecting' ? 'Connecting' : 'Offline'
   const statusColor =
     status === 'live' ? '#22c55e' : status === 'connecting' ? '#f59e0b' : '#ef4444'
-  const shown = peers.slice(0, 4)
+  // Active people first, so whoever is away is the one folded into "+N".
+  const ordered = [...peers.filter((p) => !p.idle), ...peers.filter((p) => p.idle)]
+  const shown = ordered.slice(0, 4)
+  const peerTip = (p: Peer) =>
+    p.idle ? `${p.name} (inactive)` : `${p.name} · ${p.activity ?? 'Online'}`
 
   return (
     <div className="flex h-full flex-col" style={{ background: 'var(--dv-bg)' }}>
@@ -606,42 +624,41 @@ const Shell: React.FC<{ openOnEnter?: 'share' | 'settings' }> = ({ openOnEnter }
               />
             </button>
             {shown.map((p) => (
-              <span
+              <button
+                type="button"
                 key={p.id}
-                className="relative -ml-1.5"
-                title={`${p.name} · ${p.activity ?? 'Online'}`}
-                aria-label={`${p.name} · ${p.activity ?? 'Online'}`}
-                tabIndex={0}
+                className="relative -ml-1.5 rounded-full"
+                title={peerTip(p)}
+                aria-label={`${peerTip(p)}. Go to them`}
+                onClick={() => jumpTo(p)}
               >
                 <Avatar
                   name={p.name}
                   color={p.color}
                   src={p.avatar}
                   className="dv-avatar border-2"
-                  style={{ borderColor: 'var(--dv-panel)' }}
-                  data-tip={`${p.name} · ${p.activity ?? 'Online'}`}
-                  aria-label={`${p.name} · ${p.activity ?? 'Online'}`}
+                  style={{
+                    borderColor: 'var(--dv-panel)',
+                    filter: p.idle ? 'grayscale(1)' : undefined,
+                    opacity: p.idle ? 0.5 : undefined,
+                  }}
+                  data-tip={peerTip(p)}
+                  aria-label={peerTip(p)}
                 />
-                {p.activity && /^(Editing|Adding|Renaming)/.test(p.activity) && (
+                {!p.idle && p.activity && /^(Editing|Adding|Renaming)/.test(p.activity) && (
                   <span
                     className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2"
                     style={{ background: '#22c55e', borderColor: 'var(--dv-panel)' }}
                     aria-hidden="true"
                   />
                 )}
-              </span>
+              </button>
             ))}
             {peers.length > shown.length && (
               <div
                 className="dv-avatar multi -ml-1.5 flex h-7 w-7 items-center justify-center rounded-full border-2 text-[10px] font-semibold"
-                data-tip={peers
-                  .slice(shown.length)
-                  .map((p) => `${p.name} · ${p.activity ?? 'Online'}`)
-                  .join('\n')}
-                aria-label={`Also here: ${peers
-                  .slice(shown.length)
-                  .map((p) => `${p.name} · ${p.activity ?? 'Online'}`)
-                  .join(', ')}`}
+                data-tip={ordered.slice(shown.length).map(peerTip).join('\n')}
+                aria-label={`Also here: ${ordered.slice(shown.length).map(peerTip).join(', ')}`}
                 tabIndex={0}
                 style={{
                   background: 'var(--dv-panel-2)',

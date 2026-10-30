@@ -20,6 +20,18 @@ export interface Peer {
   activity?: string | null
   /** What they have selected or are editing: task ids on the board, element ids on the canvas. */
   selection?: PeerSelection | null
+  /** On another tab, or no input at all for IDLE_AFTER. */
+  idle?: boolean
+  /** Where they are, so clicking them can take you there. */
+  place?: PeerPlace | null
+}
+
+export interface PeerPlace {
+  page?: 'board' | 'canvas'
+  /** The card they have open on the board. */
+  card?: string | null
+  /** The middle of their canvas view (world coordinates) and their zoom. */
+  canvas?: { x: number; y: number; k: number }
 }
 
 export type SelectionArea = 'board' | 'canvas'
@@ -33,8 +45,16 @@ const TRACK_GAP = 2000
 const STATE_GAP = 100
 /** Broadcast event carrying a peer's activity and selection (kept out of presence, see trackIdentity). */
 const PEER_STATE = 'peer:state'
+/** No mouse, keyboard, scroll or touch input for this long counts as inactive. */
+const IDLE_AFTER = 5 * 60 * 1000
 
-type PeerState = { id: string; activity: string | null; selection: PeerSelection | null }
+type PeerState = {
+  id: string
+  activity: string | null
+  selection: PeerSelection | null
+  idle: boolean
+  place: PeerPlace | null
+}
 
 /** `fromSelf` is true when the event was emitted locally with send(..., true). */
 type Handler = (payload: any, fromSelf: boolean) => void
@@ -61,6 +81,8 @@ interface RoomContextValue {
   peers: Peer[]
   status: RoomStatus
   setActivity: (source: string, activity: string | null, priority?: number) => void
+  /** Share where you are (page, open card, canvas view) so others can jump to you. */
+  setPlace: (place: PeerPlace) => void
   /** Share what you're editing in one area, so others see it outlined in your colour. */
   setSelection: (area: SelectionArea, ids: string[]) => void
   /** Broadcast to everyone else in the room. Pass `local = true` to also notify handlers in this window. */
@@ -211,6 +233,8 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   const stateTimer = useRef(0)
   const lastStateAt = useRef(0)
   const lastState = useRef('')
+  const idle = useRef(false)
+  const place = useRef<PeerPlace>({})
 
   const updateStatus = (s: RoomStatus) => {
     statusRef.current = s
@@ -221,7 +245,13 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
     setPeers(
       present.current.map((p) => {
         const s = peerStates.current.get(p.id)
-        return { ...p, activity: s?.activity ?? null, selection: s?.selection ?? null }
+        return {
+          ...p,
+          activity: s?.activity ?? null,
+          selection: s?.selection ?? null,
+          idle: s?.idle ?? false,
+          place: s?.place ?? null,
+        }
       }),
     )
 
@@ -253,6 +283,8 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
         id: idRef.current,
         activity: currentActivity.current,
         selection: selection.current,
+        idle: idle.current,
+        place: place.current,
       }
       const key = JSON.stringify(state)
       if (key === lastState.current) return
@@ -284,6 +316,8 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
             id: s.id,
             activity: s.activity ?? null,
             selection: s.selection ?? null,
+            idle: s.idle === true,
+            place: s.place && typeof s.place === 'object' ? s.place : null,
           })
           publishPeers()
           return
@@ -366,6 +400,34 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
     }
   }, [roomId, trackIdentity, sendState])
 
+  // Inactive = this tab is hidden, or nothing has been touched for IDLE_AFTER. Any input (even
+  // just moving the mouse) makes you active again straight away.
+  useEffect(() => {
+    let lastInput = Date.now()
+    const update = () => {
+      const next = document.hidden || Date.now() - lastInput >= IDLE_AFTER
+      if (next === idle.current) return
+      idle.current = next
+      sendState()
+    }
+    const onInput = () => {
+      lastInput = Date.now()
+      if (idle.current) update()
+    }
+    // Coming back to the tab counts as activity.
+    const onVisibility = () => (document.hidden ? update() : onInput())
+    const inputs = ['pointermove', 'pointerdown', 'keydown', 'wheel', 'scroll', 'touchstart']
+    inputs.forEach((e) => window.addEventListener(e, onInput, { capture: true, passive: true }))
+    document.addEventListener('visibilitychange', onVisibility)
+    const timer = window.setInterval(update, 10000)
+    update()
+    return () => {
+      inputs.forEach((e) => window.removeEventListener(e, onInput, { capture: true }))
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.clearInterval(timer)
+    }
+  }, [sendState])
+
   // Re-announce when the display name or picture changes.
   useEffect(() => {
     trackIdentity()
@@ -378,6 +440,14 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       currentActivity.current =
         [...activities.current.values()].sort((a, b) => b.priority - a.priority)[0]?.activity ??
         null
+      sendState()
+    },
+    [sendState],
+  )
+
+  const setPlace = useCallback(
+    (patch: PeerPlace) => {
+      place.current = { ...place.current, ...patch }
       sendState()
     },
     [sendState],
@@ -424,6 +494,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       peers,
       status,
       setActivity,
+      setPlace,
       setSelection,
       send,
       on,
@@ -440,6 +511,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       peers,
       status,
       setActivity,
+      setPlace,
       setSelection,
       send,
       on,

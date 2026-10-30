@@ -247,7 +247,7 @@ interface MenuState {
 }
 
 export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) => {
-  const { roomId, send, on, peers, setActivity, setSelection } = useRoom()
+  const { roomId, send, on, peers, setActivity, setPlace, setSelection } = useRoom()
 
   const [categories, setCategories] = useState<Category[]>([])
   const categoriesRef = useRef<Category[]>([])
@@ -579,6 +579,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   useEffect(() => {
     return bus.on('board:open-card', ({ taskId }: { taskId: string }) => setOpenCardId(taskId))
   }, [])
+
+  // So clicking your avatar takes others to the card you're looking at.
+  useEffect(() => setPlace({ card: openCardId }), [openCardId, setPlace])
+
   useEffect(() => {
     if (loading) return
     const pending = takePendingCard(roomId)

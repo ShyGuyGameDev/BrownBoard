@@ -648,7 +648,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   active = true,
   theme = 'light',
 }) => {
-  const { roomId, me, send, on, status, isOwner, setActivity, peers, setSelection } = useRoom()
+  const { roomId, me, send, on, status, isOwner, setActivity, setPlace, peers, setSelection } =
+    useRoom()
   const taskData = useRoomTasks()
 
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -1633,11 +1634,23 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   /* View helpers                                                        */
   /* ================================================================== */
 
+  // Share where you're looking (once panning and zooming settle) so others can jump to it.
+  const placeTimer = useRef(0)
+  const sharePlace = () => {
+    window.clearTimeout(placeTimer.current)
+    placeTimer.current = window.setTimeout(() => {
+      if (!st.w) return
+      const c = viewCenter()
+      setPlace({ canvas: { x: Math.round(c.x), y: Math.round(c.y), k: st.view.k } })
+    }, 400)
+  }
+
   const setView = (v: Partial<{ x: number; y: number; k: number }>) => {
     st.view = { ...st.view, ...v }
     if (v.k !== undefined) setZoomPct(Math.round(st.view.k * 100))
     if (editingRef.current) force((n) => n + 1)
     requestDraw()
+    sharePlace()
   }
 
   const zoomAt = (factor: number, clientX: number, clientY: number) => {
@@ -1695,6 +1708,18 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       if (p < 1) requestAnimationFrame(step)
     }
     requestAnimationFrame(step)
+  }
+
+  /** Jump to someone else's view: the same middle point and zoom. */
+  const goTo = (c: { x: number; y: number; k: number }) => {
+    if (st.focusId) {
+      st.focusId = null
+      st.focusSet = null
+      st.prevView = null
+      setFocus(null)
+    }
+    const k = clamp(c.k, 0.1, 4)
+    animateTo({ k, x: st.w / 2 - c.x * k, y: st.h / 2 - c.y * k })
   }
 
   const viewForItems = (items: El[], maxK = 1.25) => {
@@ -2452,6 +2477,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     enterFocus,
     exitFocus,
     focusTask,
+    goTo,
   }
 
   // canvas sizing
@@ -2467,6 +2493,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       canvas.width = Math.max(1, Math.round(r.width * dpr))
       canvas.height = Math.max(1, Math.round(r.height * dpr))
       requestDraw()
+      sharePlace()
     })
     ro.observe(wrap)
     return () => {
@@ -2603,10 +2630,14 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     const offFocus = bus.on('canvas:focus-task', ({ taskId }: { taskId: string }) =>
       api.current.focusTask(taskId),
     )
+    const offGoto = bus.on('canvas:goto', (c: { x: number; y: number; k: number }) =>
+      api.current.goTo(c),
+    )
     return () => {
       offAdd()
       offHist()
       offFocus()
+      offGoto()
     }
   }, [])
 
