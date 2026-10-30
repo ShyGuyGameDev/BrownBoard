@@ -2377,3 +2377,34 @@ body.dv-grabbing * {
 .dv-notif-empty p {
   margin: 0;
 }
+
+/* A member on the card view: hover (or keyboard focus) shows a red trash button in its place. */
+.dv-member-remove {
+  position: relative;
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dv-radius-full);
+  background: transparent;
+  cursor: pointer;
+}
+.dv-member-remove-icon {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--dv-radius-full);
+  background: var(--dv-danger);
+  color: #fff;
+  opacity: 0;
+  transition: opacity var(--dv-dur-fast);
+}
+.dv-member-remove:hover .dv-member-remove-icon,
+.dv-member-remove:focus-visible .dv-member-remove-icon {
+  opacity: 1;
+}
+.dv-member-remove:focus-visible {
+  outline: 2px solid var(--dv-danger);
+  outline-offset: 2px;
+}

@@ -501,15 +501,19 @@ export const CardDetail: React.FC<Props> = (props) => {
             <span className="dv-prop-name">Members</span>
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
               {members.map((p) => (
-                <Avatar
+                // Hovering swaps the avatar for a red trash button; clicking takes them off the card.
+                <button
                   key={p.id}
-                  name={p.name}
-                  color={colorFor(p.id)}
-                  src={p.avatarUrl}
-                  size={24}
-                  data-tip={p.name}
-                  aria-label={p.name}
-                />
+                  className="dv-member-remove"
+                  title={`Remove ${p.id === userId ? 'yourself' : p.name}`}
+                  aria-label={`Remove ${p.name} from this card`}
+                  onClick={() => onPatch({ memberIds: task.memberIds.filter((x) => x !== p.id) })}
+                >
+                  <Avatar name={p.name} color={colorFor(p.id)} src={p.avatarUrl} size={24} />
+                  <span className="dv-member-remove-icon" aria-hidden>
+                    <Trash2 size={13} />
+                  </span>
+                </button>
               ))}
               <button
                 className="dv-prop-add !mt-0"
