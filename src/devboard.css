@@ -2456,3 +2456,478 @@ button.dv-tag {
 [role^='menuitem'][aria-disabled='true'] {
   cursor: not-allowed;
 }
+
+/* ---------- moving a card from its detail ("in list ▾") ---------- */
+.dv-detail-list {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--dv-text);
+  font-weight: var(--dv-weight-semibold);
+}
+.dv-detail-list select {
+  appearance: none;
+  max-width: 220px;
+  margin: 0;
+  padding: 0 14px 0 0;
+  border: 0;
+  border-radius: var(--dv-radius-xs);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.dv-detail-list select:hover {
+  text-decoration: underline;
+}
+.dv-detail-list svg {
+  position: absolute;
+  right: 0;
+  pointer-events: none;
+  color: var(--dv-muted);
+}
+
+/* ================================================================== */
+/* Phones and touch screens                                            */
+/* Why each rule is here: research_notes/Mobile design/mobile-design.md */
+/* ================================================================== */
+
+/* Clear of the notch and rounded corners in landscape (the viewport is viewport-fit=cover). */
+#root {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* A fingertip is less precise than a cursor: controls grow to 44px (Apple's minimum; WCAG 2.5.5). */
+@media (pointer: coarse) {
+  :root {
+    --dv-size-icon: 44px;
+    --dv-size-control: 40px;
+    --dv-size-control-sm: 36px;
+  }
+  button,
+  [role='button'] {
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Lists are only dragged with a mouse here, so a swipe across a header scrolls the board. */
+  .dv-col-head {
+    touch-action: auto;
+    cursor: auto;
+  }
+}
+
+/* Touch screens can't hover, so nothing may hide until hovered. */
+@media (hover: none) {
+  .dv-col-archive {
+    opacity: 1;
+  }
+  /* Tapping a card opens it, and its detail has the same actions. */
+  .dv-card .dv-card-float {
+    display: none;
+  }
+}
+
+/* ---------- bottom sheets ---------- */
+.dv-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--dv-z-modal);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  background: rgba(10, 12, 16, 0.45);
+  animation: dv-fade var(--dv-dur-base) var(--dv-ease);
+}
+.dv-sheet {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100% - 40px - env(safe-area-inset-top));
+  padding-bottom: env(safe-area-inset-bottom);
+  border-radius: 16px 16px 0 0;
+  background: var(--dv-panel);
+  box-shadow: var(--dv-shadow);
+  color: var(--dv-text);
+  outline: none;
+  animation: dv-sheet-up var(--dv-dur-slow) var(--dv-ease);
+  transition: transform var(--dv-dur-slow) var(--dv-ease);
+}
+.dv-sheet-head {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 8px 4px 20px;
+  touch-action: none;
+}
+.dv-sheet-grip {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  width: 36px;
+  height: 5px;
+  margin-left: -18px;
+  border-radius: var(--dv-radius-full);
+  background: var(--dv-border);
+}
+.dv-sheet-head h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 17px;
+  font-weight: var(--dv-weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dv-sheet-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 20px 20px;
+}
+/* The sheet's own title says it. */
+.dv-sheet .dv-pop-title {
+  display: none;
+}
+.dv-sheet .dv-menu-item {
+  min-height: 52px;
+  gap: 12px;
+  margin: 0 -8px;
+  width: calc(100% + 16px);
+  font-size: 15px;
+}
+.dv-sheet .dv-menu-item .dv-menu-hint {
+  font-size: 12.5px;
+}
+.dv-sheet .dv-menu-head {
+  padding-left: 0;
+  font-size: 12px;
+}
+@keyframes dv-sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+/* ---------- room: top bar and bottom tabs ---------- */
+.dv-mobile-bar {
+  height: calc(56px + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+}
+.dv-mobile-title {
+  display: block;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: none;
+  color: var(--dv-text);
+  font-size: 16px;
+  font-weight: var(--dv-weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dv-mobile-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: var(--dv-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.dv-mobile-unsaved {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--dv-warning);
+  font: inherit;
+  font-weight: var(--dv-weight-semibold);
+}
+.dv-mobile-unsaved::before {
+  content: '·';
+  margin-right: 5px;
+  color: var(--dv-muted);
+  font-weight: normal;
+}
+.dv-mobile-bar .dv-header-rename {
+  width: 100%;
+}
+
+.dv-tabbar {
+  display: flex;
+  flex-shrink: 0;
+  padding-bottom: env(safe-area-inset-bottom);
+  border-top: 1px solid var(--dv-border);
+  background: var(--dv-panel);
+}
+.dv-tabbar button {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 60px;
+  border: 0;
+  background: none;
+  color: var(--dv-muted);
+  font-size: 12px;
+  font-weight: var(--dv-weight-medium);
+}
+/* The selected tab's icon sits on a pill, so the current view reads at a glance. */
+.dv-tabbar svg {
+  box-sizing: content-box;
+  padding: 3px 18px;
+  border-radius: var(--dv-radius-full);
+  transition: background var(--dv-dur-base) var(--dv-ease);
+}
+.dv-tabbar button[data-active='true'] {
+  color: var(--dv-text);
+  font-weight: var(--dv-weight-semibold);
+}
+.dv-tabbar button[data-active='true'] svg {
+  background: var(--dv-accent-soft);
+  color: var(--dv-accent);
+}
+
+@media (max-width: 640px) {
+  /* iOS zooms the page into any field whose text is under 16px. */
+  input,
+  textarea,
+  select,
+  .dv-input,
+  .dv-inline-input,
+  .dv-detail-list select {
+    font-size: 16px;
+  }
+
+  /* Toasts sit above the tab bar, not on it. */
+  .dv-toast-wrap {
+    bottom: calc(60px + env(safe-area-inset-bottom) + 12px);
+    width: max-content;
+    max-width: calc(100vw - 32px);
+  }
+  .dv-upload-wrap {
+    right: 16px;
+    bottom: calc(60px + env(safe-area-inset-bottom) + 68px);
+  }
+  .dv-bell-panel {
+    position: fixed;
+    top: calc(56px + env(safe-area-inset-top) + 4px);
+    right: 8px;
+    left: 8px;
+    width: auto;
+    max-height: 70dvh;
+    overflow-y: auto;
+  }
+  .dv-hide-mobile {
+    display: none !important;
+  }
+
+  /* ---------- board: one list at a time, swiped sideways ---------- */
+  .dv-board-bar {
+    gap: 6px;
+    padding: 10px 12px 8px;
+  }
+  .dv-board-search {
+    flex: 1;
+    order: -1;
+    width: auto;
+    min-width: 0;
+  }
+  .dv-board-search > svg {
+    top: 13px;
+  }
+  .dv-board-search > button {
+    top: 8px;
+  }
+  .dv-board-search .dv-kbd {
+    display: none;
+  }
+  .dv-board-bar .dv-btn {
+    justify-content: center;
+    min-width: 44px;
+    height: 40px !important;
+  }
+  .dv-col-pager {
+    display: flex;
+    flex-shrink: 0;
+    gap: 6px;
+    padding: 0 16px 10px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .dv-col-pager::-webkit-scrollbar {
+    display: none;
+  }
+  .dv-col-pager button {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    max-width: 200px;
+    height: 36px;
+    padding: 0 14px;
+    border: 1px solid var(--dv-border);
+    border-radius: var(--dv-radius-full);
+    background: var(--dv-panel);
+    color: var(--dv-muted);
+    font-size: 14px;
+    font-weight: var(--dv-weight-medium);
+  }
+  .dv-col-pager button > span:last-child {
+    font-size: 12px;
+    opacity: 0.75;
+  }
+  .dv-col-pager button[data-active='true'] {
+    border-color: var(--dv-text);
+    background: var(--dv-text);
+    color: var(--dv-bg);
+  }
+  .dv-cols {
+    gap: 12px;
+    padding: 0 16px 16px;
+    scroll-snap-type: x mandatory;
+    scroll-padding-inline: 16px;
+    overscroll-behavior-x: contain;
+  }
+  /* Narrower than the screen, so the next list peeks in and says "swipe". */
+  .dv-cols > .dv-col,
+  .dv-cols > .dv-col-add {
+    width: min(calc(100vw - 48px), 440px) !important;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
+  .dv-col-resize,
+  .dv-col-grip {
+    display: none;
+  }
+  .dv-col-head h2 {
+    font-size: 15px;
+  }
+
+  /* ---------- card detail: a full screen, not a floating box ---------- */
+  .dv-detail-backdrop {
+    align-items: stretch;
+    padding: 0;
+  }
+  .dv-detail {
+    max-width: none;
+    max-height: none;
+    height: 100%;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    border: 0;
+    border-radius: 0;
+  }
+  /* Close stays in reach while scrolling a long card. */
+  .dv-detail > .dv-detail-head {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    margin: 0;
+    padding: var(--dv-space-4) var(--dv-space-4) var(--dv-space-2);
+    background: var(--dv-panel);
+  }
+
+  /* ---------- canvas: controls at the edges, tools in a swipeable bar ---------- */
+  .dv-wb-toolbar {
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    display: flex;
+    justify-content: center;
+    transform: none;
+    translate: none;
+  }
+  .dv-wb-tools {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .dv-wb-tools::-webkit-scrollbar {
+    display: none;
+  }
+  .dv-wb-tools > * {
+    flex-shrink: 0;
+  }
+  .dv-wb-selbar {
+    bottom: 76px;
+  }
+  /* Pinching zooms, so only the reset and fit buttons stay. */
+  .dv-wb-zoom {
+    top: 8px;
+    right: 66px;
+    bottom: auto;
+    left: auto;
+  }
+  .dv-wb-zoom > .dv-floating {
+    padding: 2px;
+  }
+  .dv-wb-zoom > .dv-floating > :is(:nth-child(1), :nth-child(3), :nth-child(4)) {
+    display: none;
+  }
+  .dv-wb-settings {
+    top: 8px;
+    right: 8px;
+    bottom: auto;
+  }
+  .dv-wb-settings > .dv-iconbtn {
+    width: 50px;
+    height: 50px;
+    border: 1px solid var(--dv-border);
+    border-radius: var(--dv-radius-xl);
+    background: var(--dv-panel);
+    box-shadow: var(--dv-shadow);
+  }
+  .dv-wb-settings > .dv-floating {
+    top: 100%;
+    bottom: auto;
+    width: min(288px, calc(100vw - 16px));
+    max-height: calc(100dvh - 240px);
+    margin: 8px 0 0;
+    overflow-y: auto;
+  }
+  .dv-wb-focus {
+    top: 8px;
+    right: 132px;
+    left: 8px;
+    transform: none;
+    translate: none;
+  }
+  .dv-wb-focus > .dv-floating {
+    gap: 8px;
+    padding-left: 12px;
+  }
+  .dv-wb-focus > .dv-floating > .flex-col {
+    flex: 1;
+  }
+  /* Side panels move to the top, under the zoom row, out of the drawing hand's way. */
+  .dv-wb-panel {
+    top: 66px;
+    left: 8px;
+    max-height: 40%;
+    overflow-y: auto;
+    transform: none;
+    translate: none;
+  }
+  .dv-wb-props {
+    right: 8px;
+    width: auto;
+    flex-direction: row;
+    align-items: flex-start;
+    overflow-x: auto;
+  }
+  .dv-wb-props > * {
+    flex: 0 0 auto;
+    width: 172px;
+  }
+}

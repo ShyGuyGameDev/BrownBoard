@@ -55,6 +55,7 @@ import {
   saveFilters,
 } from './board-filters'
 import { ArchivePanel } from './archive-panel'
+import { useIsMobile } from './lib/viewport'
 import { takePendingCard } from './notifications'
 import {
   type BoardSettings,
@@ -342,6 +343,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   } | null>(null)
   const colsRef = useRef<HTMLDivElement>(null)
   const colEls = useRef(new Map<string, HTMLElement>())
+  // Phones show one list at a time, swiped sideways, with a row of list tabs to jump between.
+  const isMobile = useIsMobile()
+  const [inView, setInView] = useState(0)
+  const pagerRef = useRef<HTMLDivElement>(null)
   const colDragRef = useRef<ColDrag | null>(null)
   const [colDragId, setColDragId] = useState<string | null>(null)
   const [colWidths, setColWidths] = useState(() => readColWidths(roomId))
@@ -1652,22 +1657,26 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     const target = dropAtRef.current
     endDrag()
     if (!drag || !target) return
+    moveTask(drag.taskId, target.cat, target.index)
+  }
 
+  /** Puts a card at `at` in a list (an index counted before the card leaves its old spot). */
+  const moveTask = (taskId: string, toCat: string, at: number) => {
     const prev = categoriesRef.current
-    const fromCat = prev.find((c) => c.tasks.some((t) => t.id === drag.taskId))
-    const task = fromCat?.tasks.find((t) => t.id === drag.taskId)
+    const fromCat = prev.find((c) => c.tasks.some((t) => t.id === taskId))
+    const task = fromCat?.tasks.find((t) => t.id === taskId)
     if (!fromCat || !task) return
 
-    let index = target.index
-    if (fromCat.id === target.cat) {
-      const fromIdx = fromCat.tasks.findIndex((t) => t.id === drag.taskId)
+    let index = at
+    if (fromCat.id === toCat) {
+      const fromIdx = fromCat.tasks.findIndex((t) => t.id === taskId)
       if (fromIdx < index) index -= 1
       if (index === fromIdx) return
     }
 
     const next = prev.map((c) => {
-      const tasks = c.tasks.filter((t) => t.id !== drag.taskId)
-      if (c.id === target.cat) tasks.splice(index, 0, { ...task, categoryId: target.cat })
+      const tasks = c.tasks.filter((t) => t.id !== taskId)
+      if (c.id === toCat) tasks.splice(index, 0, { ...task, categoryId: toCat })
       return {
         ...c,
         tasks: sinkDone(tasks, crossoffsRef.current).map((t, i) => ({ ...t, position: i })),
@@ -1826,6 +1835,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const onColumnPointerDown = (e: React.PointerEvent<HTMLElement>, catId: string) => {
     // A press that never became a drag (released elsewhere) is simply replaced.
     if (e.button !== 0 || colDragRef.current?.started) return
+    // On a touch screen a swipe across a list's header scrolls the board.
+    if (e.pointerType === 'touch') return
     const target = e.target as HTMLElement
     // The header's own controls keep working; the grip is the exception, it's for dragging.
     if (target.closest('input, textarea, button:not([data-grip])')) return
@@ -1950,7 +1961,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (!openCardId) return null
     for (const c of categories) {
       const task = c.tasks.find((t) => t.id === openCardId)
-      if (task) return { task, list: c.name }
+      if (task) return { task, list: c.name, listId: c.id }
     }
     return null
   })()
@@ -2220,6 +2231,35 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     </div>
   )
 
+  /** Phones: brings list `i` into view. */
+  const showColumn = (i: number) => {
+    const el = colEls.current.get(categories[i]?.id)
+    const box = colsRef.current
+    if (!el || !box) return
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    box.scrollTo({
+      left: el.offsetLeft - parseFloat(getComputedStyle(box).scrollPaddingLeft || '0'),
+      behavior: reduce ? 'auto' : 'smooth',
+    })
+  }
+
+  /** Phones: which list is in view, so its tab is the highlighted one. */
+  const onColumnsScroll = () => {
+    const box = colsRef.current
+    if (!isMobile || !box) return
+    const left = box.scrollLeft + box.clientWidth / 2
+    let at = 0
+    categories.forEach((c, i) => {
+      const el = colEls.current.get(c.id)
+      if (el && el.offsetLeft <= left) at = i
+    })
+    if (at === inView) return
+    setInView(at)
+    pagerRef.current
+      ?.querySelector<HTMLElement>(`[data-index="${at}"]`)
+      ?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+  }
+
   return (
     <div
       className="flex h-full min-h-0 flex-col"
@@ -2227,7 +2267,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       onDragOver={(e) => e.preventDefault()}
     >
       {/* Toolbar */}
-      <div className="flex shrink-0 items-center gap-3 px-6 pb-3 pt-4">
+      <div className="dv-board-bar flex shrink-0 items-center gap-3 px-6 pb-3 pt-4">
         <button
           className="dv-iconbtn shrink-0"
           title="Kanban settings"
@@ -2236,7 +2276,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         >
           <Settings2 size={15} />
         </button>
-        <div className="relative w-72">
+        <div className="dv-board-search relative w-72">
           <Search
             size={14}
             className="pointer-events-none absolute left-2.5 top-2.5"
@@ -2272,6 +2312,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         <button
           className="dv-btn shrink-0"
           data-active={filterCount > 0}
+          aria-label={filterCount > 0 ? `Filter, ${filterCount} on` : 'Filter'}
           aria-haspopup="menu"
           aria-expanded={!!filterMenu}
           onClick={(e) => {
@@ -2282,19 +2323,20 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           }}
         >
           <ListFilter size={14} />
-          Filter
+          <span className="dv-hide-mobile">Filter</span>
           {filterCount > 0 && <span className="dv-count">{filterCount}</span>}
         </button>
-        <span className="text-xs" style={{ color: 'var(--dv-muted)' }}>
+        <span className="dv-hide-mobile text-xs" style={{ color: 'var(--dv-muted)' }}>
           {totals.done} of {totals.all} done
         </span>
         <button
           className="dv-btn !h-8 ml-auto shrink-0"
           title="Archived cards and lists"
+          aria-label="Archived cards and lists"
           onClick={() => setArchiveOpen(true)}
         >
           <Archive size={14} />
-          Archive
+          <span className="dv-hide-mobile">Archive</span>
           {archived.tasks.length + archived.lists.length > 0 && (
             <span className="dv-count muted">{archived.tasks.length + archived.lists.length}</span>
           )}
@@ -2325,11 +2367,30 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         total={totals.all}
       />
 
+      {isMobile && categories.length > 1 && (
+        <div ref={pagerRef} className="dv-col-pager" role="tablist" aria-label="Lists">
+          {categories.map((cat, i) => (
+            <button
+              key={cat.id}
+              role="tab"
+              data-index={i}
+              aria-selected={i === inView}
+              data-active={i === inView}
+              onClick={() => showColumn(i)}
+            >
+              <span className="truncate">{cat.name}</span>
+              <span className="tabular-nums">{cat.tasks.filter(matches).length}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Columns */}
       <div
         ref={colsRef}
         className="dv-scroll dv-cols relative flex min-h-0 flex-1 items-start gap-4 overflow-x-auto px-6 pb-6"
         data-col-drag={colDragId !== null}
+        onScroll={onColumnsScroll}
       >
         {categories.map((cat, catIndex) => {
           const visible = cat.tasks.filter(matches)
@@ -2437,6 +2498,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                     className="min-w-0 flex-1 truncate text-[13.5px] font-semibold"
                     title="Double-click to rename"
                     onDoubleClick={() => setRenamingCat({ id: cat.id, name: cat.name })}
+                    // Phones have no double-click to speak of: a tap renames.
+                    onClick={
+                      isMobile ? () => setRenamingCat({ id: cat.id, name: cat.name }) : undefined
+                    }
                   >
                     {cat.name}
                   </h2>
@@ -2445,7 +2510,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   {filtering ? `${visible.length}/${cat.tasks.length}` : cat.tasks.length}
                 </span>
                 <button
-                  className="dv-iconbtn !h-6 !w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                  className="dv-col-archive dv-iconbtn !h-6 !w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                   onClick={() => archiveCategory(cat)}
                   title="Archive list"
                   aria-label={`Archive the list ${cat.name}`}
@@ -2844,7 +2909,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         })}
 
         {/* Add list */}
-        <div className="w-[304px] shrink-0">
+        <div className="dv-col-add w-[304px] shrink-0">
           {addingList ? (
             <div className="dv-col !max-h-none gap-2 p-2">
               <input
@@ -3348,6 +3413,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           key={openCard.task.id}
           task={openCard.task}
           listName={openCard.list}
+          listId={openCard.listId}
+          lists={categories}
+          onMove={(listId) => {
+            const to = categories.find((c) => c.id === listId)
+            if (to) moveTask(openCard.task.id, listId, to.tasks.length)
+          }}
           done={isTaskDone(crossoffs, openCard.task)}
           crossoffs={crossoffs}
           fields={boardFields()}

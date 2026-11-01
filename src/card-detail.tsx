@@ -48,6 +48,8 @@ import {
   splitMentions,
 } from './lib/cards'
 import { Avatar } from './avatar'
+import { useIsMobile } from './lib/viewport'
+import { useBackToClose } from './lib/back-to-close'
 import { FileChip } from './file-viewer'
 
 /** What the detail view needs of a board task. */
@@ -92,6 +94,11 @@ export interface CardField {
 interface Props {
   task: CardTask
   listName: string
+  /** The board's lists, for moving the card without dragging it. */
+  lists: { id: string; name: string }[]
+  listId: string
+  /** Moves the card to the bottom of another list. */
+  onMove: (listId: string) => void
   done: boolean
   /** Category + status pairs that cross a card off (any one is enough). */
   crossoffs: DoneRule[]
@@ -146,6 +153,9 @@ export const CardDetail: React.FC<Props> = (props) => {
   const [editingNotes, setEditingNotes] = useState(false)
   const [pop, setPop] = useState<(Pop & { x: number; y: number }) | null>(null)
   const dialogRef = useRef<HTMLElement>(null)
+  // Full screen on phones, where Back closes it like any other screen.
+  const isMobile = useIsMobile()
+  useBackToClose(onClose, isMobile)
 
   // Follow teammates' changes unless you're mid-edit.
   const titleFocused = useRef(false)
@@ -426,7 +436,26 @@ export const CardDetail: React.FC<Props> = (props) => {
               }}
             />
             <p className="dv-detail-sub">
-              in list <strong>{props.listName}</strong>
+              in list{' '}
+              {props.lists.length > 1 ? (
+                <label className="dv-detail-list">
+                  <select
+                    aria-label="Move to list"
+                    title="Move to another list"
+                    value={props.listId}
+                    onChange={(e) => props.onMove(e.target.value)}
+                  >
+                    {props.lists.map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {l.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={12} aria-hidden />
+                </label>
+              ) : (
+                <strong>{props.listName}</strong>
+              )}
               {props.done && (
                 <span className="dv-detail-done">
                   <CircleCheck size={12} /> Done

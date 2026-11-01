@@ -5,17 +5,20 @@ import {
   ArrowUpRight,
   BringToFront,
   Circle,
+  Copy,
   Crosshair,
   Download,
   Eye,
   Heart,
   ImageIcon,
   Kanban,
+  Layers,
   ListTodo,
   Maximize,
   Minus,
   MousePointer2,
   Pen,
+  Pencil,
   Plus,
   Redo2,
   SendToBack,
@@ -619,7 +622,7 @@ const ToolBtn: React.FC<{
   active?: boolean
   disabled?: boolean
   danger?: boolean
-  onClick: () => void
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void
 }> = ({ icon, label, kbd, active, disabled, danger, onClick }) => (
   <button
     className={`dv-iconbtn ${danger ? 'danger' : ''}`}
@@ -759,6 +762,9 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   const redoStack = useRef<Entry[]>([])
   const pointers = useRef(new Map<number, Pt>())
   const pinch = useRef<{ d: number; cx: number; cy: number } | null>(null)
+  // Last input was a finger: there's no keyboard, right-click or double-click, so selections
+  // get buttons for what those would do.
+  const [touchInput, setTouchInput] = useState(() => matchMedia('(pointer: coarse)').matches)
   const lastCursorSend = useRef(0)
   const lastLiveSend = useRef(0)
   const imageCache = useRef(new Map<string, HTMLImageElement | 'loading'>())
@@ -2151,7 +2157,18 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     if (e.button !== 0) return
     const p = toWorld(e)
     const t = toolRef.current
-    if (t === 'select') return selectDown(p, e.shiftKey)
+    const touch = e.pointerType === 'touch'
+    if (touch !== touchInput) setTouchInput(touch)
+    if (t === 'select') {
+      selectDown(p, e.shiftKey)
+      // A finger on empty canvas moves around it, like a map (two fingers pinch to zoom).
+      // Box-selecting needs a mouse or a pen.
+      if (touch && st.act?.kind === 'marquee') {
+        st.marquee = null
+        st.act = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: st.view.x, vy: st.view.y }
+      }
+      return
+    }
     if (t === 'pen') {
       st.preview = mkEl({ type: 'stroke', points: [p] })
       st.act = { kind: 'draw' }
@@ -2988,7 +3005,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       )}
 
       {count === 0 && !editing && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6">
           <div
             className="max-w-sm text-center text-[13px] leading-relaxed"
             style={{ color: 'var(--dv-muted)' }}
@@ -2996,23 +3013,32 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             <p className="mb-1 text-[15px] font-semibold" style={{ color: 'var(--dv-text)' }}>
               Empty canvas
             </p>
-            Double-click to write, drag in images or paste a screenshot. Press{' '}
-            <span className="dv-kbd">K</span> to pull in a task from the board, then link things
-            with the arrow tool (<span className="dv-kbd">C</span>).
+            {touchInput ? (
+              <>
+                Pick a tool below to draw or write. Drag to move around and pinch to zoom. The list
+                button pulls in a task from the board.
+              </>
+            ) : (
+              <>
+                Double-click to write, drag in images or paste a screenshot. Press{' '}
+                <span className="dv-kbd">K</span> to pull in a task from the board, then link things
+                with the arrow tool (<span className="dv-kbd">C</span>).
+              </>
+            )}
           </div>
         </div>
       )}
 
       {/* focus mode banner */}
       {focus && (
-        <div className="absolute left-1/2 top-4 z-20 -translate-x-1/2">
+        <div className="dv-wb-focus absolute left-1/2 top-4 z-20 -translate-x-1/2">
           <div className="dv-floating flex items-center gap-3 py-1.5 pl-4 pr-1.5">
             <Crosshair size={15} style={{ color: 'var(--dv-accent)' }} />
             <div className="flex min-w-0 flex-col leading-tight">
               <span className="max-w-[300px] truncate text-[13px] font-semibold">
                 {focusTaskInfo?.title ?? 'Task'}
               </span>
-              <span className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+              <span className="dv-hide-mobile text-[11px]" style={{ color: 'var(--dv-muted)' }}>
                 Focus mode · {focusLinked} item{focusLinked === 1 ? '' : 's'} in context · new items
                 link here automatically
               </span>
@@ -3023,7 +3049,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
               title="Show this task on the board"
             >
               <Kanban size={14} />
-              Board
+              <span className="dv-hide-mobile">Board</span>
             </button>
             <button
               className="dv-btn primary"
@@ -3038,7 +3064,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       )}
 
       {singleFile && (
-        <div className="dv-floating absolute left-4 top-1/2 z-20 flex w-[196px] -translate-y-1/2 flex-col gap-2 p-3.5">
+        <div className="dv-floating dv-wb-panel absolute left-4 top-1/2 z-20 flex w-[196px] -translate-y-1/2 flex-col gap-2 p-3.5">
           <span className="dv-label truncate" title={singleFile.name}>
             {singleFile.name}
           </span>
@@ -3070,7 +3096,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       )}
 
       {singleTask && (
-        <div className="dv-floating absolute left-4 top-1/2 z-20 flex w-[196px] -translate-y-1/2 flex-col gap-2 p-3.5">
+        <div className="dv-floating dv-wb-panel absolute left-4 top-1/2 z-20 flex w-[196px] -translate-y-1/2 flex-col gap-2 p-3.5">
           <span className="dv-label">Task card</span>
           <button
             className="dv-btn primary justify-center"
@@ -3108,7 +3134,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
 
       {/* properties */}
       {showProps && (
-        <div className="dv-floating absolute left-4 top-1/2 z-20 flex w-[196px] -translate-y-1/2 flex-col gap-3.5 p-3.5">
+        <div className="dv-floating dv-wb-panel dv-wb-props absolute left-4 top-1/2 z-20 flex w-[196px] -translate-y-1/2 flex-col gap-3.5 p-3.5">
           {showWidth && (
             <div className="flex flex-col gap-1.5">
               <span className="dv-label">Line width</span>
@@ -3241,8 +3267,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       )}
 
       {/* toolbar */}
-      <div className="absolute bottom-5 left-1/2 z-20 -translate-x-1/2">
-        <div className="dv-floating relative flex items-center gap-0.5 p-1.5">
+      <div className="dv-wb-toolbar absolute bottom-5 left-1/2 z-20 -translate-x-1/2">
+        <div className="dv-floating dv-wb-tools relative flex items-center gap-0.5 p-1.5">
           <ToolBtn
             icon={<MousePointer2 size={16} />}
             label="Select"
@@ -3313,75 +3339,99 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             disabled={!canRedo}
             onClick={redo}
           />
-
-          {tool === 'shape' && (
-            <div className="dv-floating absolute bottom-full left-1/2 mb-2 flex -translate-x-1/2 flex-col gap-2 p-2.5">
-              <div className="flex gap-1">
-                {(Object.keys(shapeIcons) as ShapeKind[]).map((kind) => {
-                  const Icon = shapeIcons[kind]
-                  return (
-                    <ToolBtn
-                      key={kind}
-                      icon={<Icon size={16} />}
-                      label={kind[0].toUpperCase() + kind.slice(1)}
-                      active={shapeKind === kind}
-                      onClick={() => setShapeKind(kind)}
-                    />
-                  )
-                })}
-              </div>
-              <div className="dv-seg">
-                {(['outline', 'fill'] as const).map((m) => (
-                  <button
-                    key={m}
-                    data-active={shapeFill === m}
-                    className="flex-1 justify-center capitalize"
-                    onClick={() => setShapeFill(m)}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {showTasks && (
-            <div className="dv-floating absolute bottom-full left-1/2 mb-2 flex w-[300px] -translate-x-1/2 flex-col gap-2 p-2.5">
-              <input
-                autoFocus
-                className="dv-input"
-                placeholder="Find a task"
-                value={taskQuery}
-                onChange={(e) => setTaskQuery(e.target.value)}
-                onKeyDown={(e) =>
-                  e.key === 'Enter' && filteredTasks[0] && addTaskCard(filteredTasks[0].id)
-                }
-              />
-              <div className="dv-scroll flex max-h-64 flex-col overflow-y-auto">
-                {filteredTasks.length === 0 && (
-                  <p className="px-2 py-4 text-center text-xs" style={{ color: 'var(--dv-muted)' }}>
-                    {taskData.list.length === 0
-                      ? 'No tasks yet. Add some on the board.'
-                      : 'No matches'}
-                  </p>
-                )}
-                {filteredTasks.map((t) => {
-                  const s = taskData.statusEnabled && t.status ? taskData.statusOpt(t.status) : null
-                  return (
-                    <button key={t.id} className="dv-menu-item" onClick={() => addTaskCard(t.id)}>
-                      {s && <span className="dv-dot" style={{ background: s.color }} />}
-                      <span className="flex-1 truncate">{t.title}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          )}
         </div>
+        {tool === 'shape' && (
+          <div className="dv-floating absolute bottom-full left-1/2 mb-2 flex -translate-x-1/2 flex-col gap-2 p-2.5">
+            <div className="flex gap-1">
+              {(Object.keys(shapeIcons) as ShapeKind[]).map((kind) => {
+                const Icon = shapeIcons[kind]
+                return (
+                  <ToolBtn
+                    key={kind}
+                    icon={<Icon size={16} />}
+                    label={kind[0].toUpperCase() + kind.slice(1)}
+                    active={shapeKind === kind}
+                    onClick={() => setShapeKind(kind)}
+                  />
+                )
+              })}
+            </div>
+            <div className="dv-seg">
+              {(['outline', 'fill'] as const).map((m) => (
+                <button
+                  key={m}
+                  data-active={shapeFill === m}
+                  className="flex-1 justify-center capitalize"
+                  onClick={() => setShapeFill(m)}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {showTasks && (
+          <div className="dv-floating absolute bottom-full left-1/2 mb-2 flex w-[300px] -translate-x-1/2 flex-col gap-2 p-2.5">
+            <input
+              autoFocus
+              className="dv-input"
+              placeholder="Find a task"
+              value={taskQuery}
+              onChange={(e) => setTaskQuery(e.target.value)}
+              onKeyDown={(e) =>
+                e.key === 'Enter' && filteredTasks[0] && addTaskCard(filteredTasks[0].id)
+              }
+            />
+            <div className="dv-scroll flex max-h-64 flex-col overflow-y-auto">
+              {filteredTasks.length === 0 && (
+                <p className="px-2 py-4 text-center text-xs" style={{ color: 'var(--dv-muted)' }}>
+                  {taskData.list.length === 0
+                    ? 'No tasks yet. Add some on the board.'
+                    : 'No matches'}
+                </p>
+              )}
+              {filteredTasks.map((t) => {
+                const s = taskData.statusEnabled && t.status ? taskData.statusOpt(t.status) : null
+                return (
+                  <button key={t.id} className="dv-menu-item" onClick={() => addTaskCard(t.id)}>
+                    {s && <span className="dv-dot" style={{ background: s.color }} />}
+                    <span className="flex-1 truncate">{t.title}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
+      {/* Touch: what a keyboard or right-click would do to the selection. */}
+      {touchInput && tool === 'select' && selEls.length > 0 && !showTasks && !editing && (
+        <div className="dv-wb-selbar absolute bottom-[84px] left-1/2 z-20 -translate-x-1/2">
+          <div className="dv-floating flex items-center gap-0.5 p-1.5" role="toolbar">
+            {selEls.length === 1 && selEls[0].type === 'text' && (
+              <ToolBtn
+                icon={<Pencil size={18} />}
+                label="Edit text"
+                onClick={() => beginEdit(selEls[0], false)}
+              />
+            )}
+            <ToolBtn icon={<Copy size={18} />} label="Duplicate" onClick={duplicateSelection} />
+            <ToolBtn
+              icon={<Layers size={18} />}
+              label="Arrange"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect()
+                setLayerMenu({ x: r.left, y: r.top - 176 })
+              }}
+            />
+            <ToolBtn icon={<Trash2 size={18} />} label="Delete" danger onClick={deleteSelection} />
+          </div>
+        </div>
+      )}
+
       {/* zoom */}
-      <div className="absolute bottom-5 left-5 z-20">
+      <div className="dv-wb-zoom absolute bottom-5 left-5 z-20">
         <div className="dv-floating flex items-center gap-0.5 p-1.5">
           <ToolBtn
             icon={<Minus size={15} />}
@@ -3411,7 +3461,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       </div>
 
       {/* settings */}
-      <div className="absolute bottom-5 right-5 z-20">
+      <div className="dv-wb-settings absolute bottom-5 right-5 z-20">
         <ToolBtn
           icon={<Settings size={16} />}
           label="Canvas settings"

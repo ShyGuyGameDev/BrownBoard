@@ -28,4 +28,6 @@ code {
 
 #root {
   height: 100vh;
+  /* Phones: the visible height, which changes as the browser's toolbars show and hide. */
+  height: 100dvh;
 }

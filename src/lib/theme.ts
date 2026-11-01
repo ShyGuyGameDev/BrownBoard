@@ -12,6 +12,9 @@ export function useTheme() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem('devboard.theme', theme)
+    // Phone browsers tint their own toolbars to match the page's top bar.
+    const panel = getComputedStyle(document.documentElement).getPropertyValue('--dv-panel').trim()
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', panel)
   }, [theme])
   const toggle = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
   return { theme, toggle }
