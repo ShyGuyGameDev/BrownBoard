@@ -694,6 +694,10 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  /** Item count shown in the "Clear canvas?" popup while it's open. */
+  const [confirmClear, setConfirmClear] = useState<number | null>(null)
+  const confirmClearRef = useRef(false)
+  confirmClearRef.current = confirmClear !== null
   const [showTasks, setShowTasks] = useState(false)
   const [showPicker, setShowPicker] = useState(false)
   const [taskQuery, setTaskQuery] = useState('')
@@ -2644,8 +2648,9 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   // keyboard
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // The file viewer handles its own keys; Delete there mustn't remove the selected item.
-      if (!activeRef.current || viewingRef.current) return
+      // The file viewer and the "Clear canvas?" popup handle their own keys; Delete there
+      // mustn't remove the selected item.
+      if (!activeRef.current || viewingRef.current || confirmClearRef.current) return
       const typing = isTyping(e)
       const mod = e.metaKey || e.ctrlKey
       if (e.key === 'Escape') {
@@ -2776,8 +2781,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   /* ================================================================== */
 
   const clearCanvas = async () => {
+    setConfirmClear(null)
     if (!isOwner || !st.els.length) return
-    if (!window.confirm('Clear the whole canvas for everyone in this room?')) return
     try {
       await clearRoomCanvas(roomId)
     } catch (e) {
@@ -3494,9 +3499,9 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
                     style={{ color: 'var(--dv-danger)' }}
                     disabled={!st.els.length}
                     title={st.els.length ? undefined : 'The canvas is already empty'}
-                    onClick={async () => {
+                    onClick={() => {
                       setShowSettings(false)
-                      await clearCanvas()
+                      setConfirmClear(st.els.length)
                     }}
                   >
                     <Trash2 size={15} />
@@ -3511,6 +3516,48 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
           </>
         )}
       </div>
+
+      {confirmClear !== null && (
+        <div
+          className="dv-modal-backdrop z-[80]"
+          onPointerDown={(e) => {
+            if (e.target === e.currentTarget) setConfirmClear(null)
+          }}
+        >
+          <section
+            className="dv-floating dv-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="clear-canvas-title"
+            aria-describedby="clear-canvas-description"
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setConfirmClear(null)
+            }}
+          >
+            <div>
+              <h2 id="clear-canvas-title" className="m-0 text-lg font-semibold">
+                Clear canvas?
+              </h2>
+              <p
+                id="clear-canvas-description"
+                className="mt-2 text-sm"
+                style={{ color: 'var(--dv-muted)' }}
+              >
+                This removes {confirmClear === 1 ? 'the 1 item' : `all ${confirmClear} items`} on
+                the canvas for everyone in this room. You can undo it right after with Ctrl/Cmd + Z.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className="dv-btn" autoFocus onClick={() => setConfirmClear(null)}>
+                Cancel
+              </button>
+              <button className="dv-btn danger" onClick={clearCanvas}>
+                Clear canvas
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   )
 }

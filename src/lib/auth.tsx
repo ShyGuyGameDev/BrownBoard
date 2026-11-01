@@ -80,6 +80,9 @@ const friendly = (message: string) => {
     return "Guest sign-in isn't set up for this app yet, so you'll need an account to join. (Admin: turn on Anonymous sign-ins in Supabase → Authentication.)"
   if (/database error saving new user/i.test(message))
     return 'Could not create your account. Try again in a moment.'
+  // A server function the app calls doesn't exist yet: a migration hasn't been run.
+  if (/could not find the function|schema cache/i.test(message))
+    return "This isn't set up on the server yet. (Admin: run the latest Supabase migrations.)"
   return message
 }
 const fail = (message: string): never => {
