@@ -1300,6 +1300,7 @@ export const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) 
     signOut,
   } = useAuth()
   const [deleting, setDeleting] = useState(false)
+  const [removingPicture, setRemovingPicture] = useState(false)
   const google = user?.app_metadata?.provider === 'google'
   const currentEmail = needsEmail ? '' : (user?.email ?? '')
   const [name, setName] = useState(profile?.username ?? '')
@@ -1358,12 +1359,7 @@ export const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) 
                 type="button"
                 className="dv-btn ghost"
                 disabled={busy !== null}
-                onClick={() =>
-                  run('picture', async () => {
-                    await updateAvatar(null)
-                    return 'Picture removed. Your initials show instead.'
-                  })
-                }
+                onClick={() => setRemovingPicture(true)}
               >
                 Remove
               </button>
@@ -1569,6 +1565,18 @@ export const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) 
           Delete account
         </button>
       </div>
+      {removingPicture && (
+        <RemovePictureDialog
+          onClose={() => setRemovingPicture(false)}
+          onConfirm={() => {
+            setRemovingPicture(false)
+            run('picture', async () => {
+              await updateAvatar(null)
+              return 'Picture removed. Your initials show instead.'
+            })
+          }}
+        />
+      )}
       {deleting && profile && user && (
         <DeleteAccountDialog
           userId={user.id}
@@ -1577,6 +1585,54 @@ export const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) 
         />
       )}
     </Modal>
+  )
+}
+
+/** "Remove your picture?": a plain yes/no before the profile picture goes. */
+const RemovePictureDialog: React.FC<{ onClose: () => void; onConfirm: () => void }> = ({
+  onClose,
+  onConfirm,
+}) => {
+  const titleId = useId()
+
+  // Esc closes just this popup, not the profile behind it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopImmediatePropagation()
+      onClose()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose])
+
+  return (
+    <div
+      className="dv-modal-backdrop z-[90]"
+      onPointerDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        className="dv-floating dv-modal"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+      >
+        <h2 id={titleId} className="m-0 text-lg font-semibold">
+          Remove your picture?
+        </h2>
+        <p className="m-0 text-sm" style={{ color: 'var(--dv-muted)' }}>
+          Your initials show instead, in every room. You can add a picture again any time.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button type="button" className="dv-btn" autoFocus onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="dv-btn danger" onClick={onConfirm}>
+            Remove picture
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

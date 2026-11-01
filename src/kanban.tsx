@@ -764,15 +764,16 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (!title) return
     const cat = categories.find((c) => c.id === categoryId)
     const position = cat ? cat.tasks.length : 0
-    // New cards start with just the Crossoff categories, each at its default.
-    const start = (field: string) =>
-      crossoffs.some((r) => r.field === field) ? defaultValueOf(field) : null
+    // New cards start with just the Crossoff categories and the card-colour one, each at its default.
+    const startFields = new Set(crossoffs.map((r) => r.field))
+    if (boardSettings.colorField) startFields.add(boardSettings.colorField)
+    const start = (field: string) => (startFields.has(field) ? defaultValueOf(field) : null)
     const customValues: Record<string, string> = Object.fromEntries(
-      crossoffs
-        .filter((r) => isCustomField(r.field))
-        .flatMap((r) => {
-          const v = defaultValueOf(r.field)
-          return v ? [[r.field, v]] : []
+      [...startFields]
+        .filter((field) => isCustomField(field))
+        .flatMap((field) => {
+          const v = defaultValueOf(field)
+          return v ? [[field, v]] : []
         }),
     )
     setNewTaskInputs((prev) => ({ ...prev, [categoryId]: '' }))
