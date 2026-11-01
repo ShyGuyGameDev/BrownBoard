@@ -63,6 +63,15 @@ export const rememberLastAccount = (account: LastAccount) => {
   }
 }
 
+/** After deleting the account, so it isn't offered again. */
+export const forgetLastAccount = () => {
+  try {
+    localStorage.removeItem(LAST_ACCOUNT_KEY)
+  } catch {
+    /* storage unavailable: nothing was remembered */
+  }
+}
+
 export const getLastAccount = (): LastAccount | null => {
   try {
     return JSON.parse(localStorage.getItem(LAST_ACCOUNT_KEY) ?? 'null') as LastAccount | null

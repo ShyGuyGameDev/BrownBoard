@@ -31,10 +31,10 @@ begin
 
   if v_placeholder is not null then
     update auth.users
-    set email = v_username || '@' || split_part(v_placeholder, '@', 2)
+    set email = concat(v_username, '@', split_part(v_placeholder, '@', 2))
     where id = v_user and email = v_placeholder;
     if found then
-      v_placeholder := v_username || '@' || split_part(v_placeholder, '@', 2);
+      v_placeholder := concat(v_username, '@', split_part(v_placeholder, '@', 2));
       update public.profiles set placeholder_email = v_placeholder where id = v_user;
     end if;
   end if;

@@ -21,6 +21,7 @@ import {
   Search,
   Settings,
   Sun,
+  Trash2,
   UserRound,
   X,
 } from 'lucide-react'
@@ -41,6 +42,7 @@ import {
   renameRoom,
   saveRoom,
   setGuestAccess,
+  setFlash,
 } from './lib/rooms'
 import {
   type LeaveRoomActions,
@@ -1297,6 +1299,7 @@ export const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) 
     setNewPassword,
     signOut,
   } = useAuth()
+  const [deleting, setDeleting] = useState(false)
   const google = user?.app_metadata?.provider === 'google'
   const currentEmail = needsEmail ? '' : (user?.email ?? '')
   const [name, setName] = useState(profile?.username ?? '')
@@ -1547,13 +1550,170 @@ export const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) 
         </ProfileSection>
       )}
 
-      <div className="flex border-t pt-4" style={{ borderColor: 'var(--dv-border)' }}>
+      <div
+        className="flex items-center justify-between border-t pt-4"
+        style={{ borderColor: 'var(--dv-border)' }}
+      >
         <button type="button" className="dv-btn ghost -ml-2" onClick={() => signOut().then(goHome)}>
           <LogOut size={14} />
           Sign out
         </button>
+        <button
+          type="button"
+          className="dv-btn ghost -mr-2"
+          style={{ color: 'var(--dv-danger)' }}
+          disabled={!profile}
+          onClick={() => setDeleting(true)}
+        >
+          <Trash2 size={14} />
+          Delete account
+        </button>
       </div>
+      {deleting && profile && user && (
+        <DeleteAccountDialog
+          userId={user.id}
+          username={profile.username}
+          onClose={() => setDeleting(false)}
+        />
+      )}
     </Modal>
+  )
+}
+
+/**
+ * "Delete your account?": says exactly what goes (the rooms you own, by name) and what stays,
+ * and asks for your name typed out, like deleting a room does.
+ */
+const DeleteAccountDialog: React.FC<{
+  userId: string
+  username: string
+  onClose: () => void
+}> = ({ userId, username, onClose }) => {
+  const { deleteAccount } = useAuth()
+  const [rooms, setRooms] = useState<RoomSummary[] | null>(null)
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const titleId = useId()
+
+  useEffect(() => {
+    let cancelled = false
+    myRooms(userId)
+      .then((list) => !cancelled && setRooms(list))
+      .catch(() => !cancelled && setRooms([]))
+    return () => {
+      cancelled = true
+    }
+  }, [userId])
+
+  // Esc closes just this popup, not the profile behind it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopImmediatePropagation()
+      if (!busy) onClose()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [busy, onClose])
+
+  const owned = rooms?.filter((r) => r.isOwner) ?? []
+  const others = rooms ? rooms.length - owned.length : 0
+  const confirmed = typed.trim().toLowerCase() === username
+
+  const remove = async () => {
+    if (!confirmed || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await deleteAccount()
+      setFlash('Your account was deleted.')
+      goHome()
+    } catch (e) {
+      setError(errorText(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className="dv-modal-backdrop z-[90]"
+      onPointerDown={(e) => e.target === e.currentTarget && !busy && onClose()}
+    >
+      <form
+        className="dv-floating dv-modal"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onSubmit={(e) => {
+          e.preventDefault()
+          remove()
+        }}
+      >
+        <h2 id={titleId} className="m-0 text-lg font-semibold">
+          Delete your account?
+        </h2>
+        <div className="flex flex-col gap-2 text-sm" style={{ color: 'var(--dv-muted)' }}>
+          <p className="m-0">This can't be undone.</p>
+          {rooms === null ? (
+            <p className="m-0">Checking your rooms…</p>
+          ) : (
+            <ul className="m-0 flex flex-col gap-1.5 pl-5">
+              <li>
+                {owned.length ? (
+                  <>
+                    {owned.length === 1
+                      ? 'The room you own is'
+                      : `The ${owned.length} rooms you own are`}{' '}
+                    deleted for everyone:{' '}
+                    <strong style={{ color: 'var(--dv-text)' }}>
+                      {owned.map((r) => r.roomName).join(', ')}
+                    </strong>
+                    .
+                  </>
+                ) : (
+                  "You don't own any rooms, so none are deleted."
+                )}
+              </li>
+              {others > 0 && (
+                <li>
+                  You're removed from the {others === 1 ? 'other room' : `${others} other rooms`}{' '}
+                  you're in. Your comments there stay, under your name.
+                </li>
+              )}
+              <li>Your profile, picture and notifications are deleted.</li>
+            </ul>
+          )}
+        </div>
+        <label className="flex flex-col gap-1.5 text-sm">
+          <span>
+            Type <strong>{username}</strong> to confirm.
+          </span>
+          <input
+            className="dv-input"
+            value={typed}
+            placeholder={username}
+            autoComplete="off"
+            autoFocus
+            aria-label="Type your name to confirm"
+            onChange={(e) => setTyped(e.target.value)}
+          />
+        </label>
+        {error && (
+          <p className="m-0 text-xs" role="alert" style={{ color: 'var(--dv-danger)' }}>
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <button type="button" className="dv-btn" disabled={busy} onClick={onClose}>
+            Cancel
+          </button>
+          <button className="dv-btn danger" disabled={!confirmed || busy || rooms === null}>
+            {busy ? <span className="dv-spinner" /> : 'Delete account'}
+          </button>
+        </div>
+      </form>
+    </div>
   )
 }
 

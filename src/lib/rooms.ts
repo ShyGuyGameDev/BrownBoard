@@ -186,7 +186,7 @@ export const clearCanvas = async (roomId: string) => {
   await rpc('clear_canvas', { p_room_id: roomId })
 }
 
-async function removeRoomImages(roomId: string) {
+export async function removeRoomImages(roomId: string) {
   const bucket = supabase.storage.from('board-assets')
   for (const folder of [roomId, `${roomId}/tasks`]) {
     const { data } = await bucket.list(folder, { limit: 1000 })

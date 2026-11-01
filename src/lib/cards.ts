@@ -160,7 +160,8 @@ export interface Comment {
 export const rowToComment = (r: Record<string, unknown>): Comment => ({
   id: String(r.id),
   taskId: String(r.task_id),
-  authorId: String(r.author_id),
+  // Empty when the author has since deleted their account.
+  authorId: typeof r.author_id === 'string' ? r.author_id : '',
   authorName: typeof r.author_name === 'string' && r.author_name ? r.author_name : 'Someone',
   body: typeof r.body === 'string' ? r.body : '',
   mentions: readIds(r.mentions),

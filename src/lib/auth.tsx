@@ -2,7 +2,8 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 import { rememberReturnRoom } from './room'
-import { markLeavingToSignIn, rememberLastAccount } from './sign-in-intent'
+import { forgetLastAccount, markLeavingToSignIn, rememberLastAccount } from './sign-in-intent'
+import { removeRoomImages } from './rooms'
 import { withUploadFeedback } from './bus'
 import { removeOldAvatars, uploadAvatar } from './upload'
 
@@ -63,6 +64,8 @@ interface AuthContextValue {
   updateAvatar: (file: File | null) => Promise<void>
   sendPasswordReset: (email: string) => Promise<void>
   setNewPassword: (password: string) => Promise<void>
+  /** Deletes every room you own and your account (leaving all other rooms), then signs out. */
+  deleteAccount: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -241,6 +244,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [userId],
   )
 
+  const deleteAccount = useCallback(async () => {
+    if (!userId) fail('Sign in to delete your account.')
+    // Uploaded files can't be removed from SQL, so clear them out first: the images in rooms you
+    // own and your profile pictures. Best effort, like deleteRoom.
+    const { data: owned } = await supabase.from('rooms').select('id').eq('created_by', userId!)
+    await Promise.all(
+      [...(owned ?? []).map((r) => removeRoomImages(r.id)), removeOldAvatars(userId!, null)].map(
+        (p) => p.catch(() => undefined),
+      ),
+    )
+    const { data, error } = await supabase.rpc('delete_my_account')
+    if (error) fail(error.message)
+    if (!data?.ok) fail('Could not delete your account. Try again.')
+    forgetLastAccount()
+    // The account is gone, so only this browser's session needs clearing.
+    await supabase.auth.signOut({ scope: 'local' })
+    setRecovering(false)
+  }, [userId])
+
   const sendPasswordReset = useCallback(async (email: string) => {
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
       redirectTo: siteUrl(),
@@ -287,6 +309,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updateAvatar,
       sendPasswordReset,
       setNewPassword,
+      deleteAccount,
     }),
     [
       ready,
@@ -306,6 +329,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updateAvatar,
       sendPasswordReset,
       setNewPassword,
+      deleteAccount,
     ],
   )
 
