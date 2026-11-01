@@ -228,7 +228,7 @@ export const FilterMenu: React.FC<{
             onClick={() => set({ labels: toggle(filters.labels, l.id) })}
           >
             <span
-              className="dv-label flex-1 !justify-start"
+              className="dv-tag flex-1 !justify-start"
               style={{ '--label': l.color } as React.CSSProperties}
             >
               {l.name || ' '}

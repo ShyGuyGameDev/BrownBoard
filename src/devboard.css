@@ -277,10 +277,12 @@ textarea.dv-input {
   border: 0;
   font-size: var(--dv-text-xs);
   font-weight: var(--dv-weight-semibold);
-  cursor: pointer;
   white-space: nowrap;
 }
-.dv-chip:hover {
+button.dv-chip {
+  cursor: pointer;
+}
+button.dv-chip:hover {
   filter: brightness(0.96);
 }
 .dv-dot {
@@ -1157,6 +1159,9 @@ body.dv-grabbing * {
     background var(--dv-dur-fast),
     border-color var(--dv-dur-fast);
 }
+div.dv-person {
+  cursor: default; /* a loading placeholder, not a choice yet */
+}
 .dv-person:hover {
   background: var(--dv-panel);
 }
@@ -1549,7 +1554,7 @@ body.dv-grabbing * {
 }
 
 /* ---------- labels ---------- */
-.dv-label {
+.dv-tag {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1567,16 +1572,19 @@ body.dv-grabbing * {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: inherit;
+}
+button.dv-tag {
   cursor: pointer;
 }
-.dv-label.sm {
+.dv-tag.sm {
   min-width: 28px;
   height: 16px;
   padding: 0 6px;
   font-size: 10.5px;
   cursor: inherit;
 }
-.dv-label.sm:empty {
+.dv-tag.sm:empty {
   min-width: 32px;
 }
 .dv-label-preview {
@@ -2439,4 +2447,12 @@ body.dv-grabbing * {
 }
 .dv-color-preview > span {
   flex: 1;
+}
+
+/* Anything disabled shows not-allowed. Last in the file so it wins over the cursor: pointer
+   rules above; the hidden list grip keeps its grab cursor (it's more specific). */
+:is(button, select, input):disabled,
+[role='button'][aria-disabled='true'],
+[role^='menuitem'][aria-disabled='true'] {
+  cursor: not-allowed;
 }

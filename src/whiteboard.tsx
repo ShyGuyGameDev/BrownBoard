@@ -2923,7 +2923,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
                 <button
                   key={to}
                   role="menuitem"
-                  className="dv-menu-item disabled:cursor-default disabled:opacity-40"
+                  className="dv-menu-item disabled:opacity-40"
                   disabled={disabled}
                   onClick={() => moveLayer(to)}
                 >

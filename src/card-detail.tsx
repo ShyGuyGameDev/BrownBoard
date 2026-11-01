@@ -511,7 +511,7 @@ export const CardDetail: React.FC<Props> = (props) => {
               {cardLabels.map((l) => (
                 <button
                   key={l.id}
-                  className="dv-label"
+                  className="dv-tag"
                   style={{ '--label': l.color } as React.CSSProperties}
                   title="Change labels"
                   onClick={(e) => openPop(e, { kind: 'labels' })}
@@ -1261,7 +1261,7 @@ const LabelPicker: React.FC<{
       >
         <div className="dv-menu-head !px-0">{form.id ? 'Edit label' : 'Create a label'}</div>
         <div className="dv-label-preview">
-          <span className="dv-label" style={{ '--label': form.color } as React.CSSProperties}>
+          <span className="dv-tag" style={{ '--label': form.color } as React.CSSProperties}>
             {form.name.trim() || ' '}
           </span>
         </div>
@@ -1344,7 +1344,7 @@ const LabelPicker: React.FC<{
                   {on && <Check size={11} strokeWidth={3} />}
                 </span>
                 <span
-                  className="dv-label flex-1 !justify-start"
+                  className="dv-tag flex-1 !justify-start"
                   style={{ '--label': l.color } as React.CSSProperties}
                 >
                   {l.name || ' '}

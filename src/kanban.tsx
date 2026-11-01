@@ -2007,7 +2007,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       <p className="dv-done-note">
         Cards are crossed off when set to
         {option ? (
-          <span className="dv-chip !cursor-default" style={badgeStyle(option.color)}>
+          <span className="dv-chip" style={badgeStyle(option.color)}>
             <span className="dv-dot" style={{ background: option.color }} />
             {option.label}
           </span>
@@ -2637,7 +2637,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                             {cardLabels.map((l) => (
                               <span
                                 key={l.id}
-                                className="dv-label sm"
+                                className="dv-tag sm"
                                 style={{ '--label': l.color } as React.CSSProperties}
                                 title={l.name || 'Label'}
                               >
