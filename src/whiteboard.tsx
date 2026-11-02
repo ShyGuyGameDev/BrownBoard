@@ -10,6 +10,7 @@ import {
   Download,
   Eye,
   Heart,
+  House,
   ImageIcon,
   Kanban,
   Layers,
@@ -3338,6 +3339,12 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
             kbd="Ctrl Shift Z"
             disabled={!canRedo}
             onClick={redo}
+          />
+          <div className="dv-sep" />
+          <ToolBtn
+            icon={<House size={16} />}
+            label="Back to the middle"
+            onClick={() => goTo({ x: st.w / 2, y: st.h / 2, k: 1 })}
           />
         </div>
         {tool === 'shape' && (
