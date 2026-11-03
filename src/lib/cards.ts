@@ -3,6 +3,7 @@
  * due-date states, comments and the activity log (see 20261031_cards_labels_comments.sql).
  */
 import { formatDueDate } from './tasks'
+import { isSafeImageSrc } from './sanitize'
 
 export interface Label {
   id: string
@@ -76,7 +77,7 @@ export const readCover = (raw: unknown): Cover => {
   if (!raw || typeof raw !== 'object') return null
   const c = raw as Record<string, unknown>
   if (typeof c.color === 'string' && /^#[0-9a-f]{6}$/i.test(c.color)) return { color: c.color }
-  if (typeof c.url === 'string' && c.url) return { url: c.url }
+  if (isSafeImageSrc(c.url)) return { url: c.url }
   return null
 }
 

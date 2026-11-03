@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { initials } from './lib/room'
+import { isSafeImageSrc } from './lib/sanitize'
 
 /**
  * A person's round avatar: their profile picture, or their initials on their colour (also the
@@ -15,7 +16,7 @@ export const Avatar: React.FC<
   } & React.HTMLAttributes<HTMLSpanElement>
 > = ({ name, color, src, size = 28, className = '', style, ...rest }) => {
   const [failed, setFailed] = useState<string | null>(null)
-  const showImage = !!src && failed !== src
+  const showImage = isSafeImageSrc(src) && failed !== src
   return (
     <span
       className={`dv-avatar-circle ${className}`}
