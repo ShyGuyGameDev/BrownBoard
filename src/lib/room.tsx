@@ -9,6 +9,7 @@ import React, {
 } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from './supabase'
+import { hslToHex } from './highlight'
 
 export interface Peer {
   id: string
@@ -161,11 +162,16 @@ export const initials = (name: string) => {
   )
 }
 
-export const colorFor = (id: string) => {
+const hueFor = (id: string) => {
   let h = 0
   for (const c of id) h = (h * 31 + c.charCodeAt(0)) % 360
-  return `hsl(${h} 70% 52%)`
+  return h
 }
+
+export const colorFor = (id: string) => `hsl(${hueFor(id)} 70% 52%)`
+
+/** colorFor as #rrggbb, for colour inputs. */
+export const hexColorFor = (id: string) => hslToHex(hueFor(id), 0.7, 0.52)
 
 // ---------- provider ----------
 
@@ -175,6 +181,8 @@ interface RoomProviderProps {
   /** Username for accounts, "Anonymous <Animal>" for guests. Assigned by the server on join. */
   displayName: string
   avatar?: string | null
+  /** Chosen highlight colour; null for the default from `userId`. */
+  highlightColor?: string | null
   userId: string
   isOwner: boolean
   allowGuests: boolean
@@ -189,6 +197,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   roomName: initialRoomName,
   displayName,
   avatar,
+  highlightColor,
   userId,
   isOwner: initialIsOwner,
   allowGuests: initialAllowGuests,
@@ -207,10 +216,10 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
     () => ({
       id: idRef.current,
       name: displayName,
-      color: colorFor(userId),
+      color: highlightColor || colorFor(userId),
       avatar: avatar ?? null,
     }),
-    [displayName, avatar, userId],
+    [displayName, avatar, highlightColor, userId],
   )
   const meRef = useRef(me)
   meRef.current = me
@@ -256,8 +265,8 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
     )
 
   // Realtime closes the channel of a client that updates presence more than a few times in a few
-  // seconds, so presence only says who you are (sent on join and when your name or picture
-  // changes). What you're doing and have selected changes constantly, so it goes by broadcast.
+  // seconds, so presence only says who you are (sent on join and when your name, picture or
+  // colour changes). What you're doing and have selected changes constantly, so it goes by broadcast.
   const trackIdentity = useCallback(() => {
     if (trackTimer.current) return
     const wait = Math.max(0, lastTrackAt.current + TRACK_GAP - Date.now())
@@ -428,7 +437,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
     }
   }, [sendState])
 
-  // Re-announce when the display name or picture changes.
+  // Re-announce when the display name, picture or colour changes.
   useEffect(() => {
     trackIdentity()
   }, [me, trackIdentity])

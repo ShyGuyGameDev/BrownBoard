@@ -6,6 +6,7 @@ import { forgetLastAccount, markLeavingToSignIn, rememberLastAccount } from './s
 import { removeRoomImages } from './rooms'
 import { withUploadFeedback } from './bus'
 import { removeOldAvatars, uploadAvatar } from './upload'
+import { imagePrimaryColor } from './highlight'
 
 /**
  * Older username-only accounts are Supabase email accounts with a placeholder address (see the
@@ -38,6 +39,10 @@ export interface Profile {
   signup_method: 'username' | 'oauth' | 'email'
   /** Profile picture, or null to show initials. */
   avatar_url?: string | null
+  /** #rrggbb shown to others around what you're editing, or null for the default colour. */
+  highlight_color?: string | null
+  /** Keep highlight_color matched to the profile picture. */
+  highlight_sync?: boolean
 }
 
 interface AuthContextValue {
@@ -62,6 +67,8 @@ interface AuthContextValue {
   updateEmail: (email: string) => Promise<void>
   /** New profile picture from a file, or null to remove it. */
   updateAvatar: (file: File | null) => Promise<void>
+  /** Saves a highlight colour (null for the default), or with `sync` takes it from your picture. */
+  updateHighlight: (color: string | null, sync: boolean) => Promise<void>
   sendPasswordReset: (email: string) => Promise<void>
   setNewPassword: (password: string) => Promise<void>
   /** Deletes every room you own and your account (leaving all other rooms), then signs out. */
@@ -230,6 +237,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setProfile((current) => (current ? { ...current, username: data } : current))
   }, [])
 
+  const saveHighlight = useCallback(async (color: string | null, sync: boolean) => {
+    const { error } = await supabase.rpc('update_profile_highlight', {
+      p_color: color,
+      p_sync: sync,
+    })
+    if (error) fail(error.message)
+    setProfile((current) =>
+      current ? { ...current, highlight_color: color, highlight_sync: sync } : current,
+    )
+  }, [])
+
+  const avatarUrl = loadedProfile?.avatar_url ?? null
+  const highlightSync = !!loadedProfile?.highlight_sync
+
+  const updateHighlight = useCallback(
+    async (color: string | null, sync: boolean) => {
+      // With no picture the icon is your initials on the default colour, which null already means.
+      const synced =
+        sync && avatarUrl
+          ? await imagePrimaryColor(avatarUrl).catch(() =>
+              fail("Your picture couldn't be read. Try again."),
+            )
+          : null
+      await saveHighlight(sync ? synced : color, sync)
+    },
+    [avatarUrl, saveHighlight],
+  )
+
   const updateAvatar = useCallback(
     async (file: File | null) => {
       if (!userId) fail('Sign in to set a profile picture.')
@@ -240,8 +275,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (error) fail(error.message)
       setProfile((current) => (current ? { ...current, avatar_url: url } : current))
       removeOldAvatars(userId!, url).catch(() => undefined)
+      // The picture is saved either way; a colour that can't be read just stays as it was.
+      if (highlightSync)
+        await (url ? imagePrimaryColor(url) : Promise.resolve(null))
+          .then((color) => saveHighlight(color, true))
+          .catch(() => undefined)
     },
-    [userId],
+    [userId, highlightSync, saveHighlight],
   )
 
   const deleteAccount = useCallback(async () => {
@@ -307,6 +347,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updateProfileName,
       updateEmail,
       updateAvatar,
+      updateHighlight,
       sendPasswordReset,
       setNewPassword,
       deleteAccount,
@@ -327,6 +368,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updateProfileName,
       updateEmail,
       updateAvatar,
+      updateHighlight,
       sendPasswordReset,
       setNewPassword,
       deleteAccount,

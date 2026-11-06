@@ -26,6 +26,7 @@ import {
   type Peer,
 } from './lib/room.tsx'
 import { type ToastAction, bus, isTyping, toast } from './lib/bus.ts'
+import { cleanHexColor } from './lib/sanitize.ts'
 import {
   clearSignInIntent,
   leavingToSignIn,
@@ -1018,7 +1019,7 @@ const RoomGate: React.FC<{ roomId: string; userId: string; isGuest: boolean }> =
   userId,
   isGuest,
 }) => {
-  // Your current name and picture, so editing your profile in the room shows up right away.
+  // Your current name, picture and colour, so editing your profile in the room shows up right away.
   const { profile } = useAuth()
   const [gate, setGate] = useState<Gate>({ state: 'checking' })
   // Read once per mount: the intent is cleared once used, and effects can run twice in dev.
@@ -1067,6 +1068,7 @@ const RoomGate: React.FC<{ roomId: string; userId: string; isGuest: boolean }> =
       roomName={gate.room.roomName}
       displayName={(!isGuest && profile?.username) || gate.room.displayName}
       avatar={isGuest ? null : profile?.avatar_url}
+      highlightColor={isGuest ? null : cleanHexColor(profile?.highlight_color, '') || null}
       userId={userId}
       isOwner={gate.room.isOwner}
       allowGuests={gate.room.allowGuests}

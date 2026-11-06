@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
 import { colorFor, useRoom, type Peer } from './lib/room'
+import { inkOn } from './lib/highlight'
 import { bus, getLinkCounts, isTyping, toast, undoToast, withUploadFeedback } from './lib/bus'
 import { useAuth } from './lib/auth'
 import {
@@ -2587,7 +2588,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                           style={{ '--peer': editors[0].color } as React.CSSProperties}
                         >
                           {editors.map((p) => (
-                            <span key={p.id} style={{ background: p.color }}>
+                            <span key={p.id} style={{ background: p.color, color: inkOn(p.color) }}>
                               {p.name}
                             </span>
                           ))}

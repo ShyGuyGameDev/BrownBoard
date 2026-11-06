@@ -53,7 +53,8 @@ import {
   type RoomSettingsActions,
   RoomSettingsForm,
 } from './room-settings'
-import { buildShareLink, colorFor, goHome, goToRoom } from './lib/room'
+import { buildShareLink, colorFor, goHome, goToRoom, hexColorFor } from './lib/room'
+import { cleanHexColor } from './lib/sanitize'
 import { Avatar } from './avatar'
 import { getLastAccount, setSignInIntent, setStartRoomAfterSignIn } from './lib/sign-in-intent'
 import { useTheme } from './lib/theme'
@@ -1266,6 +1267,7 @@ const Modal: React.FC<{ title: string; onClose: () => void; children: React.Reac
 }
 
 type Status = { tone: 'ok' | 'error'; text: string } | null
+type ProfileArea = 'picture' | 'name' | 'highlight' | 'email' | 'password'
 
 /** One titled part of the profile dialog, with its own result message. */
 const ProfileSection: React.FC<{
@@ -1303,6 +1305,7 @@ export const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) 
     updateProfileName,
     updateEmail,
     updateAvatar,
+    updateHighlight,
     setNewPassword,
     signOut,
   } = useAuth()
@@ -1315,14 +1318,12 @@ export const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) 
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [changingPassword, setChangingPassword] = useState(false)
-  const [busy, setBusy] = useState<'picture' | 'name' | 'email' | 'password' | null>(null)
+  const [highlightDraft, setHighlightDraft] = useState<string | null>(null)
+  const [busy, setBusy] = useState<ProfileArea | null>(null)
   const [status, setStatus] = useState<Record<string, Status>>({})
   const fileInput = useRef<HTMLInputElement>(null)
 
-  const run = async (
-    section: 'picture' | 'name' | 'email' | 'password',
-    action: () => Promise<string>,
-  ) => {
+  const run = async (section: ProfileArea, action: () => Promise<string>) => {
     setBusy(section)
     setStatus((s) => ({ ...s, [section]: null }))
     try {
@@ -1340,6 +1341,12 @@ export const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) 
   const emailChanged = email.trim().toLowerCase() !== currentEmail.toLowerCase()
   const mismatch = confirmPassword.length > 0 && password !== confirmPassword
   const displayName = profile?.username ?? user?.email ?? ''
+  const highlightSync = !!profile?.highlight_sync
+  const savedHighlight = cleanHexColor(
+    profile?.highlight_color,
+    user ? hexColorFor(user.id) : '#4da3ff',
+  )
+  const highlight = highlightDraft ?? savedHighlight
 
   return (
     <Modal title="Your profile" onClose={onClose}>
@@ -1432,6 +1439,62 @@ export const ProfileSettings: React.FC<{ onClose: () => void }> = ({ onClose }) 
         </form>
         <span className="dv-hint">
           How others see you in rooms. 3–24 letters, numbers or underscores.
+        </span>
+      </ProfileSection>
+
+      <ProfileSection title="Highlight color" status={status.highlight}>
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (highlight === savedHighlight) return
+            run('highlight', async () => {
+              await updateHighlight(highlight, false)
+              setHighlightDraft(null)
+              return 'Highlight color updated.'
+            })
+          }}
+        >
+          <input
+            type="color"
+            aria-label="Highlight color"
+            className="h-8 w-10 cursor-pointer rounded border-0 bg-transparent"
+            disabled={!profile || highlightSync || busy !== null}
+            value={highlight}
+            onChange={(e) => setHighlightDraft(e.target.value)}
+          />
+          <span className="dv-sub flex-1">{highlight}</span>
+          {!highlightSync && (
+            <button
+              className="dv-btn shrink-0"
+              disabled={!profile || highlight === savedHighlight || busy !== null}
+            >
+              {busy === 'highlight' ? <span className="dv-spinner" /> : 'Save'}
+            </button>
+          )}
+        </form>
+        <label className="flex items-center justify-between gap-3">
+          <span className="dv-sub">Sync with profile icon</span>
+          <span className="dv-switch">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={highlightSync}
+              disabled={!profile || busy !== null}
+              onChange={(e) => {
+                const sync = e.target.checked
+                run('highlight', async () => {
+                  await updateHighlight(profile?.highlight_color ?? null, sync)
+                  setHighlightDraft(null)
+                  return sync ? 'Synced with your profile icon.' : 'Sync turned off.'
+                })
+              }}
+            />
+            <span aria-hidden />
+          </span>
+        </label>
+        <span className="dv-hint">
+          Others see this color around whatever you're editing in a room.
         </span>
       </ProfileSection>
 

@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { initials } from './lib/room'
 import { isSafeImageSrc } from './lib/sanitize'
+import { inkOn } from './lib/highlight'
 
 /**
  * A person's round avatar: their profile picture, or their initials on their colour (also the
@@ -25,6 +26,7 @@ export const Avatar: React.FC<
         height: size,
         fontSize: Math.max(10, Math.round(size * 0.36)),
         background: showImage ? 'var(--dv-panel-2)' : color,
+        color: inkOn(color),
         ...style,
       }}
       {...rest}
