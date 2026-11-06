@@ -37,6 +37,7 @@ import { HexColorPicker } from 'react-colorful'
 import { generateNKeysBetween } from 'fractional-indexing'
 import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room'
+import { inkOn } from './lib/highlight'
 import { bus, isTyping, setLinkCounts, toast, withUploadFeedback } from './lib/bus'
 import { formatDueDate, type TaskLite, useRoomTasks } from './lib/tasks'
 import { clearCanvas as clearRoomCanvas } from './lib/rooms'
@@ -1293,7 +1294,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       ctx.beginPath()
       ctx.roundRect(sx, sy - 20, tw + 12, 18, [5, 5, 5, 0])
       ctx.fill()
-      ctx.fillStyle = '#fff'
+      ctx.fillStyle = inkOn(tag.color)
       ctx.fillText(ellipsize(ctx, tag.name, 160), sx + 6, sy - 10.5)
     }
 
@@ -1317,7 +1318,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       ctx.beginPath()
       ctx.roundRect(14, 14, tw + 12, 20, 6)
       ctx.fill()
-      ctx.fillStyle = '#fff'
+      ctx.fillStyle = inkOn(cur.color)
       ctx.textBaseline = 'middle'
       ctx.fillText(cur.name, 20, 24.5)
       ctx.restore()

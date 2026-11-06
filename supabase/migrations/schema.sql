@@ -62,6 +62,8 @@ CREATE TABLE public.profiles (
   placeholder_email text,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   avatar_url text,
+  highlight_color text CHECK (highlight_color IS NULL OR highlight_color ~ '^#[0-9a-f]{6}$'::text),
+  highlight_sync boolean NOT NULL DEFAULT false,
   CONSTRAINT profiles_pkey PRIMARY KEY (id),
   CONSTRAINT profiles_id_fkey FOREIGN KEY (id) REFERENCES auth.users(id)
 );
