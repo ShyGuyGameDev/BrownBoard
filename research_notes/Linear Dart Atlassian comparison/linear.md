@@ -1,6 +1,6 @@
 # Linear (linear.app) as of October 2026
 
-Research date: 27 October 2026. Scope is Linear the issue tracker (Linear Orbit, Inc.), not the Dart programming language. BrownBoard facts below are taken from the research assignment’s product description and were not re-verified against the BrownBoard codebase in this pass.
+Research date: 27 October 2026. Scope is Linear the issue tracker (Linear Orbit, Inc.), not the Dart programming language. Debut facts below are taken from the research assignment’s product description and were not re-verified against the Debut codebase in this pass.
 
 The public changelog page fetched for this brief opens at 22 October 2026 and, in the extracted text, runs back through an “Introducing Loops” entry whose promotional credits expired 20 August 2026. Older launches are cited from individual changelog URLs.
 
@@ -121,49 +121,49 @@ Repeated complaints are the mirror of the strengths: the workflow is opinionated
 - A single migration essay claiming Linear “strains past about 15 teams” was seen in search snippets and not fetched in full, so it is not used as a finding.
 - No 2025–2026 Linear statement confirming that self-host is still off the roadmap. The 2022 Hacker News comment is the last primary statement found.
 
-## How Linear differs from BrownBoard
+## How Linear differs from Debut
 
 ### Takeaway
-Linear is a signed-in company workspace whose unit of work is an issue with an ID, a team workflow, and optional cycle, project, and initiative. BrownBoard, per the assignment, is a link-opened room with two views of the same work: kanban cards and a drawing canvas. They can both show cards in columns. They are not the same object, the same collaboration model, or the same ambition.
+Linear is a signed-in company workspace whose unit of work is an issue with an ID, a team workflow, and optional cycle, project, and initiative. Debut, per the assignment, is a link-opened room with two views of the same work: kanban cards and a drawing canvas. They can both show cards in columns. They are not the same object, the same collaboration model, or the same ambition.
 
 ### Cited Findings
 - Linear’s unit of work is the issue: team-owned, status workflow, assignee, priority, labels, comments, estimate, due date, parent/sub-issue, cycle, one project, SLA, and a stable ID used in Git. — [Concepts](https://linear.app/docs/conceptual-model); [Exporting data](https://linear.app/docs/exporting-data); [GitHub](https://linear.app/docs/github)
-- BrownBoard’s unit of work, per the assignment, is a kanban task with title, description, status, urgency, category, images, and position. Category is the column. There is no issue ID, no cycle, and no GitHub/PR sync in the current app.
+- Debut’s unit of work, per the assignment, is a kanban task with title, description, status, urgency, category, images, and position. Category is the column. There is no issue ID, no cycle, and no GitHub/PR sync in the current app.
 - Linear’s “board” is a view of issues grouped by workflow status. Other views are lists, filters, and timelines. The spatial authoring surface is absent; long-form context is a document with realtime text cursors. — [Concepts](https://linear.app/docs/conceptual-model); [Documents](https://linear.app/docs/documents); [Capterra](https://www.capterra.com/p/10026109/Linear/)
-- BrownBoard’s second view, per the assignment, is a freeform whiteboard: pen, shapes, text, sticky notes, images, connectors, and task cards placed on the canvas and linked back to the kanban.
+- Debut’s second view, per the assignment, is a freeform whiteboard: pen, shapes, text, sticky notes, images, connectors, and task cards placed on the canvas and linked back to the kanban.
 - Linear collaboration is a workspace account. Guests exist on Business and above, and Asks can be filed by people without accounts, but the container is the company workspace, not a link you open anonymously. Guests cannot export issues. Enterprise adds SAML, SCIM, audit log, and admin controls. — [Pricing](https://linear.app/pricing); [Exporting data](https://linear.app/docs/exporting-data); [Asks](https://linear.app/asks)
-- BrownBoard collaboration, per the assignment: shared rooms opened by link; guests can join; signed-in accounts can name, save, claim, and own rooms. Realtime sync via Supabase. Web app plus an Electron shell. Dark mode. No enterprise admin suite.
-- Audience: Linear’s homepage and the 2026 comparisons aim at product and engineering teams shipping software, including agents in that loop. BrownBoard’s shipped product, per the assignment, is rooms plus kanban plus whiteboard, and the original ambition of one canvas for planning, drafting, prototyping, and tracking is not what shipped.
+- Debut collaboration, per the assignment: shared rooms opened by link; guests can join; signed-in accounts can name, save, claim, and own rooms. Realtime sync via Supabase. Web app plus an Electron shell. Dark mode. No enterprise admin suite.
+- Audience: Linear’s homepage and the 2026 comparisons aim at product and engineering teams shipping software, including agents in that loop. Debut’s shipped product, per the assignment, is rooms plus kanban plus whiteboard, and the original ambition of one canvas for planning, drafting, prototyping, and tracking is not what shipped.
 - What Linear refuses. It documents a single team workflow rather than arbitrary schemes (Breeze; secondhand philosophy quote noted above). It does not position itself as a whiteboard, a wiki replacement for the whole company, or a service desk. Its docs product is documents on the work, not a drawing canvas. Self-host was declined in 2022 and no reversal was found. — [Breeze](https://www.breeze.pm/articles/compare/linear-vs-jira); [Linear homepage](https://linear.app/); [Hacker News, October 2022](https://news.ycombinator.com/item?id=33199304)
-- What BrownBoard refuses, per the assignment: it is not a full software issue tracker. No cycles as a product concept, no GitHub/PR sync, no issue IDs, no roadmaps, no docs wiki, no enterprise admin suite.
+- What Debut refuses, per the assignment: it is not a full software issue tracker. No cycles as a product concept, no GitHub/PR sync, no issue IDs, no roadmaps, no docs wiki, no enterprise admin suite.
 
 ### Inferences
-- Same-looking columns hide a different noun. A Linear board is a projection of issues that also live in cycles, initiatives, and pull requests. A BrownBoard board is the room’s task list, and the whiteboard is a peer view of that room, not a report.
-- Linear collaboration assumes an organization that already exists (workspace, teams, seats, SSO on Enterprise). BrownBoard collaboration assumes a room that exists because someone has the link. Guests are a paid Linear feature for outsiders inside a company tool. Guests are the default way into a BrownBoard room.
-- Linear is unwilling to be an unstructured canvas. BrownBoard is unwilling, in what it has shipped, to be the system of record for software delivery.
+- Same-looking columns hide a different noun. A Linear board is a projection of issues that also live in cycles, initiatives, and pull requests. A Debut board is the room’s task list, and the whiteboard is a peer view of that room, not a report.
+- Linear collaboration assumes an organization that already exists (workspace, teams, seats, SSO on Enterprise). Debut collaboration assumes a room that exists because someone has the link. Guests are a paid Linear feature for outsiders inside a company tool. Guests are the default way into a Debut room.
+- Linear is unwilling to be an unstructured canvas. Debut is unwilling, in what it has shipped, to be the system of record for software delivery.
 
 ### Gaps
-- BrownBoard’s behavior was not re-checked in the app during this research. If the assignment description has drifted from the code, the comparison drifts with it.
+- Debut’s behavior was not re-checked in the app during this research. If the assignment description has drifted from the code, the comparison drifts with it.
 - No Linear page was found that explicitly says “we will not build a whiteboard.” The finding is absence across homepage, concept docs, documents docs, and the sampled 2026 changelog.
 
 ## Where they could overlap, and where they do not compete
 
 ### Takeaway
-Overlap is narrow: a small group tracking tasks as cards in columns, with titles, notes, and status. It gets narrower as soon as the work is a software issue with an ID, a sprint, a roadmap, or a pull request, or as soon as the work is a drawing. Linear will not meet BrownBoard on the canvas. BrownBoard, as shipped, will not meet Linear on the delivery system.
+Overlap is narrow: a small group tracking tasks as cards in columns, with titles, notes, and status. It gets narrower as soon as the work is a software issue with an ID, a sprint, a roadmap, or a pull request, or as soon as the work is a drawing. Linear will not meet Debut on the canvas. Debut, as shipped, will not meet Linear on the delivery system.
 
 ### Cited Findings
-- Overlap that exists today is the kanban card. Linear issues can be shown on a board grouped by status. BrownBoard tasks are shown as cards whose category is the column. Both support a title, a longer description, a status, and some notion of urgency or priority (Linear’s export fields include Priority; the assignment gives BrownBoard “urgency”). — [Concepts](https://linear.app/docs/conceptual-model); [Exporting data](https://linear.app/docs/exporting-data)
-- If BrownBoard grows only as “task tracking for small teams,” the overlapping buyer is a handful of people who want columns and do not want Jira. Linear’s free plan is built for that entry (unlimited members, but 2 teams and 250 issues), and its paid plan starts at $10 per user per month yearly once that cap binds. Comparisons still describe that buyer as a software team, not any small team. — [Pricing](https://linear.app/pricing); [Breeze](https://www.breeze.pm/articles/compare/linear-vs-jira)
-- They do not compete on the system around the card. Linear’s 2026 product includes cycles, projects, initiatives, triage, Asks, customer requests, GitHub and Origin sync, in-app diffs, coding sessions, Loops, and MCP. The assignment says BrownBoard has none of those as product concepts. — [Linear homepage](https://linear.app/); [Changelog](https://linear.app/changelog)
-- They do not compete on the canvas. Linear’s spatial views are timelines and boards. BrownBoard’s differentiated surface is the whiteboard with drawing tools and task cards linked back to the kanban. — [Capterra](https://www.capterra.com/p/10026109/Linear/); [Documents](https://linear.app/docs/documents)
-- They do not compete on how a session starts. Linear is a billed workspace. BrownBoard is a link, including for guests who never make an account. — [Billing and plans](https://linear.app/docs/billing-and-plans); [Pricing](https://linear.app/pricing)
-- They do not compete on enterprise administration. Linear Enterprise is SAML, SCIM, audit, IP restrictions, HIPAA, and account management. The assignment says BrownBoard has no enterprise admin suite. — [Pricing](https://linear.app/pricing)
+- Overlap that exists today is the kanban card. Linear issues can be shown on a board grouped by status. Debut tasks are shown as cards whose category is the column. Both support a title, a longer description, a status, and some notion of urgency or priority (Linear’s export fields include Priority; the assignment gives Debut “urgency”). — [Concepts](https://linear.app/docs/conceptual-model); [Exporting data](https://linear.app/docs/exporting-data)
+- If Debut grows only as “task tracking for small teams,” the overlapping buyer is a handful of people who want columns and do not want Jira. Linear’s free plan is built for that entry (unlimited members, but 2 teams and 250 issues), and its paid plan starts at $10 per user per month yearly once that cap binds. Comparisons still describe that buyer as a software team, not any small team. — [Pricing](https://linear.app/pricing); [Breeze](https://www.breeze.pm/articles/compare/linear-vs-jira)
+- They do not compete on the system around the card. Linear’s 2026 product includes cycles, projects, initiatives, triage, Asks, customer requests, GitHub and Origin sync, in-app diffs, coding sessions, Loops, and MCP. The assignment says Debut has none of those as product concepts. — [Linear homepage](https://linear.app/); [Changelog](https://linear.app/changelog)
+- They do not compete on the canvas. Linear’s spatial views are timelines and boards. Debut’s differentiated surface is the whiteboard with drawing tools and task cards linked back to the kanban. — [Capterra](https://www.capterra.com/p/10026109/Linear/); [Documents](https://linear.app/docs/documents)
+- They do not compete on how a session starts. Linear is a billed workspace. Debut is a link, including for guests who never make an account. — [Billing and plans](https://linear.app/docs/billing-and-plans); [Pricing](https://linear.app/pricing)
+- They do not compete on enterprise administration. Linear Enterprise is SAML, SCIM, audit, IP restrictions, HIPAA, and account management. The assignment says Debut has no enterprise admin suite. — [Pricing](https://linear.app/pricing)
 
 ### Inferences
-- A small product team could use both without contradiction: BrownBoard for a working session on a canvas, Linear for the issues that survive that session and ship as code. That is adjacent use, not feature parity.
-- Growing BrownBoard toward “small-team task tracking” walks into Linear’s free tier and into every other kanban tool. It does not walk into Linear’s GitHub, cycle, and agent product unless BrownBoard also chooses to become an issue tracker. The assignment says that is what the current product is not.
-- The place Linear is weakest relative to a canvas product is exactly where reviews say context lives outside the tool: design-to-engineering handoff and anything that is not an issue. That is a gap in Linear, and it is BrownBoard’s actual surface, not a roadmap item Linear looks ready to copy.
+- A small product team could use both without contradiction: Debut for a working session on a canvas, Linear for the issues that survive that session and ship as code. That is adjacent use, not feature parity.
+- Growing Debut toward “small-team task tracking” walks into Linear’s free tier and into every other kanban tool. It does not walk into Linear’s GitHub, cycle, and agent product unless Debut also chooses to become an issue tracker. The assignment says that is what the current product is not.
+- The place Linear is weakest relative to a canvas product is exactly where reviews say context lives outside the tool: design-to-engineering handoff and anything that is not an issue. That is a gap in Linear, and it is Debut’s actual surface, not a roadmap item Linear looks ready to copy.
 
 ### Gaps
-- No review or comparison in this pass mentions BrownBoard. Overlap is inferred from the two product descriptions, not from a market in which buyers name both.
+- No review or comparison in this pass mentions Debut. Overlap is inferred from the two product descriptions, not from a market in which buyers name both.
 - No public data on how often Linear workspaces are used by non-engineering teams of under ten people, which would be the practical overlap segment.

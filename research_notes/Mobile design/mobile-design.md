@@ -1,4 +1,4 @@
-# Mobile design: what the research says, and what BrownBoard does with it
+# Mobile design: what the research says, and what Debut does with it
 
 Researched 1 November 2026 for the phone layout of the room (board + canvas). Each finding names its source. Where only secondary write-ups were found, that is said. The last section maps findings to code.
 
@@ -53,7 +53,7 @@ Apple's sheets have a grabber, rest at set heights ("detents"), and can be dragg
 - **Sideways scrolling lists:** use `scroll-snap-type: x mandatory` with `overscroll-behavior-x: contain`, which also keeps the browser's back-swipe from firing. ([30 seconds of code](https://www.30secondsofcode.org/css/s/scroll-snap))
 - **Detecting touch:** use `(pointer: coarse)` / `(hover: none)` for input type. Use width only for layout. ([CSS-IRL: detecting hover-capable devices](https://css-irl.info/detecting-hover-capable-devices/))
 
-## 7. How BrownBoard applies this
+## 7. How Debut applies this
 
 The phone layout switches on at **640 px wide or less** (`MOBILE_QUERY` in `src/lib/viewport.ts`). Touch sizing switches on for any **coarse pointer**, phone or tablet.
 

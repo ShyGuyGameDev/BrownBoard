@@ -2,17 +2,21 @@ import { app, BrowserWindow, dialog, Menu, nativeTheme, shell } from 'electron'
 import path from 'path'
 
 // __dirname is available in CommonJS output.
-const PROTOCOL = 'devboard'
+const PROTOCOL = 'debut'
+const LEGACY_PROTOCOL = 'devboard'
 const isMac = process.platform === 'darwin'
 
 let mainWindow: BrowserWindow | null = null
 let pendingRoom: string | null = null
 
-/** devboard://r/<room> or devboard://join/<room>  ->  room id (validated so it is safe to inject). */
+/** Debut desktop links (including the legacy scheme) -> room id, validated before injection. */
 const parseDeepLink = (url: string): string | null => {
-  const m = url.match(/^devboard:\/\/(?:r|join)\/([A-Za-z0-9_-]{3,64})\/?$/)
+  const m = url.match(/^(?:debut|devboard):\/\/(?:r|join)\/([A-Za-z0-9_-]{3,64})\/?$/)
   return m ? m[1] : null
 }
+
+const isDeepLink = (url: string) =>
+  url.startsWith(`${PROTOCOL}://`) || url.startsWith(`${LEGACY_PROTOCOL}://`)
 
 /** Run a tiny snippet in the renderer. Keeps us from needing any preload changes. */
 const sendToRenderer = (event: string, detail?: unknown) => {
@@ -134,11 +138,17 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-// ---- deep links: devboard://r/<room> ----
+// Register both schemes so existing shared devboard:// links continue to open.
 if (process.defaultApp) {
-  if (process.argv.length >= 2) app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
+  if (process.argv.length >= 2) {
+    const appPath = process.execPath
+    const appArgs = [path.resolve(process.argv[1])]
+    app.setAsDefaultProtocolClient(PROTOCOL, appPath, appArgs)
+    app.setAsDefaultProtocolClient(LEGACY_PROTOCOL, appPath, appArgs)
+  }
 } else {
   app.setAsDefaultProtocolClient(PROTOCOL)
+  app.setAsDefaultProtocolClient(LEGACY_PROTOCOL)
 }
 
 // macOS delivers deep links here (possibly before the window exists).
@@ -153,7 +163,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   // Windows / Linux deliver deep links as argv of a second instance.
   app.on('second-instance', (_event, argv) => {
-    const link = argv.find((a) => a.startsWith(`${PROTOCOL}://`))
+    const link = argv.find(isDeepLink)
     const id = link ? parseDeepLink(link) : null
     if (id) joinRoom(id)
     else if (mainWindow) {
@@ -165,7 +175,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     buildMenu()
     createWindow()
-    const launchLink = process.argv.find((a) => a.startsWith(`${PROTOCOL}://`))
+    const launchLink = process.argv.find(isDeepLink)
     const id = launchLink ? parseDeepLink(launchLink) : null
     if (id) pendingRoom = id
   })
