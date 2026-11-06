@@ -1,8 +1,8 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
-import { Check, LogOut, Search, UserRoundCog } from 'lucide-react'
+import { Check, ImagePlus, LogOut, Search, UserRoundCog } from 'lucide-react'
 import { Avatar } from './avatar'
 import { colorFor } from './lib/room'
-import type { RoomPerson } from './lib/rooms'
+import { roomBannerUrl, type RoomPerson, type RoomSummary } from './lib/rooms'
 import { relative } from './lib/time'
 
 const errorText = (e: unknown) =>
@@ -20,6 +20,187 @@ export interface LeaveRoomActions {
   leave: (newOwnerId?: string) => Promise<void>
   /** Owner only: who they can hand the room to. */
   people: () => Promise<RoomPerson[]>
+}
+
+export const RoomBannerSettings: React.FC<{
+  room: RoomSummary
+  save: (
+    color: string | null,
+    pattern: RoomSummary['bannerPattern'],
+    image: File | null,
+    removeImage: boolean,
+  ) => Promise<void>
+}> = ({ room, save }) => {
+  const [color, setColor] = useState(room.bannerColor)
+  const [pattern, setPattern] = useState(room.bannerPattern)
+  const [image, setImage] = useState<File | null>(null)
+  const [removeImage, setRemoveImage] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const previewUrlRef = useRef<string | null>(null)
+  const defaultColor = colorFor(room.roomId)
+
+  useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+    }
+  }, [])
+
+  const selectImage = (next: File | null) => {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+    const url = next ? URL.createObjectURL(next) : null
+    previewUrlRef.current = url
+    setPreviewUrl(url)
+    setImage(next)
+  }
+
+  const changed =
+    color !== room.bannerColor ||
+    pattern !== room.bannerPattern ||
+    image !== null ||
+    removeImage
+  const imagePath = removeImage ? null : room.bannerImagePath
+
+  return (
+    <form
+      className="flex flex-col gap-3 border-t pt-3"
+      style={{ borderColor: 'var(--dv-border)' }}
+      onSubmit={async (e) => {
+        e.preventDefault()
+        if (!changed || busy) return
+        setBusy(true)
+        setError(null)
+        try {
+          await save(color, pattern, image, removeImage)
+          selectImage(null)
+          setRemoveImage(false)
+        } catch (err) {
+          setError(errorText(err))
+        } finally {
+          setBusy(false)
+        }
+      }}
+    >
+      <div className="flex flex-col gap-1">
+        <span className="dv-label m-0">Board banner</span>
+        <p className="m-0 text-[11px] leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
+          Customize how this board looks on your rooms home. Everyone who has joined will see it.
+        </p>
+      </div>
+
+      <div
+        className="dv-room-cover"
+        data-pattern={pattern}
+        style={{ '--room': color ?? defaultColor } as React.CSSProperties}
+        aria-label="Banner preview"
+      >
+        {(previewUrl || (imagePath && !image)) && (
+          <img
+            className="dv-room-cover-image"
+            src={previewUrl ?? roomBannerUrl(imagePath!)}
+            alt=""
+          />
+        )}
+        <span className="dv-room-initial" aria-hidden>
+          {room.roomName.slice(0, 1).toUpperCase()}
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="dv-label m-0" htmlFor={`banner-color-${room.roomId}`}>
+          Color
+        </label>
+        <input
+          id={`banner-color-${room.roomId}`}
+          aria-label="Banner color"
+          type="color"
+          value={color ?? defaultColor}
+          disabled={busy}
+          onChange={(e) => setColor(e.target.value)}
+          className="h-8 w-10 cursor-pointer rounded border-0 bg-transparent p-0"
+        />
+        {color !== null && (
+          <button
+            type="button"
+            className="dv-btn ghost"
+            disabled={busy}
+            onClick={() => setColor(null)}
+          >
+            Use default
+          </button>
+        )}
+        <label className="dv-label m-0 ml-auto" htmlFor={`banner-pattern-${room.roomId}`}>
+          Pattern
+        </label>
+        <select
+          id={`banner-pattern-${room.roomId}`}
+          className="dv-input w-auto"
+          value={pattern}
+          disabled={busy}
+          onChange={(e) => setPattern(e.target.value as RoomSummary['bannerPattern'])}
+        >
+          <option value="none">None</option>
+          <option value="dots">Polka dots</option>
+          <option value="grid">Grid</option>
+          <option value="stripes">Stripes</option>
+        </select>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="dv-btn self-start">
+          <ImagePlus size={14} />
+          {image ? 'Choose another photo' : 'Upload photo'}
+          <input
+            className="sr-only"
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            disabled={busy}
+            onChange={(e) => {
+              const next = e.target.files?.[0] ?? null
+              selectImage(next)
+              if (next) setRemoveImage(false)
+              e.currentTarget.value = ''
+            }}
+          />
+        </label>
+        {(image || room.bannerImagePath) && (
+          <button
+            type="button"
+            className="dv-btn ghost"
+            disabled={busy}
+            onClick={() => {
+              if (removeImage) {
+                setRemoveImage(false)
+              } else {
+                selectImage(null)
+                setRemoveImage(!!room.bannerImagePath)
+              }
+            }}
+          >
+            {removeImage ? 'Keep current photo' : 'Remove photo'}
+          </button>
+        )}
+        {image && (
+          <span className="truncate text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+            {image.name}
+          </span>
+        )}
+      </div>
+      <p className="m-0 text-[11px] leading-relaxed" style={{ color: 'var(--dv-muted)' }}>
+        JPG, PNG, or WebP, up to 8 MB.
+      </p>
+
+      {error && (
+        <p className="m-0 text-xs" role="alert" style={{ color: 'var(--dv-danger)' }}>
+          {error}
+        </p>
+      )}
+      <button className="dv-btn primary self-start" disabled={!changed || busy}>
+        {busy ? <span className="dv-spinner" /> : 'Save banner'}
+      </button>
+    </form>
+  )
 }
 
 /**

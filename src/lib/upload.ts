@@ -1,6 +1,11 @@
 import { supabase } from './supabase'
 
 const MAX_BYTES = 8 * 1024 * 1024
+const ROOM_BANNER_TYPES: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+}
 
 const AVATAR_PX = 256
 
@@ -55,4 +60,27 @@ export async function removeOldAvatars(userId: string, keepUrl: string | null) {
     .filter((f) => f.id && !keepUrl?.endsWith(`/${userId}/${f.name}`))
     .map((f) => `${userId}/${f.name}`)
   if (old.length) await bucket.remove(old)
+}
+
+/** Uploads an owner-selected room-card banner; the room RPC controls which path is displayed. */
+export async function uploadRoomBanner(
+  roomId: string,
+  file: File,
+): Promise<{ path: string; url: string }> {
+  const extension = ROOM_BANNER_TYPES[file.type]
+  if (!extension) throw new Error('Choose a JPG, PNG, or WebP image.')
+  if (file.size > MAX_BYTES) throw new Error('Banner images must be under 8 MB.')
+
+  const path = `${roomId}/banner-${crypto.randomUUID()}.${extension}`
+  const { error } = await supabase.storage
+    .from('board-assets')
+    .upload(path, file, { contentType: file.type, cacheControl: '31536000' })
+  if (error) throw new Error(`Banner upload failed: ${error.message}`)
+  return { path, url: supabase.storage.from('board-assets').getPublicUrl(path).data.publicUrl }
+}
+
+/** Removes a superseded banner image after the room has saved its replacement. */
+export async function removeRoomBanner(path: string) {
+  const { error } = await supabase.storage.from('board-assets').remove([path])
+  if (error) throw new Error(`Old banner cleanup failed: ${error.message}`)
 }

@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { LIMITS, cleanLine } from './sanitize'
+import { removeRoomBanner, uploadRoomBanner } from './upload'
 
 const cleanRoomName = (name: string) => cleanLine(name, LIMITS.roomName)
 
@@ -32,6 +33,9 @@ export interface RoomSummary {
   allowGuests: boolean
   /** Untitled: renaming it names it (saveRoom) instead. */
   unnamed: boolean
+  bannerColor: string | null
+  bannerPattern: 'none' | 'dots' | 'grid' | 'stripes'
+  bannerImagePath: string | null
 }
 
 export type RoomError =
@@ -47,6 +51,7 @@ export type RoomError =
   | 'needs_account'
   | 'pick_owner'
   | 'bad_owner'
+  | 'bad_banner'
 
 export class RoomRpcError extends Error {
   code: RoomError | string
@@ -69,6 +74,7 @@ const ROOM_ERRORS: Record<RoomError, string> = {
   needs_account: 'Sign in to save this room.',
   pick_owner: 'Choose someone to take over this room before you leave it.',
   bad_owner: "That person can't take over this room. Choose someone else.",
+  bad_banner: 'Choose a valid banner color, pattern, and image.',
 }
 
 async function rpc(fn: string, args: Record<string, string | boolean | null>) {
@@ -182,6 +188,43 @@ export const setGuestAccess = async (roomId: string, allow: boolean) => {
   await rpc('set_room_guest_access', { p_room_id: roomId, p_allow: allow })
 }
 
+export async function setRoomBanner(
+  roomId: string,
+  color: string | null,
+  pattern: RoomSummary['bannerPattern'],
+  imageFile: File | null,
+  removeImage: boolean,
+  oldImagePath: string | null,
+) {
+  const uploaded = imageFile ? await uploadRoomBanner(roomId, imageFile) : null
+  const imagePath = uploaded?.path ?? (removeImage ? null : oldImagePath)
+  try {
+    await rpc('set_room_banner', {
+      p_room_id: roomId,
+      p_color: color,
+      p_pattern: pattern,
+      p_image_path: imagePath,
+    })
+  } catch (error) {
+    if (uploaded) {
+      try {
+        await removeRoomBanner(uploaded.path)
+      } catch (cleanupError) {
+        console.error('Failed to remove an unsaved room banner image.', cleanupError)
+      }
+    }
+    throw error
+  }
+  if (oldImagePath && oldImagePath !== imagePath) {
+    try {
+      await removeRoomBanner(oldImagePath)
+    } catch (error) {
+      console.error('Failed to remove the superseded room banner image.', error)
+    }
+  }
+  return { color, pattern, imagePath }
+}
+
 export const clearCanvas = async (roomId: string) => {
   await rpc('clear_canvas', { p_room_id: roomId })
 }
@@ -269,7 +312,9 @@ export async function roomInviteInfo(roomId: string): Promise<InviteInfo> {
 export async function myRooms(userId: string): Promise<RoomSummary[]> {
   const { data, error } = await supabase
     .from('room_members')
-    .select('room_id,last_active_at,rooms(name,created_by,last_edited_at,allow_guests,unnamed)')
+    .select(
+      'room_id,last_active_at,rooms(name,created_by,last_edited_at,allow_guests,unnamed,banner_color,banner_pattern,banner_image_path)',
+    )
     .eq('user_id', userId)
     .order('last_active_at', { ascending: false })
   if (error) throw new Error(error.message)
@@ -281,5 +326,11 @@ export async function myRooms(userId: string): Promise<RoomSummary[]> {
     isOwner: r.rooms?.created_by === userId,
     allowGuests: r.rooms?.allow_guests ?? true,
     unnamed: !!r.rooms?.unnamed,
+    bannerColor: r.rooms?.banner_color ?? null,
+    bannerPattern: r.rooms?.banner_pattern ?? 'dots',
+    bannerImagePath: r.rooms?.banner_image_path ?? null,
   }))
 }
+
+export const roomBannerUrl = (path: string) =>
+  supabase.storage.from('board-assets').getPublicUrl(path).data.publicUrl

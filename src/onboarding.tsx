@@ -41,12 +41,15 @@ import {
   roomPeople,
   renameRoom,
   saveRoom,
+  setRoomBanner,
   setGuestAccess,
   setFlash,
+  roomBannerUrl,
 } from './lib/rooms'
 import {
   type LeaveRoomActions,
   LeaveRoomSection,
+  RoomBannerSettings,
   type RoomSettingsActions,
   RoomSettingsForm,
 } from './room-settings'
@@ -1151,8 +1154,12 @@ const RoomCard: React.FC<{
       />
       <div
         className="dv-room-cover"
-        style={{ '--room': colorFor(room.roomId) } as React.CSSProperties}
+        data-pattern={room.bannerPattern}
+        style={{ '--room': room.bannerColor ?? colorFor(room.roomId) } as React.CSSProperties}
       >
+        {room.bannerImagePath && (
+          <img className="dv-room-cover-image" src={roomBannerUrl(room.bannerImagePath)} alt="" />
+        )}
         <span className="dv-room-initial" aria-hidden>
           {room.roomName.slice(0, 1).toUpperCase()}
         </span>
@@ -1881,6 +1888,36 @@ export const RoomsHome: React.FC = () => {
     },
   })
 
+  const saveBanner = async (
+    room: RoomSummary,
+    color: string | null,
+    pattern: RoomSummary['bannerPattern'],
+    image: File | null,
+    removeImage: boolean,
+  ) => {
+    const saved = await setRoomBanner(
+      room.roomId,
+      color,
+      pattern,
+      image,
+      removeImage,
+      room.bannerImagePath,
+    )
+    setRooms(
+      (rs) =>
+        rs?.map((r) =>
+          r.roomId === room.roomId
+            ? {
+                ...r,
+                bannerColor: saved.color,
+                bannerPattern: saved.pattern,
+                bannerImagePath: saved.imagePath,
+              }
+            : r,
+        ) ?? rs,
+    )
+  }
+
   // From here we're not in the room, so each action briefly joins its channel to tell members.
   const settingsActions = (room: RoomSummary): RoomSettingsActions => ({
     // An untitled room is named instead. Only its owner is in it, so there's nobody to tell.
@@ -2062,6 +2099,13 @@ export const RoomsHome: React.FC = () => {
             <strong>{settingsRoom.roomName}</strong>. Only you can change these, because you created
             this room.
           </p>
+          <RoomBannerSettings
+            key={`banner-${settingsRoom.roomId}`}
+            room={settingsRoom}
+            save={(color, pattern, image, removeImage) =>
+              saveBanner(settingsRoom, color, pattern, image, removeImage)
+            }
+          />
           <RoomSettingsForm
             key={settingsRoom.roomId}
             roomName={settingsRoom.roomName}
