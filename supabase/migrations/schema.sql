@@ -58,7 +58,7 @@ CREATE TABLE public.strokes (
 CREATE TABLE public.profiles (
   id uuid NOT NULL,
   username text NOT NULL UNIQUE CHECK (username ~ '^[a-z0-9_]{3,24}$'::text),
-  signup_method text NOT NULL CHECK (signup_method = ANY (ARRAY['username'::text, 'oauth'::text])),
+  signup_method text NOT NULL CHECK (signup_method = ANY (ARRAY['username'::text, 'oauth'::text, 'email'::text])),
   placeholder_email text,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   avatar_url text,
