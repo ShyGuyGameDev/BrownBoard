@@ -66,12 +66,7 @@ import { fullDate, relative } from './lib/time'
 
 export const Brand: React.FC = () => (
   <div className="flex items-center gap-2">
-    <div
-      className="flex h-6 w-6 items-center justify-center rounded-md text-[13px] font-bold"
-      style={{ background: 'var(--dv-accent)', color: 'var(--dv-accent-fg)' }}
-    >
-      D
-    </div>
+    <img src="/brownboard-logo.svg" alt="" className="h-6 w-6 rounded-md" />
     <span className="text-[14px] font-semibold tracking-tight">BrownBoard</span>
   </div>
 )
