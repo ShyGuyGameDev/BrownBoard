@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024">
+  <title>BrownBoard logo prototype 3: board doodle</title>
+  <desc>A clean whiteboard icon with boxed Kanban cards and a playful marker trail.</desc>
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4da3ff"/>
+      <stop offset="1" stop-color="#8b7cff"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="#12151c"/>
+  <path d="M116 112h280v232H116z" fill="#1b202b" stroke="url(#accent)" stroke-width="9" stroke-linejoin="round"/>
+  <path d="M148 152h60v70h-60zM226 152h60v70h-60zM304 152h60v70h-60z" fill="none" stroke="#e9ecf4" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M148 246h60v62h-60zM226 246h60v62h-60zM304 246h60v62h-60z" fill="none" stroke="#4b5364" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M226 344v28m60-28v28m-96 0h132" fill="none" stroke="#687184" stroke-width="10" stroke-linecap="round"/>
+  <path d="M110 396c34-28 45 13 71-4 22-14 19-43 43-43s26 27 48 20c22-7 20-37 44-37 21 0 25 19 42 13 15-6 24-27 47-31" fill="none" stroke="url(#accent)" stroke-width="14" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024">
+  <title>BrownBoard logo prototype 2: sticky scribble</title>
+  <desc>Two layered sticky cards with a hand-drawn marker loop and task boxes.</desc>
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4da3ff"/>
+      <stop offset="1" stop-color="#8b7cff"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="#12151c"/>
+  <path d="M150 124h224v206l-48 48H150z" fill="#252532" transform="rotate(5 262 251)"/>
+  <path d="M170 112h220v204l-48 48H170z" fill="#fff"/>
+  <path d="M342 364v-48h48z" fill="#c9c2ff"/>
+  <rect x="198" y="146" width="136" height="14" rx="7" fill="url(#accent)"/>
+  <rect x="198" y="186" width="72" height="54" rx="10" fill="#4da3ff"/>
+  <rect x="284" y="186" width="72" height="54" rx="10" fill="#8b7cff"/>
+  <rect x="198" y="256" width="72" height="54" rx="10" fill="#8b7cff" opacity=".8"/>
+  <path d="M112 292c18-26 39-12 44 5 7 24-23 42-10 57 13 16 42-24 67-7 21 14 31 39 55 29 19-8 23-38 48-38 24 0 28 27 48 20 17-6 23-31 50-37" fill="none" stroke="url(#accent)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

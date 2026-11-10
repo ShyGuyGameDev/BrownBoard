@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024">
+  <title>BrownBoard logo prototype 4: corner note</title>
+  <desc>A folded-corner sticky note containing three columns of boxed tasks and a marker scribble.</desc>
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4da3ff"/>
+      <stop offset="1" stop-color="#8b7cff"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="#12151c"/>
+  <path d="M132 100h248v248l-52 52H132z" fill="#fff"/>
+  <path d="M328 400v-52h52z" fill="#c9c2ff"/>
+  <path d="M164 140h76M260 140h76" stroke="url(#accent)" stroke-width="12" stroke-linecap="round"/>
+  <rect x="164" y="168" width="76" height="76" rx="13" fill="#4da3ff"/>
+  <rect x="260" y="168" width="76" height="76" rx="13" fill="#8b7cff"/>
+  <rect x="164" y="260" width="76" height="76" rx="13" fill="#8b7cff" opacity=".75"/>
+  <rect x="260" y="260" width="76" height="76" rx="13" fill="#4da3ff" opacity=".75"/>
+  <path d="M104 330c20-18 36-9 42 6 8 20-17 37-4 50 12 13 31-20 51-9 20 10 29 32 49 24 21-8 21-33 42-33 20 0 24 21 42 15 16-6 22-24 46-29" fill="none" stroke="url(#accent)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
