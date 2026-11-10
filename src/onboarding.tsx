@@ -72,7 +72,7 @@ export const Brand: React.FC = () => (
     >
       D
     </div>
-    <span className="text-[14px] font-semibold tracking-tight">Debut</span>
+    <span className="text-[14px] font-semibold tracking-tight">BrownBoard</span>
   </div>
 )
 
@@ -545,7 +545,7 @@ export const Onboarding: React.FC = () => {
       {step === 'choose' && (
         <>
           <div className="flex flex-col gap-2">
-            <h1>Welcome to Debut</h1>
+            <h1>Welcome to BrownBoard</h1>
             <p className="dv-sub">
               A shared task board and canvas for your team. How would you like to start?
             </p>

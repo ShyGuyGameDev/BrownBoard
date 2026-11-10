@@ -1,3 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024"><title>Debut logo: live cursor</title><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4da3ff"/><stop offset="1" stop-color="#8b7cff"/></linearGradient></defs><rect width="512" height="512" fill="#12151c"/>
-<g transform="translate(-24 -8)"><path d="M160 136H232A120 120 0 0 1 232 376H160Z" fill="none" stroke="#fff" stroke-width="48" stroke-linejoin="round"/>
-<path d="M272 264L424 324L356 346L330 412Z" fill="url(#g)" stroke="#12151c" stroke-width="20" stroke-linejoin="round" paint-order="stroke"/></g></svg>

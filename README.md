@@ -25,7 +25,7 @@
 
 From OG Cursor:
 
-# Debut — Unified Canvas Platform
+# BrownBoard — Unified Canvas Platform
 
 Single-canvas product design & development workspace for planning, drafting, prototyping, and project tracking. Frontend uses React + Vite + TypeScript with PixiJS for WebGL rendering; Supabase will power realtime sync and persistence.
 

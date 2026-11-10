@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024"><title>BrownBoard logo: B in a selection frame</title><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4da3ff"/><stop offset="1" stop-color="#8b7cff"/></linearGradient></defs><rect width="512" height="512" fill="#12151c"/>
+<rect x="120" y="104" width="272" height="304" rx="8" fill="none" stroke="url(#g)" stroke-width="10"/>
+<g fill="#12151c" stroke="#4da3ff" stroke-width="8"><rect x="104" y="88" width="30" height="30"/><rect x="378" y="88" width="30" height="30" stroke="#8b7cff"/><rect x="104" y="392" width="30" height="30"/><rect x="378" y="392" width="30" height="30" stroke="#8b7cff"/></g>
+<path d="M180 160H276C306 160 322 176 322 200C322 214 314 224 304 228C318 232 328 244 328 262C328 290 310 304 278 304H180Z" fill="#fff"/>
+<path d="M216 194H266C276 194 282 200 282 208C282 216 276 222 266 222H216Z" fill="#12151c"/>
+<path d="M216 240H272C284 240 290 246 290 256C290 266 284 272 272 272H216Z" fill="#12151c"/></svg>

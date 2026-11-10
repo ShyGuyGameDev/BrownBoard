@@ -2,16 +2,16 @@ import { app, BrowserWindow, dialog, Menu, nativeTheme, shell } from 'electron'
 import path from 'path'
 
 // __dirname is available in CommonJS output.
-const PROTOCOL = 'debut'
+const PROTOCOL = 'brownboard'
 const LEGACY_PROTOCOL = 'devboard'
 const isMac = process.platform === 'darwin'
 
 let mainWindow: BrowserWindow | null = null
 let pendingRoom: string | null = null
 
-/** Debut desktop links (including the legacy scheme) -> room id, validated before injection. */
+/** BrownBoard desktop links (including the legacy scheme) -> room id, validated before injection. */
 const parseDeepLink = (url: string): string | null => {
-  const m = url.match(/^(?:debut|devboard):\/\/(?:r|join)\/([A-Za-z0-9_-]{3,64})\/?$/)
+  const m = url.match(/^(?:brownboard|devboard):\/\/(?:r|join)\/([A-Za-z0-9_-]{3,64})\/?$/)
   return m ? m[1] : null
 }
 

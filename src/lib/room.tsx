@@ -95,11 +95,11 @@ const RoomContext = createContext<RoomContextValue | null>(null)
 
 // ---------- room id helpers ----------
 
-/** Accepts a full share link, a Debut desktop link, or a bare room code. */
+/** Accepts a full share link, a BrownBoard desktop link, or a bare room code. */
 export const parseRoomId = (input: string): string | null => {
   const m = input
     .trim()
-    .match(/(?:#\/r\/|(?:debut|devboard):\/\/(?:join|r)\/|^)([A-Za-z0-9_-]{3,64})\/?$/)
+    .match(/(?:#\/r\/|(?:brownboard|devboard):\/\/(?:join|r)\/|^)([A-Za-z0-9_-]{3,64})\/?$/)
   return m ? m[1] : null
 }
 
@@ -140,7 +140,7 @@ export const takeReturnRoom = (): string | null => {
 /**
  * In a browser this is just the current URL. In Electron (file://) there is no public URL,
  * so set VITE_SHARE_BASE_URL to wherever you host the web build; otherwise we fall back to
- * a debut:// deep link that opens the desktop app.
+ * a brownboard:// deep link that opens the desktop app.
  */
 export const buildShareLink = (roomId: string) => {
   const envBase = import.meta.env.VITE_SHARE_BASE_URL as string | undefined
@@ -148,7 +148,7 @@ export const buildShareLink = (roomId: string) => {
     ? window.location.origin + window.location.pathname
     : ''
   const base = (envBase || httpBase).replace(/#.*$/, '')
-  return base ? `${base}#/r/${roomId}` : `debut://r/${roomId}`
+  return base ? `${base}#/r/${roomId}` : `brownboard://r/${roomId}`
 }
 
 /** Avatar letters: first letter of the first two words ("Anonymous Cat" → "AC", "shaayer" → "S"). */

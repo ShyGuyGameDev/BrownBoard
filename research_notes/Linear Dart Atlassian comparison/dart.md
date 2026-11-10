@@ -31,7 +31,7 @@ Dart is an AI-native project manager that creates and grooms structured tasks fr
 
 ### Inferences
 - The honest 2026 description is “AI project system plus an agent workplace,” not “a bot that silently turns every meeting and thread into tasks.” Capture from chat, email, and Slack is real, and it is user-triggered except where GitHub events update linked tasks.
-- Task IDs exist (they are embedded in GitHub branch names). That is a software-tracker primitive Debut does not have.
+- Task IDs exist (they are embedded in GitHub branch names). That is a software-tracker primitive BrownBoard does not have.
 - Docs are a first-class object inside the PM tool. Roadmaps and sprints are first-class. A separate Goals view was not found.
 
 ### Gaps
@@ -122,26 +122,26 @@ The durable criticisms are that AI output still needs a human editor, that the t
 - No privacy-policy clause on data residency or subprocessors was fetched. The security page does not name the model vendors that process customer text.
 - Fair-use caps behind “unlimited AI model usage” were not stated on the pricing page fetched.
 
-## How is Dart different from Debut?
+## How is Dart different from BrownBoard?
 
 ### Takeaway
-Dart is an AI-native task system: chat, email, and Slack become structured work items, and agents can be assigned to execute them. Debut is a shared visual room: the same tasks appear as a kanban and as cards on a drawing canvas. They overlap only at “a team looking at a board.”
+Dart is an AI-native task system: chat, email, and Slack become structured work items, and agents can be assigned to execute them. BrownBoard is a shared visual room: the same tasks appear as a kanban and as cards on a drawing canvas. They overlap only at “a team looking at a board.”
 
 ### Cited Findings
 - Dart’s board is a kanban of task cards with status columns, drag-and-drop, and AI-filled properties. Layouts beside it are list, calendar, and roadmap, plus docs and sprints. — [Board layout](https://www.dartai.com/features/board-layout); [Pricing](https://www.dartai.com/pricing)
 - Dart’s collaboration model is a workspace of teammates, admins, and guests (guest and admin roles are Premium), with role-based access, comments, notifications, and live sync of task records. Agents are first-class assignees. — [Pricing](https://www.dartai.com/pricing); [itsdart.com](https://itsdart.com/); [Security](https://www.dartai.com/security)
 - Dart has task IDs used in GitHub branch names, task types (epic, issue, story, bug, milestone), dependencies, sprints, time tracking, and an AI chat that creates and updates that structure. — [GitHub](https://www.dartai.com/integrations/github); [Pricing](https://www.dartai.com/pricing)
-- Debut, per the comparison brief: shared rooms opened by link; guests may join; signed-in accounts can name, save, claim, and own rooms. Two views of one room: kanban and a freeform whiteboard. Kanban tasks have title, description, status, urgency, category, images, and position; categories are the columns. The whiteboard is a drawing canvas (pen, shapes, text, sticky notes, images, connectors, and task cards linked back to the kanban). Realtime sync via Supabase. Web app plus an Electron shell. Dark mode. It does not ship cycles or sprints, GitHub or PR sync, issue IDs, roadmaps, a docs wiki, an enterprise admin suite, or an AI agent that creates or assigns tasks.
+- BrownBoard, per the comparison brief: shared rooms opened by link; guests may join; signed-in accounts can name, save, claim, and own rooms. Two views of one room: kanban and a freeform whiteboard. Kanban tasks have title, description, status, urgency, category, images, and position; categories are the columns. The whiteboard is a drawing canvas (pen, shapes, text, sticky notes, images, connectors, and task cards linked back to the kanban). Realtime sync via Supabase. Web app plus an Electron shell. Dark mode. It does not ship cycles or sprints, GitHub or PR sync, issue IDs, roadmaps, a docs wiki, an enterprise admin suite, or an AI agent that creates or assigns tasks.
 - No Dart features page reviewed describes a drawing surface, sticky notes, connectors, or a freeform canvas. The word “whiteboard” does not appear in the product pages fetched. Design help is an AI design agent and “generate concepts and prototypes,” which is generation, not a shared sketching room. — [Features](https://www.dartai.com/features); [itsdart.com](https://itsdart.com/)
-- Both products are realtime, have a dark theme, ship a desktop app, and show tasks as cards on a board. Dart’s desktop matrix is Mac, Windows, and Linux apps plus iOS and Android. Debut’s desktop shell is Electron. An App Store reviewer called the iOS Dart app “not a native app,” which is a packaging complaint, not evidence it is Electron. — [Pricing](https://www.dartai.com/pricing); [App Store](https://apps.apple.com/us/app/dart-project-management/id1614157527)
+- Both products are realtime, have a dark theme, ship a desktop app, and show tasks as cards on a board. Dart’s desktop matrix is Mac, Windows, and Linux apps plus iOS and Android. BrownBoard’s desktop shell is Electron. An App Store reviewer called the iOS Dart app “not a native app,” which is a packaging complaint, not evidence it is Electron. — [Pricing](https://www.dartai.com/pricing); [App Store](https://apps.apple.com/us/app/dart-project-management/id1614157527)
 
 ### Inferences
-- Axis of difference: Dart captures and assigns structured work, including to agents. Debut hosts a human conversation on a shared canvas that happens to contain the tasks.
-- Dart is closer to Linear, Height, or an AI-skinned Asana than to a whiteboard product. Debut is closer to a light Miro-plus-kanban room than to an issue tracker.
-- A team that wants GitHub-linked issues, sprints, roadmaps, or an agent to open a PR is outside Debut’s shipped product. A team that wants to sketch, stick notes, and drag task cards around a drawing is outside Dart’s documented product.
+- Axis of difference: Dart captures and assigns structured work, including to agents. BrownBoard hosts a human conversation on a shared canvas that happens to contain the tasks.
+- Dart is closer to Linear, Height, or an AI-skinned Asana than to a whiteboard product. BrownBoard is closer to a light Miro-plus-kanban room than to an issue tracker.
+- A team that wants GitHub-linked issues, sprints, roadmaps, or an agent to open a PR is outside BrownBoard’s shipped product. A team that wants to sketch, stick notes, and drag task cards around a drawing is outside Dart’s documented product.
 
 ### Gaps
-- Dart’s “live syncing” implementation (transport, guest model, conflict handling) was not compared technically to Debut’s Supabase rooms. Only the product claims were available.
+- Dart’s “live syncing” implementation (transport, guest model, conflict handling) was not compared technically to BrownBoard’s Supabase rooms. Only the product claims were available.
 - Whether any Dart customer uses an embedded third-party whiteboard was not researched. Nothing in the first-party feature list suggests one.
 
 ## Where could they be confused, and where do they not compete?
@@ -150,16 +150,16 @@ Dart is an AI-native task system: chat, email, and Slack become structured work 
 They can be confused only at the phrase “a kanban board for a small team, with a desktop app and dark mode.” They do not compete on AI agents, issue tracking, or on a shared drawing room. A separate naming hazard is the Dart language, and another product at dart.ceo.
 
 ### Cited Findings
-- Dart’s own name for the kanban is “board layout” and “dartboards.” Cards move across columns. That is the surface someone could mistake for Debut’s board view. — [Board layout](https://www.dartai.com/features/board-layout)
-- Dart markets itself against Monday.com, ClickUp, Asana, spreadsheets, and Jira in testimonials and in a Jira/Wrike comparison, and it offers CSV import from Linear and Jira. Those are the competitors Dart chooses. Debut is not among them. — [Homepage](https://www.dartai.com/); [Dart blog](https://www.dartai.com/blog/jira-vs-wrike-vs-dart-which-collaboration-tool-should-you-use); [Linear integration](https://www.dartai.com/integrations/linear)
+- Dart’s own name for the kanban is “board layout” and “dartboards.” Cards move across columns. That is the surface someone could mistake for BrownBoard’s board view. — [Board layout](https://www.dartai.com/features/board-layout)
+- Dart markets itself against Monday.com, ClickUp, Asana, spreadsheets, and Jira in testimonials and in a Jira/Wrike comparison, and it offers CSV import from Linear and Jira. Those are the competitors Dart chooses. BrownBoard is not among them. — [Homepage](https://www.dartai.com/); [Dart blog](https://www.dartai.com/blog/jira-vs-wrike-vs-dart-which-collaboration-tool-should-you-use); [Linear integration](https://www.dartai.com/integrations/linear)
 - Search for this company is polluted by the Dart language and by Flutter. The PM product is identified by itsdart.com, dartai.com, Keeple, Inc., and YC W22. — [Y Combinator](https://www.ycombinator.com/companies/dart); [Crunchbase](https://www.crunchbase.com/organization/dart-08b6)
 - dart.ceo is a different “Dart” (company brain, meeting summaries, $199 per month flat). It should not be cited as a feature of Keeple’s product. — [dart.ceo](https://dart.ceo/)
 
 ### Inferences
-- Confusion with Debut would be a category error made by someone who has only heard “visual task board.” Five minutes in either product breaks it: Dart asks you to chat a plan into issues and invite an agent; Debut asks you to open a link and draw.
-- They do not compete for engineering issue tracking (that is Dart vs Linear/Jira, and Dart is the thinner tracker). They do not compete for workshop facilitation or spatial planning (that is Debut’s whiteboard; Dart has no equivalent).
-- The narrow overlap is a very small group that only needs a shared kanban and does not care about agents or drawing. Even there, Dart’s free tier (four teammates, AI grooming, docs, sprints) is a much larger PM product than Debut’s room, and Debut’s guest-by-link model is a much lower-friction join than a teammate workspace.
+- Confusion with BrownBoard would be a category error made by someone who has only heard “visual task board.” Five minutes in either product breaks it: Dart asks you to chat a plan into issues and invite an agent; BrownBoard asks you to open a link and draw.
+- They do not compete for engineering issue tracking (that is Dart vs Linear/Jira, and Dart is the thinner tracker). They do not compete for workshop facilitation or spatial planning (that is BrownBoard’s whiteboard; Dart has no equivalent).
+- The narrow overlap is a very small group that only needs a shared kanban and does not care about agents or drawing. Even there, Dart’s free tier (four teammates, AI grooming, docs, sprints) is a much larger PM product than BrownBoard’s room, and BrownBoard’s guest-by-link model is a much lower-friction join than a teammate workspace.
 
 ### Gaps
-- No third-party article was found that mentions Debut and Dart together. The non-overlap is inferred from the two product descriptions, not from a market map.
-- Public win/loss data (teams that evaluated both) does not exist in the sources reviewed, which is expected given Debut’s early stage.
+- No third-party article was found that mentions BrownBoard and Dart together. The non-overlap is inferred from the two product descriptions, not from a market map.
+- Public win/loss data (teams that evaluated both) does not exist in the sources reviewed, which is expected given BrownBoard’s early stage.

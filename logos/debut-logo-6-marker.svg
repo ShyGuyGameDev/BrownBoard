@@ -1,3 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024"><title>Debut logo: marker stroke and star</title><defs><linearGradient id="g2" gradientUnits="userSpaceOnUse" x1="150" y1="400" x2="400" y2="120"><stop offset="0" stop-color="#4da3ff"/><stop offset="1" stop-color="#8b7cff"/></linearGradient></defs><rect width="512" height="512" fill="#12151c"/>
-<path d="M168 152V384C288 392 376 340 376 252C376 180 300 128 148 140" fill="none" stroke="url(#g2)" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M264 196C268 232 276 240 312 244C276 248 268 256 264 292C260 256 252 248 216 244C252 240 260 232 264 196Z" fill="#fff"/></svg>
