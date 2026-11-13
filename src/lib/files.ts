@@ -162,7 +162,18 @@ const saveBlob = (blob: Blob, name: string) => {
  * Downloads several files in one go, as a single .zip (browsers block a burst of separate downloads).
  * Returns how many files couldn't be fetched.
  */
-export async function downloadAll(files: Attachment[], zipName = 'BrownBoard files.zip') {
+/** "<room name>.zip", with characters file systems reject removed. */
+export const zipNameFor = (roomName: string) => {
+  const clean = roomName
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\.+/, '')
+    .slice(0, 100)
+  return `${clean || 'Canvas files'}.zip`
+}
+
+export async function downloadAll(files: Attachment[], zipName: string) {
   const { makeZip } = await import('./zip')
   const results = await Promise.all(
     files.map(async (f) => {

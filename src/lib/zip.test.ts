@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { crc32, makeZip } from './zip'
-import { uniqueNames } from './files'
+import { uniqueNames, zipNameFor } from './files'
 
 describe('zip', () => {
   it('computes the standard CRC-32', () => {
@@ -32,5 +32,13 @@ describe('uniqueNames', () => {
       'x_y',
       'note',
     ])
+  })
+})
+
+describe('zipNameFor', () => {
+  it('uses the room name, made safe for a file name', () => {
+    expect(zipNameFor('Sprint 12')).toBe('Sprint 12.zip')
+    expect(zipNameFor('Q3: plans/ideas?')).toBe('Q3 plans ideas.zip')
+    expect(zipNameFor('  ')).toBe('Canvas files.zip')
   })
 })

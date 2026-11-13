@@ -58,6 +58,7 @@ import {
   fileKind,
   downloadAll,
   downloadHref,
+  zipNameFor,
   formatBytes,
   isImageFile,
   uploadRoomFile,
@@ -660,8 +661,20 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   active = true,
   theme = 'light',
 }) => {
-  const { roomId, me, send, on, status, isOwner, setActivity, setPlace, peers, setSelection } =
-    useRoom()
+  const {
+    roomId,
+    roomName,
+    unnamed,
+    me,
+    send,
+    on,
+    status,
+    isOwner,
+    setActivity,
+    setPlace,
+    peers,
+    setSelection,
+  } = useRoom()
   const taskData = useRoomTasks()
 
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -2869,7 +2882,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     setZipping(true)
     try {
       const failed = await withUploadFeedback(`Preparing ${multiFiles.length} files…`, () =>
-        downloadAll(multiFiles),
+        downloadAll(multiFiles, zipNameFor(unnamed ? '' : roomName)),
       )
       if (failed === multiFiles.length) toast("Couldn't download those files.")
       else if (failed) toast(`${failed} of ${multiFiles.length} files couldn't be downloaded.`)
