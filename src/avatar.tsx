@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { initials } from './lib/room'
+import { initials } from './lib/room-links'
 import { isSafeImageSrc } from './lib/sanitize'
 import { inkOn } from './lib/highlight'
 

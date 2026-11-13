@@ -15,16 +15,15 @@ import {
 } from 'lucide-react'
 import { Whiteboard } from './whiteboard'
 import { KanbanBoard } from './kanban'
+import { RoomProvider } from './lib/room'
 import {
-  RoomProvider,
   buildShareLink,
   getRoomIdFromLocation,
   goHome,
   goToRoom,
   takeReturnRoom,
-  useRoom,
-  type Peer,
-} from './lib/room.tsx'
+} from './lib/room-links'
+import { useRoom, type Peer } from './lib/room-context'
 import { type ToastAction, bus, isTyping, toast } from './lib/bus.ts'
 import { cleanHexColor } from './lib/sanitize.ts'
 import {
@@ -33,7 +32,8 @@ import {
   peekSignInIntent,
   takeStartRoomAfterSignIn,
 } from './lib/sign-in-intent.ts'
-import { AuthProvider, isElectron, useAuth } from './lib/auth.tsx'
+import { AuthProvider } from './lib/auth'
+import { isElectron, useAuth } from './lib/auth-context'
 import {
   type RoomSession,
   claimRoom,

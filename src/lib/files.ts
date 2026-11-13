@@ -122,3 +122,63 @@ export function downloadHref(a: Attachment) {
   u.searchParams.set('download', a.name)
   return u.toString()
 }
+
+/** Gives each file a name no other file in the list has: "a.png", "a (2).png", … */
+export function uniqueNames(names: string[]): string[] {
+  const used = new Set<string>()
+  return names.map((raw) => {
+    // Zip entries are paths; keep each file at the top level.
+    const name = raw.replace(/[\\/]/g, '_').replace(/^\.+/, '') || 'file'
+    const dot = name.lastIndexOf('.')
+    const [base, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, '']
+    let out = name
+    for (let n = 2; used.has(out.toLowerCase()); n++) out = `${base} (${n})${ext}`
+    used.add(out.toLowerCase())
+    return out
+  })
+}
+
+/** "image" with type image/png becomes "image.png", so the saved file opens in the right app. */
+const withExtension = (a: Attachment) => {
+  if (a.name.includes('.')) return a.name
+  const sub = a.type.split('/')[1]?.split('+')[0]
+  return sub && /^[a-z0-9-]{1,10}$/i.test(sub) && sub !== '*'
+    ? `${a.name}.${sub.replace('jpeg', 'jpg')}`
+    : a.name
+}
+
+const saveBlob = (blob: Blob, name: string) => {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+/**
+ * Downloads several files in one go, as a single .zip (browsers block a burst of separate downloads).
+ * Returns how many files couldn't be fetched.
+ */
+export async function downloadAll(files: Attachment[], zipName = 'BrownBoard files.zip') {
+  const { makeZip } = await import('./zip')
+  const results = await Promise.all(
+    files.map(async (f) => {
+      try {
+        const res = await fetch(f.url)
+        if (!res.ok) throw new Error(String(res.status))
+        return { file: f, data: new Uint8Array(await res.arrayBuffer()) }
+      } catch {
+        return null
+      }
+    }),
+  )
+  const ok = results.filter((r): r is NonNullable<typeof r> => !!r)
+  if (ok.length) {
+    const names = uniqueNames(ok.map((r) => withExtension(r.file)))
+    saveBlob(makeZip(ok.map((r, i) => ({ name: names[i], data: r.data }))), zipName)
+  }
+  return files.length - ok.length
+}

@@ -18,10 +18,11 @@ import {
   X,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
-import { colorFor, useRoom, type Peer } from './lib/room'
+import { colorFor } from './lib/room-links'
+import { useRoom, type Peer } from './lib/room-context'
 import { inkOn } from './lib/highlight'
 import { bus, getLinkCounts, isTyping, toast, undoToast, withUploadFeedback } from './lib/bus'
-import { useAuth } from './lib/auth'
+import { useAuth } from './lib/auth-context'
 import {
   type Attachment,
   cleanAttachment,
@@ -46,18 +47,17 @@ import {
   readIds,
 } from './lib/cards'
 import { CardBadges, CardDetail } from './card-detail'
+import { ActiveFilters, FilterMenu } from './board-filters'
 import {
-  ActiveFilters,
   type BoardFilters,
-  FilterMenu,
   activeFilterCount,
   matchesFilters,
   readFilters,
   saveFilters,
-} from './board-filters'
+} from './lib/filters'
 import { ArchivePanel } from './archive-panel'
 import { useIsMobile } from './lib/viewport'
-import { takePendingCard } from './notifications'
+import { takePendingCard } from './lib/pending-card'
 import {
   type BoardSettings,
   DEFAULT_BOARD_SETTINGS,

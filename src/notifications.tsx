@@ -9,8 +9,10 @@ import {
   UserPlus,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
-import { goToRoom, useRoom } from './lib/room'
+import { goToRoom } from './lib/room-links'
+import { useRoom } from './lib/room-context'
 import { bus } from './lib/bus'
+import { setPendingCard } from './lib/pending-card'
 import { toTitleCase } from './lib/options'
 import { useRoomTasks } from './lib/tasks'
 import { relative, fullDate } from './lib/time'
@@ -28,22 +30,6 @@ interface Notification {
   detail: Record<string, unknown> | null
   createdAt: string
   readAt: string | null
-}
-
-/** A card to open once its room has loaded (set when a notification points to another room). */
-const PENDING_KEY = 'brownboard:open-card'
-
-export const takePendingCard = (roomId: string): string | null => {
-  try {
-    const raw = sessionStorage.getItem(PENDING_KEY)
-    if (!raw) return null
-    const { room, task } = JSON.parse(raw)
-    if (room !== roomId) return null
-    sessionStorage.removeItem(PENDING_KEY)
-    return typeof task === 'string' ? task : null
-  } catch {
-    return null
-  }
 }
 
 const icon = (kind: string) =>
@@ -68,28 +54,15 @@ export const NotificationBell: React.FC<{ userId: string }> = ({ userId }) => {
   const [items, setItems] = useState<Notification[]>([])
   const [unavailable, setUnavailable] = useState(false)
 
-  const load = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('notifications')
-      .select('*, rooms(name)')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(50)
-    if (error) {
-      // Without room names (or before the migration), try plain rows.
-      const plain = await supabase
-        .from('notifications')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(50)
-      setUnavailable(!!plain.error)
-      if (plain.data) setItems(plain.data.map((r) => toNotification(r)))
-      return
-    }
-    setUnavailable(false)
-    setItems((data ?? []).map((r) => toNotification(r)))
-  }, [userId])
+  // State is set in a callback, after the fetch, never synchronously inside the effect below.
+  const load = useCallback(
+    () =>
+      fetchNotifications(userId).then((r) => {
+        setUnavailable(r.unavailable)
+        if (r.items) setItems(r.items)
+      }),
+    [userId],
+  )
 
   useEffect(() => {
     load()
@@ -139,7 +112,7 @@ export const NotificationBell: React.FC<{ userId: string }> = ({ userId }) => {
       window.setTimeout(() => bus.emit('board:open-card', { taskId }), 40)
     } else {
       try {
-        sessionStorage.setItem(PENDING_KEY, JSON.stringify({ room, task: taskId }))
+        setPendingCard(room, taskId)
       } catch {
         /* opens the room without the card */
       }
@@ -304,6 +277,32 @@ export const NotificationBell: React.FC<{ userId: string }> = ({ userId }) => {
       )}
     </div>
   )
+}
+
+/** The latest notifications; `items` is null when there's nothing new to show. */
+async function fetchNotifications(
+  userId: string,
+): Promise<{ unavailable: boolean; items: Notification[] | null }> {
+  const { data, error } = await supabase
+    .from('notifications')
+    .select('*, rooms(name)')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(50)
+  if (error) {
+    // Without room names (or before the migration), try plain rows.
+    const plain = await supabase
+      .from('notifications')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(50)
+    return {
+      unavailable: !!plain.error,
+      items: plain.data ? plain.data.map((r) => toNotification(r)) : null,
+    }
+  }
+  return { unavailable: false, items: (data ?? []).map((r) => toNotification(r)) }
 }
 
 const toNotification = (r: Record<string, unknown>): Notification => ({

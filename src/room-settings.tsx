@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
 import { Check, ImagePlus, LogOut, Search, UserRoundCog } from 'lucide-react'
 import { Avatar } from './avatar'
-import { colorFor } from './lib/room'
+import { colorFor } from './lib/room-links'
 import { roomBannerUrl, type RoomPerson, type RoomSummary } from './lib/rooms'
 import { relative } from './lib/time'
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabase'
 import { type Attachment, taskFiles } from './files'
-import { useRoom } from './room'
+import { useRoom } from './room-context'
 import { toast } from './bus'
 import {
   type BoardSettings,
@@ -30,6 +30,22 @@ export interface TaskLite {
   assigneeId: string | null
   assigneeName: string | null
   memberIds: string[]
+}
+
+/** The tasks columns read here (the client isn't generated from the schema, so rows arrive untyped). */
+interface TaskRow {
+  id: string
+  title: string
+  status: string | null
+  urgency: string | null
+  custom_fields: unknown
+  description: string | null
+  images?: unknown
+  attachments?: unknown
+  due_date: string | null
+  assignee_id: string | null
+  member_ids: string[] | null
+  archived_at: string | null
 }
 
 export interface TaskAssignee {
@@ -72,6 +88,34 @@ export const formatDueDate = (value: string) => {
   }).format(date)
 }
 
+/** Everything the canvas needs about a room's tasks, fetched together. */
+async function fetchRoomTasks(roomId: string) {
+  const [t, o, fields, board, cf] = await Promise.all([
+    supabase.from('tasks').select('*').eq('room_id', roomId),
+    supabase
+      .from('task_options')
+      .select('*')
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: true }),
+    supabase
+      .from('task_field_category_names')
+      .select('field_type, is_deleted')
+      .eq('room_id', roomId),
+    supabase.from('task_board_settings').select('*').eq('room_id', roomId).maybeSingle(),
+    supabase
+      .from('task_custom_fields')
+      .select('id, task_custom_field_options(value, color)')
+      .eq('room_id', roomId),
+  ])
+  let people: TaskAssignee[] = []
+  try {
+    people = await loadRoomTaskAssignees(roomId)
+  } catch (error) {
+    toast(error instanceof Error ? error.message : 'Could not load task assignees')
+  }
+  return { t, o, fields, board, cf, people }
+}
+
 /**
  * Live view of the room's tasks. The canvas uses this so task cards always show the current
  * title, status, description and files, and so you can pick tasks to drop onto it.
@@ -89,78 +133,61 @@ export function useRoomTasks() {
     urgency: DEFAULT_URGENCY,
   })
 
-  const load = useCallback(async () => {
-    const [t, o, fields, board, cf] = await Promise.all([
-      supabase.from('tasks').select('*').eq('room_id', roomId),
-      supabase
-        .from('task_options')
-        .select('*')
-        .eq('room_id', roomId)
-        .order('created_at', { ascending: true }),
-      supabase
-        .from('task_field_category_names')
-        .select('field_type, is_deleted')
-        .eq('room_id', roomId),
-      supabase.from('task_board_settings').select('*').eq('room_id', roomId).maybeSingle(),
-      supabase
-        .from('task_custom_fields')
-        .select('id, task_custom_field_options(value, color)')
-        .eq('room_id', roomId),
-    ])
-    // Missing table (migration not run yet) or no row: the defaults.
-    setSettings(board.error ? DEFAULT_BOARD_SETTINGS : readBoardSettings(board.data))
-    if (cf.data)
-      setCustomColors(
-        new Map(
-          cf.data.map((f) => [
-            f.id,
+  // State is set in a callback, after the fetch, never synchronously inside the effect below.
+  const load = useCallback(
+    () =>
+      fetchRoomTasks(roomId).then(({ t, o, fields, board, cf, people }) => {
+        // Missing table (migration not run yet) or no row: the defaults.
+        setSettings(board.error ? DEFAULT_BOARD_SETTINGS : readBoardSettings(board.data))
+        if (cf.data)
+          setCustomColors(
             new Map(
-              ((f.task_custom_field_options ?? []) as { value: string; color: string }[]).map(
-                (o) => [o.value, o.color],
-              ),
+              cf.data.map((f) => [
+                f.id,
+                new Map(
+                  ((f.task_custom_field_options ?? []) as { value: string; color: string }[]).map(
+                    (o) => [o.value, o.color],
+                  ),
+                ),
+              ]),
             ),
-          ]),
-        ),
-      )
-    if (fields.error) toast(fields.error.message)
-    else if (fields.data) {
-      setFieldVisibility({
-        status: fields.data.find((field) => field.field_type === 'status')?.is_deleted !== true,
-        urgency: fields.data.find((field) => field.field_type === 'urgency')?.is_deleted !== true,
-      })
-    }
-    let people: TaskAssignee[] = []
-    try {
-      people = await loadRoomTaskAssignees(roomId)
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Could not load task assignees')
-    }
-    setAssignees(people)
-    if (t.data) {
-      setList(
-        t.data
-          .filter((r: any) => !r.archived_at)
-          .map((r: any) => ({
-            id: r.id,
-            title: r.title,
-            status: r.status ?? null,
-            urgency: r.urgency ?? null,
-            customFields: readCustomFields(r.custom_fields),
-            description: r.description ?? '',
-            files: taskFiles(r),
-            dueDate: r.due_date ?? null,
-            assigneeId: r.assignee_id ?? null,
-            assigneeName: people.find((p) => p.id === r.assignee_id)?.name ?? null,
-            memberIds: Array.isArray(r.member_ids)
-              ? r.member_ids
-              : r.assignee_id
-                ? [r.assignee_id]
-                : [],
-          })),
-      )
-    }
-    if (o.data) setCustom(splitCustom(o.data))
-  }, [roomId])
+          )
+        if (fields.error) toast(fields.error.message)
+        else if (fields.data) {
+          setFieldVisibility({
+            status: fields.data.find((field) => field.field_type === 'status')?.is_deleted !== true,
+            urgency:
+              fields.data.find((field) => field.field_type === 'urgency')?.is_deleted !== true,
+          })
+        }
+        setAssignees(people)
+        if (t.data) {
+          setList(
+            (t.data as TaskRow[])
+              .filter((r) => !r.archived_at)
+              .map((r) => ({
+                id: r.id,
+                title: r.title,
+                status: r.status ?? null,
+                urgency: r.urgency ?? null,
+                customFields: readCustomFields(r.custom_fields),
+                description: r.description ?? '',
+                files: taskFiles(r),
+                dueDate: r.due_date ?? null,
+                assigneeId: r.assignee_id ?? null,
+                assigneeName: people.find((p) => p.id === r.assignee_id)?.name ?? null,
+                memberIds: Array.isArray(r.member_ids)
+                  ? r.member_ids
+                  : r.assignee_id
+                    ? [r.assignee_id]
+                    : [],
+              })),
+          )
+        }
+        if (o.data) setCustom(splitCustom(o.data))
+      }),
+    [roomId],
+  )
 
   useEffect(() => {
     load()

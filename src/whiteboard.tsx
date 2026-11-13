@@ -36,7 +36,7 @@ import {
 import { HexColorPicker } from 'react-colorful'
 import { generateNKeysBetween } from 'fractional-indexing'
 import { supabase } from './lib/supabase'
-import { useRoom } from './lib/room'
+import { useRoom } from './lib/room-context'
 import { inkOn } from './lib/highlight'
 import { bus, isTyping, setLinkCounts, toast, withUploadFeedback } from './lib/bus'
 import { formatDueDate, type TaskLite, useRoomTasks } from './lib/tasks'
@@ -56,6 +56,7 @@ import {
   MAX_FILE_BYTES,
   fileBadge,
   fileKind,
+  downloadAll,
   downloadHref,
   formatBytes,
   isImageFile,
@@ -397,7 +398,8 @@ const shapePath = (el: El): Path2D => {
         const r = i % 2 === 0 ? outer : outer * 0.5
         const x = cx + Math.cos(a) * r
         const y = cy + Math.sin(a) * r
-        i === 0 ? p.moveTo(x, y) : p.lineTo(x, y)
+        if (i === 0) p.moveTo(x, y)
+        else p.lineTo(x, y)
       }
       p.closePath()
       break
@@ -557,8 +559,13 @@ type LayerMove = 'front' | 'forward' | 'backward' | 'back'
 /** Ctrl+click is a right-click on a Mac (the usual trackpad alternative to a two-finger click). */
 const IS_MAC = /Mac|iPhone|iPad/i.test(navigator.platform)
 
-const normalize = (raw: any): El => {
-  const { drawColor, shapeFill, imageDataUrl, drawing, ...rest } = raw
+/** A canvas item as stored or sent by someone else: untrusted, and possibly in an older format. */
+type RawEl = Record<string, unknown>
+
+const normalize = (raw: RawEl): El => {
+  // `drawing` is an old field we no longer use.
+  const { drawColor, shapeFill, imageDataUrl, ...rest } = raw
+  delete rest.drawing
   let color = rest.color ?? drawColor
   if (color === '#000000' || color === '#0a0a0a') color = 'auto'
   const src = rest.src ?? imageDataUrl
@@ -720,6 +727,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   const [layerMenu, setLayerMenu] = useState<{ x: number; y: number } | null>(null)
   const [editText, setEditText] = useState('')
   const [viewing, setViewing] = useState<{ files: Attachment[]; index: number } | null>(null)
+  const [zipping, setZipping] = useState(false)
   const viewingRef = useRef(false)
   viewingRef.current = !!viewing
   const [, force] = useState(0)
@@ -771,7 +779,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   const lastLiveSend = useRef(0)
   const imageCache = useRef(new Map<string, HTMLImageElement | 'loading'>())
   const cursorStr = useRef('')
-  const api = useRef<any>({})
+  const api = useRef({} as Api)
 
   /* ================================================================== */
   /* Drawing                                                             */
@@ -985,7 +993,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         ctx.strokeStyle = col
         ctx.fillStyle = col
         const path = shapePath(el)
-        el.fill === 'fill' ? ctx.fill(path) : ctx.stroke(path)
+        if (el.fill === 'fill') ctx.fill(path)
+        else ctx.stroke(path)
       } else if (el.type === 'image' && el.src && el.points.length >= 2) {
         const b = getBBox(el, st.map)
         const img = getImage(el.src)
@@ -2121,7 +2130,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     if (hit) {
       if (additive) {
         const next = new Set(st.sel)
-        next.has(hit.id) ? next.delete(hit.id) : next.add(hit.id)
+        if (next.has(hit.id)) next.delete(hit.id)
+        else next.add(hit.id)
         setSel(next)
       } else if (!st.sel.has(hit.id)) setSel(new Set([hit.id]))
       st.act = { kind: 'drag', start: p, snaps: dragSnaps(), moved: false }
@@ -2325,8 +2335,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         const dx = pp.x - ps.x
         const dy = pp.y - ps.y
         const hd = act.handle
-        let nx0 = hd.includes('w') ? box.minX + dx : box.minX
-        let nx1 = hd.includes('e') ? box.maxX + dx : box.maxX
+        const nx0 = hd.includes('w') ? box.minX + dx : box.minX
+        const nx1 = hd.includes('e') ? box.maxX + dx : box.maxX
         let ny0 = hd.includes('n') ? box.minY + dy : box.minY
         let ny1 = hd.includes('s') ? box.maxY + dy : box.maxY
         if (act.snaps.length === 1 && act.snaps[0].type === 'image') {
@@ -2486,7 +2496,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   /* ================================================================== */
 
   // Keep latest handlers reachable from long-lived listeners.
-  api.current = {
+  const handlers = {
     undo,
     redo,
     deleteSelection,
@@ -2502,6 +2512,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     focusTask,
     goTo,
   }
+  type Api = typeof handlers
+  api.current = handlers
 
   // canvas sizing
   useEffect(() => {
@@ -2565,7 +2577,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     st.linkSig = ''
     setLinkCounts(new Map())
     const load = async () => {
-      const rows: any[] = []
+      const rows: { id: string; data: RawEl }[] = []
       for (let from = 0; ; from += 1000) {
         const { data, error } = await supabase
           .from('strokes')
@@ -2596,12 +2608,12 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     load()
 
     const offs = [
-      on('wb:add', ({ items }: { items: any[] }) => {
+      on('wb:add', ({ items }: { items: RawEl[] }) => {
         const incoming = items.map(normalize)
         const ids = new Set(incoming.map((i) => i.id))
         setEls([...st.els.filter((e) => !ids.has(e.id)), ...incoming])
       }),
-      on('wb:patch', ({ items }: { items: any[] }) => {
+      on('wb:patch', ({ items }: { items: (RawEl & { id: string })[] }) => {
         const m = new Map(items.map((i) => [i.id, i]))
         setEls(st.els.map((e) => (m.has(e.id) ? normalize({ ...e, ...m.get(e.id) }) : e)))
       }),
@@ -2714,7 +2726,8 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         const key = e.key.toLowerCase()
         if (key === 'z') {
           e.preventDefault()
-          e.shiftKey ? api.current.redo() : api.current.undo()
+          if (e.shiftKey) api.current.redo()
+          else api.current.undo()
         } else if (key === 'y') {
           e.preventDefault()
           api.current.redo()
@@ -2847,6 +2860,34 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     selEls[0].src
       ? toAttachment(selEls[0])
       : null
+  const selFiles = selEls
+    .filter((e) => (e.type === 'file' || e.type === 'image') && e.src)
+    .map(toAttachment)
+  const multiFiles = selFiles.length >= 2 ? selFiles : null
+  const downloadSelected = async () => {
+    if (!multiFiles || zipping) return
+    setZipping(true)
+    try {
+      const failed = await withUploadFeedback(`Preparing ${multiFiles.length} files…`, () =>
+        downloadAll(multiFiles),
+      )
+      if (failed === multiFiles.length) toast("Couldn't download those files.")
+      else if (failed) toast(`${failed} of ${multiFiles.length} files couldn't be downloaded.`)
+    } finally {
+      setZipping(false)
+    }
+  }
+  const downloadAllButton = multiFiles && (
+    <button
+      className="dv-btn primary justify-center"
+      onClick={downloadSelected}
+      disabled={zipping}
+      title="Save the selected files as one .zip"
+    >
+      <Download size={14} />
+      {zipping ? 'Preparing…' : `Download ${multiFiles.length} files`}
+    </button>
+  )
   const singleTask =
     selEls.length === 1 && selEls[0].type === 'task' && selEls[0].id !== focus ? selEls[0] : null
   const singleTaskFiles = singleTask?.taskId
@@ -3088,6 +3129,13 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
         </div>
       )}
 
+      {multiFiles && !showProps && (
+        <div className="dv-floating dv-wb-panel absolute left-4 top-1/2 z-20 flex w-[196px] -translate-y-1/2 flex-col gap-2 p-3.5">
+          <span className="dv-label">{multiFiles.length} files selected</span>
+          {downloadAllButton}
+        </div>
+      )}
+
       {viewing && (
         <FileViewer
           files={viewing.files}
@@ -3263,6 +3311,12 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
                   style={{ width: '100%', height: 110 }}
                 />
               )}
+            </div>
+          )}
+          {downloadAllButton && (
+            <div className="flex flex-col gap-1.5">
+              <span className="dv-label">{multiFiles.length} files selected</span>
+              {downloadAllButton}
             </div>
           )}
         </div>

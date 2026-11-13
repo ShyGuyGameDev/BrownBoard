@@ -21,7 +21,8 @@ import {
   X,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
-import { colorFor, useRoom } from './lib/room'
+import { colorFor } from './lib/room-links'
+import { useRoom } from './lib/room-context'
 import { isTyping, toast, undoToast } from './lib/bus'
 import { type Attachment, isImageFile } from './lib/files'
 import { LIMITS, cleanLine, cleanMultiline } from './lib/sanitize'
@@ -144,6 +145,22 @@ const fieldValue = (task: CardTask, field: string) =>
 
 const SHOW_DETAILS_KEY = 'brownboard:card-show-activity'
 
+/** A card's comments (newest first) and its latest activity. */
+const fetchFeed = (taskId: string) =>
+  Promise.all([
+    supabase
+      .from('task_comments')
+      .select('*')
+      .eq('task_id', taskId)
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('task_activity')
+      .select('*')
+      .eq('task_id', taskId)
+      .order('created_at', { ascending: false })
+      .limit(100),
+  ])
+
 export const CardDetail: React.FC<Props> = (props) => {
   const { task, fields, labels, people, userId, onPatch, onClose } = props
   const { roomId, on, send } = useRoom()
@@ -158,13 +175,22 @@ export const CardDetail: React.FC<Props> = (props) => {
   useBackToClose(onClose, isMobile)
 
   // Follow teammates' changes unless you're mid-edit.
-  const titleFocused = useRef(false)
-  useEffect(() => {
-    if (!titleFocused.current) setTitle(task.title)
-  }, [task.title])
-  useEffect(() => {
+  // Done while rendering, when the card or your editing changes (React's pattern for state that
+  // follows a prop), rather than in an effect that would render twice.
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [seen, setSeen] = useState({
+    title: task.title,
+    description: task.description,
+    editingNotes,
+  })
+  if (seen.title !== task.title) {
+    setSeen((v) => ({ ...v, title: task.title }))
+    if (!editingTitle) setTitle(task.title)
+  }
+  if (seen.description !== task.description || seen.editingNotes !== editingNotes) {
+    setSeen((v) => ({ ...v, description: task.description, editingNotes }))
     if (!editingNotes) setDescription(task.description)
-  }, [task.description, editingNotes])
+  }
 
   useEffect(() => {
     dialogRef.current?.focus()
@@ -194,7 +220,7 @@ export const CardDetail: React.FC<Props> = (props) => {
   }
 
   const saveTitle = () => {
-    titleFocused.current = false
+    setEditingTitle(false)
     const clean = cleanLine(title, LIMITS.taskTitle)
     if (!clean) return setTitle(task.title)
     if (clean !== task.title) onPatch({ title: clean })
@@ -249,27 +275,19 @@ export const CardDetail: React.FC<Props> = (props) => {
     }
   })
 
-  const loadFeed = useCallback(async () => {
-    const [c, a] = await Promise.all([
-      supabase
-        .from('task_comments')
-        .select('*')
-        .eq('task_id', task.id)
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('task_activity')
-        .select('*')
-        .eq('task_id', task.id)
-        .order('created_at', { ascending: false })
-        .limit(100),
-    ])
-    setFeedError(!!(c.error || a.error))
-    if (c.data) {
-      commentsLoaded.current = true
-      setComments(c.data.map(rowToComment))
-    }
-    if (a.data) setActivity(a.data.map(rowToActivity))
-  }, [task.id])
+  // State is set in a callback, after the fetch, never synchronously inside the effect below.
+  const loadFeed = useCallback(
+    () =>
+      fetchFeed(task.id).then(([c, a]) => {
+        setFeedError(!!(c.error || a.error))
+        if (c.data) {
+          commentsLoaded.current = true
+          setComments(c.data.map(rowToComment))
+        }
+        if (a.data) setActivity(a.data.map(rowToActivity))
+      }),
+    [task.id],
+  )
 
   useEffect(() => {
     loadFeed()
@@ -419,7 +437,7 @@ export const CardDetail: React.FC<Props> = (props) => {
               maxLength={LIMITS.taskTitle}
               value={title}
               data-done={props.done}
-              onFocus={() => (titleFocused.current = true)}
+              onFocus={() => setEditingTitle(true)}
               onChange={(e) => setTitle(e.target.value.replace(/\n/g, ''))}
               onBlur={saveTitle}
               onKeyDown={(e) => {
@@ -430,7 +448,7 @@ export const CardDetail: React.FC<Props> = (props) => {
                 if (e.key === 'Escape') {
                   e.preventDefault()
                   setTitle(task.title)
-                  titleFocused.current = false
+                  setEditingTitle(false)
                   e.currentTarget.blur()
                 }
               }}

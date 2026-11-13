@@ -1,44 +1,16 @@
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from './supabase'
-import { hslToHex } from './highlight'
-
-export interface Peer {
-  id: string
-  name: string
-  color: string
-  /** Profile picture URL, for accounts that set one. */
-  avatar?: string | null
-  /** What this person is currently working on in the room. */
-  activity?: string | null
-  /** What they have selected or are editing: task ids on the board, element ids on the canvas. */
-  selection?: PeerSelection | null
-  /** On another tab, or no input at all for IDLE_AFTER. */
-  idle?: boolean
-  /** Where they are, so clicking them can take you there. */
-  place?: PeerPlace | null
-}
-
-export interface PeerPlace {
-  page?: 'board' | 'canvas'
-  /** The card they have open on the board. */
-  card?: string | null
-  /** The middle of their canvas view (world coordinates) and their zoom. */
-  canvas?: { x: number; y: number; k: number }
-}
-
-export type SelectionArea = 'board' | 'canvas'
-export type PeerSelection = Record<SelectionArea, string[]>
-
-export type RoomStatus = 'connecting' | 'live' | 'offline'
+import { colorFor } from './room-links'
+import {
+  RoomContext,
+  type Handler,
+  type Peer,
+  type PeerPlace,
+  type PeerSelection,
+  type RoomStatus,
+  type SelectionArea,
+} from './room-context'
 
 /** Minimum ms between presence updates; Realtime closes the channel of a client that tracks often. */
 const TRACK_GAP = 2000
@@ -56,124 +28,6 @@ type PeerState = {
   idle: boolean
   place: PeerPlace | null
 }
-
-/** `fromSelf` is true when the event was emitted locally with send(..., true). */
-type Handler = (payload: any, fromSelf: boolean) => void
-
-interface RoomContextValue {
-  roomId: string
-  roomName: string
-  /** Signed-in creator: can rename, re-password, delete the room and clear the canvas. */
-  isOwner: boolean
-  /** After the owner hands the room to you (they leave, you take over). */
-  setIsOwner: (isOwner: boolean) => void
-  /** Update the name shown locally (after a rename here or by the owner elsewhere). */
-  setRoomName: (name: string) => void
-  allowGuests: boolean
-  setAllowGuests: (allow: boolean) => void
-  /** No name or password yet: only its creator is in it, and it isn't kept. */
-  unnamed: boolean
-  setUnnamed: (unnamed: boolean) => void
-  /** You made it, even as a guest. */
-  isCreator: boolean
-  /** It belongs to an account (only those rooms can be shared). */
-  hasOwner: boolean
-  me: Peer
-  peers: Peer[]
-  status: RoomStatus
-  setActivity: (source: string, activity: string | null, priority?: number) => void
-  /** Share where you are (page, open card, canvas view) so others can jump to you. */
-  setPlace: (place: PeerPlace) => void
-  /** Share what you're editing in one area, so others see it outlined in your colour. */
-  setSelection: (area: SelectionArea, ids: string[]) => void
-  /** Broadcast to everyone else in the room. Pass `local = true` to also notify handlers in this window. */
-  send: (event: string, payload?: any, local?: boolean) => void
-  on: (event: string, handler: Handler) => () => void
-}
-
-const RoomContext = createContext<RoomContextValue | null>(null)
-
-// ---------- room id helpers ----------
-
-/** Accepts a full share link, a BrownBoard desktop link, or a bare room code. */
-export const parseRoomId = (input: string): string | null => {
-  const m = input
-    .trim()
-    .match(/(?:#\/r\/|(?:brownboard|devboard):\/\/(?:join|r)\/|^)([A-Za-z0-9_-]{3,64})\/?$/)
-  return m ? m[1] : null
-}
-
-/** The room in the URL (`#/r/<id>`), or null on the home / onboarding screens. */
-export const getRoomIdFromLocation = () => {
-  const m = window.location.hash.match(/^#\/r\/([A-Za-z0-9_-]{3,64})\/?$/)
-  return m ? m[1] : null
-}
-
-export const goToRoom = (id: string) => {
-  window.location.hash = `/r/${id}`
-}
-
-export const goHome = () => {
-  window.location.hash = '/'
-}
-
-/** Remember the room in the URL across a full-page sign-in redirect (Google), which drops it. */
-export const rememberReturnRoom = () => {
-  const id = getRoomIdFromLocation()
-  try {
-    if (id) sessionStorage.setItem('devboard.returnRoom', id)
-  } catch {
-    /* storage unavailable: they'll land on their rooms page instead */
-  }
-}
-
-export const takeReturnRoom = (): string | null => {
-  try {
-    const id = sessionStorage.getItem('devboard.returnRoom')
-    sessionStorage.removeItem('devboard.returnRoom')
-    return id
-  } catch {
-    return null
-  }
-}
-
-/**
- * In a browser this is just the current URL. In Electron (file://) there is no public URL,
- * so set VITE_SHARE_BASE_URL to wherever you host the web build; otherwise we fall back to
- * a brownboard:// deep link that opens the desktop app.
- */
-export const buildShareLink = (roomId: string) => {
-  const envBase = import.meta.env.VITE_SHARE_BASE_URL as string | undefined
-  const httpBase = window.location.protocol.startsWith('http')
-    ? window.location.origin + window.location.pathname
-    : ''
-  const base = (envBase || httpBase).replace(/#.*$/, '')
-  return base ? `${base}#/r/${roomId}` : `brownboard://r/${roomId}`
-}
-
-/** Avatar letters: first letter of the first two words ("Anonymous Cat" → "AC", "shaayer" → "S"). */
-export const initials = (name: string) => {
-  const words = name.trim().split(/\s+/).filter(Boolean)
-  // [...word][0] takes a whole character, so names starting with an emoji or accent stay intact.
-  return (
-    words
-      .slice(0, 2)
-      .map((w) => [...w][0])
-      .join('')
-      .toUpperCase() || '?'
-  )
-}
-
-const hueFor = (id: string) => {
-  let h = 0
-  for (const c of id) h = (h * 31 + c.charCodeAt(0)) % 360
-  return h
-}
-
-export const colorFor = (id: string) => `hsl(${hueFor(id)} 70% 52%)`
-
-/** colorFor as #rrggbb, for colour inputs. */
-export const hexColorFor = (id: string) => hslToHex(hueFor(id), 0.7, 0.52)
 
 // ---------- provider ----------
 
@@ -319,7 +173,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
       channel = ch
       channelRef.current = ch
 
-      ch.on('broadcast', { event: '*' }, (msg: any) => {
+      ch.on('broadcast', { event: '*' }, (msg: { event: string; payload: unknown }) => {
         if (msg.event === PEER_STATE) {
           const s = msg.payload as PeerState
           if (!s?.id || s.id === idRef.current) return
@@ -474,7 +328,8 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
     [sendState],
   )
 
-  const on = useCallback((event: string, handler: Handler) => {
+  const on = useCallback(<T,>(event: string, typed: Handler<T>) => {
+    const handler = typed as Handler
     if (!handlers.current.has(event)) handlers.current.set(event, new Set())
     handlers.current.get(event)!.add(handler)
     return () => {
@@ -482,7 +337,7 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
     }
   }, [])
 
-  const send = useCallback((event: string, payload?: any, local = false) => {
+  const send = useCallback((event: string, payload?: unknown, local = false) => {
     if (local) handlers.current.get(event)?.forEach((fn) => fn(payload, true))
     if (statusRef.current !== 'live') return
     channelRef.current?.send({ type: 'broadcast', event, payload })
@@ -530,10 +385,4 @@ export const RoomProvider: React.FC<RoomProviderProps> = ({
   )
 
   return <RoomContext.Provider value={value}>{children}</RoomContext.Provider>
-}
-
-export const useRoom = () => {
-  const ctx = useContext(RoomContext)
-  if (!ctx) throw new Error('useRoom must be used inside <RoomProvider>')
-  return ctx
 }

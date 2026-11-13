@@ -318,7 +318,22 @@ export async function myRooms(userId: string): Promise<RoomSummary[]> {
     .eq('user_id', userId)
     .order('last_active_at', { ascending: false })
   if (error) throw new Error(error.message)
-  return (data ?? []).map((r: any) => ({
+  type Row = {
+    room_id: string
+    last_active_at: string
+    rooms: {
+      name: string | null
+      created_by: string | null
+      last_edited_at: string | null
+      allow_guests: boolean | null
+      unnamed: boolean | null
+      banner_color: string | null
+      banner_pattern: RoomSummary['bannerPattern'] | null
+      banner_image_path: string | null
+    } | null
+  }
+  // Each member row has one room, which arrives as an object (the untyped client guesses an array).
+  return ((data ?? []) as unknown as Row[]).map((r) => ({
     roomId: r.room_id,
     roomName: r.rooms?.name ?? r.room_id,
     lastActiveAt: r.last_active_at,

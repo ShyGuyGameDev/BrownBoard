@@ -25,7 +25,7 @@ import {
   UserRound,
   X,
 } from 'lucide-react'
-import { EMAIL_RE, MIN_PASSWORD, isElectron, useAuth, usernameFromEmail } from './lib/auth'
+import { EMAIL_RE, MIN_PASSWORD, isElectron, useAuth, usernameFromEmail } from './lib/auth-context'
 import {
   RoomRpcError,
   type RoomSummary,
@@ -53,7 +53,7 @@ import {
   type RoomSettingsActions,
   RoomSettingsForm,
 } from './room-settings'
-import { buildShareLink, colorFor, goHome, goToRoom, hexColorFor } from './lib/room'
+import { buildShareLink, colorFor, goHome, goToRoom, hexColorFor } from './lib/room-links'
 import { cleanHexColor } from './lib/sanitize'
 import { Avatar } from './avatar'
 import { getLastAccount, setSignInIntent, setStartRoomAfterSignIn } from './lib/sign-in-intent'

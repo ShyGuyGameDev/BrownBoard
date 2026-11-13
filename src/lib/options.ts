@@ -76,7 +76,16 @@ export const resolveOption = (
   }
 }
 
-export const rowToOption = (row: any): TaskOption => ({
+/** A task_options row. */
+export interface OptionRow {
+  id: string
+  value: string
+  label: string
+  color: string | null
+  type: string
+}
+
+export const rowToOption = (row: OptionRow): TaskOption => ({
   id: row.id,
   value: row.value,
   label: row.label,
@@ -89,7 +98,7 @@ export const rowToOption = (row: any): TaskOption => ({
  * A room's status / urgency options, from its task_options rows (rooms get the built-ins as rows
  * when created). Built-ins keep their usual order, followed by the room's own in the order given.
  */
-export const splitCustom = (rows: any[]) => {
+export const splitCustom = (rows: OptionRow[]) => {
   const pick = (defaults: TaskOption[], type: TaskOptionType) => {
     const typeRows = rows.filter((row) => row.type === type)
     // Only a database that hasn't had the built-ins added as rows yet.

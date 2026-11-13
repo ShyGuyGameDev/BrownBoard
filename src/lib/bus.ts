@@ -1,4 +1,4 @@
-type Handler = (data?: any) => void
+type Handler<T = unknown> = (data: T) => void
 
 const handlers = new Map<string, Set<Handler>>()
 
@@ -8,14 +8,16 @@ const handlers = new Map<string, Set<Handler>>()
  * without either component knowing about the other.
  */
 export const bus = {
-  on(event: string, fn: Handler) {
+  /** `T` is the payload shape the emitter uses for this event; it isn't checked at runtime. */
+  on<T = unknown>(event: string, typed: Handler<T>) {
+    const fn = typed as Handler
     if (!handlers.has(event)) handlers.set(event, new Set())
     handlers.get(event)!.add(fn)
     return () => {
       handlers.get(event)?.delete(fn)
     }
   },
-  emit(event: string, data?: any) {
+  emit(event: string, data?: unknown) {
     handlers.get(event)?.forEach((fn) => fn(data))
   },
 }
