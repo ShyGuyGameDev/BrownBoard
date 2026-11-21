@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="96 92 320 320">
+  <!--
+    Browser-tab icon: brownboard-logo.svg cropped to the drawing so it fills the tab icon slot.
+    Light tab bars get the inverted logo, matching the app's light mode. (The colours are what
+    CSS invert(1) hue-rotate(180deg) gives; favicons can't rely on CSS filters.)
+  -->
+  <title>BrownBoard</title>
+  <style>
+    .note { fill: #000; }
+    .fold { fill: #38316e; }
+    .bar1 { fill: #1d73cf; }
+    .bar2 { fill: #796aed; }
+    .s1 { stop-color: #1d73cf; }
+    .s2 { stop-color: #796aed; }
+    @media (prefers-color-scheme: dark) {
+      .note { fill: #fff; }
+      .fold { fill: #c9c2ff; }
+      .bar1 { fill: #4da3ff; }
+      .bar2 { fill: #8b7cff; }
+      .s1 { stop-color: #4da3ff; }
+      .s2 { stop-color: #8b7cff; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop class="s1" offset="0"/>
+      <stop class="s2" offset="1"/>
+    </linearGradient>
+  </defs>
+  <path class="note" d="M136 128H376V320L320 376H136Z"/>
+  <path class="fold" d="M320 376V320H376Z"/>
+  <rect class="bar1" x="168" y="176" width="120" height="35" rx="8"/>
+  <rect class="bar2" x="168" y="220" width="80" height="35" rx="8"/>
+  <path d="M112 348C170 296 220 380 276 326C318 286 344 300 400 244" fill="none" stroke="url(#g)" stroke-width="26" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024"><title>BrownBoard logo: two columns and a card</title><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4da3ff"/><stop offset="1" stop-color="#8b7cff"/></linearGradient></defs><rect width="512" height="512" fill="#12151c"/>
+<rect x="128" y="112" width="104" height="288" rx="20" fill="#4da3ff" opacity=".35"/>
+<rect x="152" y="144" width="56" height="48" rx="10" fill="url(#g)"/>
+<rect x="152" y="208" width="56" height="48" rx="10" fill="url(#g)" opacity=".7"/>
+<rect x="280" y="112" width="104" height="288" rx="20" fill="#8b7cff" opacity=".35"/>
+<rect x="304" y="144" width="56" height="48" rx="10" fill="#8b7cff"/>
+<rect x="304" y="208" width="56" height="48" rx="10" fill="#8b7cff" opacity=".7"/></svg>

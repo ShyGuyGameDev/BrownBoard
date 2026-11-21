@@ -1,0 +1,103 @@
+/* Shared style for the static legal pages (privacy.html, terms.html). */
+:root {
+  --bg: #f7f8fa;
+  --text: #15171c;
+  --muted: #5b6475;
+  --line: #e3e6ec;
+  --link: #3b6fd8;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151c;
+    --text: #e8ebf1;
+    --muted: #9aa3b5;
+    --line: #262b36;
+    --link: #7fb4ff;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+}
+header,
+main,
+footer {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+header {
+  padding-top: 24px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+.brand img {
+  width: 32px;
+  height: 32px;
+}
+/* The logo is drawn for dark backgrounds; invert it on light ones, as in the app. */
+@media (prefers-color-scheme: light) {
+  .brand img {
+    filter: invert(1) hue-rotate(180deg);
+  }
+}
+main {
+  padding-top: 32px;
+  padding-bottom: 32px;
+}
+h1 {
+  font-size: 32px;
+  line-height: 1.2;
+  letter-spacing: -0.5px;
+  margin: 0 0 4px;
+}
+h2 {
+  font-size: 20px;
+  margin: 36px 0 8px;
+}
+h3 {
+  font-size: 16px;
+  margin: 20px 0 4px;
+}
+.updated {
+  color: var(--muted);
+  margin: 0 0 24px;
+}
+ul {
+  padding-left: 22px;
+}
+li {
+  margin: 6px 0;
+}
+a {
+  color: var(--link);
+  overflow-wrap: anywhere;
+}
+footer {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+  padding-bottom: 40px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+footer a {
+  color: var(--muted);
+}

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="96 92 320 320">
+  <!--
+    In-app logo: brownboard-logo.svg cropped to the drawing, on a transparent background.
+    Drawn for dark backgrounds; light mode inverts it with CSS (.dv-logo in devboard.css).
+  -->
+  <title>BrownBoard</title>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4da3ff"/>
+      <stop offset="1" stop-color="#8b7cff"/>
+    </linearGradient>
+  </defs>
+  <path d="M136 128H376V320L320 376H136Z" fill="#fff"/>
+  <path d="M320 376V320H376Z" fill="#c9c2ff"/>
+  <rect x="168" y="176" width="120" height="35" rx="8" fill="#4da3ff"/>
+  <rect x="168" y="220" width="80" height="35" rx="8" fill="#8b7cff"/>
+  <path d="M112 348C170 296 220 380 276 326C318 286 344 300 400 244" fill="none" stroke="url(#g)" stroke-width="22" stroke-linecap="round"/>
+</svg>
