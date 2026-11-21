@@ -363,11 +363,35 @@ grant execute on function public.copy_task_to_room(uuid, text, uuid, int, text, 
 --                    "title", "description", "status", "urgency", "template": boolean,
 --                    "labels": [label name], "fields": {<category name>: value},
 --                    "checklists": [{"title", "items": [{"text", "done"}]}],
---                    "due_in_days": int}]}]
+--                    "due_date": "YYYY-MM-DD" | "due_in_days": int,
+--                    "attachments": [{"url", "name", "type", "size"}], "cover": {...}}]}]
 -- }
 -- Lists go after the room's own. Labels, statuses and categories the room already has (by name or
 -- value) are reused, not duplicated.
+--
+-- "categories" and "settings" (Progress / Urgency names, defaults and visibility, Crossoffs, card
+-- colour), and the defaults of categories the room already has, are the room's own choices: they're
+-- only applied to a fresh room, one that has never had a list. Adding a template to a board in use
+-- just adds to it.
 -- ---------------------------------------------------------------------
+
+-- A "YYYY-MM-DD" date, or null for anything else (including impossible dates like Feb 30).
+create or replace function private.safe_date(p text)
+returns date
+language plpgsql
+immutable
+set search_path = ''
+as $$
+begin
+  if p !~ '^\d{4}-\d{2}-\d{2}$' then
+    return null;
+  end if;
+  return p::date;
+exception when others then
+  return null;
+end;
+$$;
+revoke execute on function private.safe_date(text) from public, anon, authenticated;
 
 create or replace function public.apply_board_template(p_room_id text, p_template jsonb)
 returns jsonb
@@ -393,6 +417,8 @@ declare
   ty text;
   n_cards int := 0;
   n_lists int := 0;
+  fresh boolean;
+  created boolean;
 begin
   if auth.uid() is null then
     return jsonb_build_object('ok', false, 'error', 'not_signed_in');
@@ -406,6 +432,8 @@ begin
                               jsonb_array_elements(coalesce(l -> 'cards', '[]'))) > 1000 then
     return jsonb_build_object('ok', false, 'error', 'bad_template');
   end if;
+  -- Never had a list (archived ones count): the template may set the room's own choices too.
+  fresh := not exists (select 1 from public.categories c where c.room_id = p_room_id);
 
   -- Progress / Urgency: names, whether they're shown, defaults, extra statuses.
   foreach ty in array array['status', 'urgency'] loop
@@ -421,7 +449,7 @@ begin
       end if;
     end loop;
     item := tpl -> 'categories' -> ty;
-    if item is not null and jsonb_typeof(item) = 'object' then
+    if fresh and item is not null and jsonb_typeof(item) = 'object' then
       insert into public.task_field_category_names (room_id, field_type, name, default_value, is_deleted)
       values (
         p_room_id, ty,
@@ -440,7 +468,8 @@ begin
     select f.id into fid from public.task_custom_fields f
     where f.room_id = p_room_id and lower(f.name) = lower(private.clean_text(item ->> 'name', 40))
     order by f.created_at limit 1;
-    if fid is null then
+    created := fid is null;
+    if created then
       insert into public.task_custom_fields (room_id, name)
       values (p_room_id, private.clean_text(item ->> 'name', 40))
       returning id into fid;
@@ -455,9 +484,11 @@ begin
                 case when opt ->> 'color' ~ '^#[0-9a-fA-F]{6}$' then lower(opt ->> 'color') else '#71717a' end);
       end if;
     end loop;
+    -- A category the room already had keeps its default (unless it never had one).
     update public.task_custom_fields f set default_value = coalesce(
       (select o.value from public.task_custom_field_options o
-       where o.field_id = fid and o.value = item ->> 'default'),
+       where o.field_id = fid and o.value = item ->> 'default'
+         and (created or fresh or f.default_value is null)),
       f.default_value,
       (select o.value from public.task_custom_field_options o
        where o.field_id = fid order by o.created_at limit 1))
@@ -481,7 +512,7 @@ begin
 
   -- Crossoffs and the card colour, by category name.
   item := tpl -> 'settings';
-  if item is not null and jsonb_typeof(item) = 'object' then
+  if fresh and item is not null and jsonb_typeof(item) = 'object' then
     insert into public.task_board_settings (room_id, crossoffs, color_field)
     values (
       p_room_id,
@@ -531,7 +562,7 @@ begin
       ) l on true;
       insert into public.tasks (
         room_id, category_id, position, title, description, status, urgency,
-        custom_fields, label_ids, checklists, is_template, due_date
+        custom_fields, label_ids, checklists, is_template, due_date, attachments, cover
       ) values (
         p_room_id, cat_id, card_i,
         private.clean_text(card ->> 'title', 200),
@@ -557,7 +588,23 @@ begin
           from jsonb_array_elements(coalesce(card -> 'checklists', '[]')) cl
         ), '[]'::jsonb),
         coalesce((card ->> 'template')::boolean, false),
-        case when (card ->> 'due_in_days') ~ '^-?\d{1,4}$' then current_date + (card ->> 'due_in_days')::int end
+        coalesce(
+          private.safe_date(card ->> 'due_date'),
+          case when (card ->> 'due_in_days') ~ '^-?\d{1,4}$' then current_date + (card ->> 'due_in_days')::int end
+        ),
+        -- Files are links into storage; the app copies them into this room afterwards.
+        coalesce((
+          select jsonb_agg(a.value)
+          from (
+            select x.value from jsonb_array_elements(
+              case when jsonb_typeof(card -> 'attachments') = 'array' then card -> 'attachments' else '[]'::jsonb end
+            ) x
+            where jsonb_typeof(x.value) = 'object' and jsonb_typeof(x.value -> 'url') = 'string'
+            limit 100
+          ) a
+        ), '[]'::jsonb),
+        case when jsonb_typeof(card -> 'cover') = 'object'
+              and (card -> 'cover' ? 'color' or card -> 'cover' ? 'url') then card -> 'cover' end
       );
       card_i := card_i + 1;
       n_cards := n_cards + 1;

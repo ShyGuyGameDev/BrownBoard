@@ -18,6 +18,9 @@ const rows: BoardRows = {
       label_ids: ['l1', 'gone'],
       custom_fields: { f1: 'big', missing: 'x' },
       checklists: [{ id: 'a', title: 'Steps', items: [{ id: 'i', text: 'one', done: true }] }],
+      due_date: '2027-03-04',
+      attachments: [{ url: 'data:image/png;base64,AAAA', name: 'a.png', type: 'image/png', size: 4 }],
+      cover: { color: '#ef4444' },
     },
     { category_id: 'c1', title: 'First', position: 0, is_template: true, status: 'not_started' },
     { category_id: 'c2', title: 'Archived', archived_at: '2026-01-01' },
@@ -47,6 +50,17 @@ describe('snapshotBoard', () => {
     expect(card.labels).toEqual(['Bug'])
     expect(card.fields).toEqual({ Size: 'big' })
     expect(card.checklists).toEqual([{ title: 'Steps', items: [{ text: 'one', done: true }] }])
+  })
+
+  it('keeps due dates, attachments and covers', () => {
+    const [first, second] = snapshotBoard(rows, { cards: true }).lists[0].cards!
+    expect(first).not.toHaveProperty('due_date')
+    expect(first).not.toHaveProperty('attachments')
+    expect(second.due_date).toBe('2027-03-04')
+    expect(second.attachments).toEqual([
+      { url: 'data:image/png;base64,AAAA', name: 'a.png', type: 'image/png', size: 4 },
+    ])
+    expect(second.cover).toEqual({ color: '#ef4444' })
   })
 
   it('keeps only card templates without cards', () => {

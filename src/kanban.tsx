@@ -1761,7 +1761,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     setBoardTemplateOpen(false)
     await loadBoard(true)
     sync()
-    toast(`Added ${r.lists} list${r.lists === 1 ? '' : 's'} from “${name}”.`)
+    toast(
+      `Added ${r.lists} list${r.lists === 1 ? '' : 's'} from “${name}”.` +
+        (r.failedFiles
+          ? ` ${r.failedFiles} file${r.failedFiles === 1 ? '' : 's'} still link to the room it came from.`
+          : ''),
+    )
   }
 
   // ---------- drag and drop (move happens on drop, so the dragged node never remounts mid-drag) ----------
@@ -4007,7 +4012,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           title={categories.length ? 'Add lists from a template' : 'Start from a template'}
           intro={
             categories.length
-              ? 'Its lists go after this board’s own. Labels and categories this board already has are reused.'
+              ? 'Its lists, labels and categories are added after this board’s own. This board keeps its settings: Progress and Urgency, Crossoffs, card color and category defaults.'
               : 'Pick a ready-made board, or copy the setup of one of your rooms.'
           }
           userId={userId}

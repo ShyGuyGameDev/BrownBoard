@@ -4,8 +4,10 @@
  * (see 20261120_templates_wip_and_cross_board.sql for the shape it accepts).
  */
 import { supabase } from './supabase'
-import { readChecklists, readIds } from './cards'
+import { type Cover, readChecklists, readCover, readIds } from './cards'
 import { readCustomFields } from './options'
+import { type Attachment, taskFiles } from './files'
+import { rehomeFiles } from './card-transfer'
 
 export interface TemplateOption {
   value: string
@@ -25,6 +27,13 @@ export interface TemplateCard {
   /** Category name → status value. */
   fields?: Record<string, string>
   checklists?: { title: string; items: { text: string; done?: boolean }[] }[]
+  /** "YYYY-MM-DD"; wins over due_in_days. */
+  due_date?: string
+  /** Days from the day the template is used. */
+  due_in_days?: number
+  /** Links into storage; applyBoardTemplate copies them into the new room. */
+  attachments?: Attachment[]
+  cover?: Cover
 }
 
 export interface TemplateList {
@@ -39,7 +48,11 @@ export interface BoardTemplate {
   >
   statuses?: TemplateOption[]
   urgencies?: TemplateOption[]
-  fields?: { name: string; default?: string | null; options: TemplateOption[] }[]
+  fields?: {
+    name: string
+    default?: string | null
+    options: TemplateOption[]
+  }[]
   labels?: { name: string; color: string }[]
   settings?: {
     /** field: 'status', 'urgency' or a category name */
@@ -47,6 +60,11 @@ export interface BoardTemplate {
     color_field: string | null
   }
   lists: TemplateList[]
+  /**
+   * The room a copy was taken from, so its cards' files can be copied into the new room's storage
+   * (and keep working if that room is deleted). Not sent to the database.
+   */
+  sourceRoomId?: string
 }
 
 export interface BuiltInTemplate {
@@ -56,7 +74,10 @@ export interface BuiltInTemplate {
   template: BoardTemplate
 }
 
-const story = (title: string, items: string[]) => ({ title, items: items.map((text) => ({ text })) })
+const story = (title: string, items: string[]) => ({
+  title,
+  items: items.map((text) => ({ text })),
+})
 
 export const BUILT_IN_TEMPLATES: BuiltInTemplate[] = [
   {
@@ -136,7 +157,10 @@ export const BUILT_IN_TEMPLATES: BuiltInTemplate[] = [
         { name: 'Backend', color: '#06b6d4' },
         { name: 'Regression', color: '#ef4444' },
       ],
-      settings: { crossoffs: [{ field: 'status', value: 'completed' }], color_field: 'urgency' },
+      settings: {
+        crossoffs: [{ field: 'status', value: 'completed' }],
+        color_field: 'urgency',
+      },
       lists: [
         {
           name: 'Reported',
@@ -145,7 +169,8 @@ export const BUILT_IN_TEMPLATES: BuiltInTemplate[] = [
               title: 'Bug report',
               template: true,
               urgency: 'medium',
-              description: 'What happened:\n\nWhat should have happened:\n\nWhere (page, device, version):',
+              description:
+                'What happened:\n\nWhat should have happened:\n\nWhere (page, device, version):',
               checklists: [story('Steps to reproduce', ['1.', '2.', '3.'])],
             },
           ],
@@ -204,14 +229,22 @@ export const BUILT_IN_TEMPLATES: BuiltInTemplate[] = [
   },
 ]
 
+/**
+ * Writes a template into a room. Lists and cards are added; the room's own Progress / Urgency
+ * setup, Crossoffs and card colour only change when the room has never had a list.
+ * `failedFiles` counts copied cards' files that still link to the room they came from.
+ */
 export async function applyBoardTemplate(roomId: string, template: BoardTemplate) {
+  const { sourceRoomId, ...body } = template
   const { data, error } = await supabase.rpc('apply_board_template', {
     p_room_id: roomId,
-    p_template: template,
+    p_template: body,
   })
   if (error)
     throw new Error(
-      error.code === 'PGRST202' ? 'Board templates need the latest database update.' : error.message,
+      error.code === 'PGRST202'
+        ? 'Board templates need the latest database update.'
+        : error.message,
     )
   if (!data?.ok)
     throw new Error(
@@ -221,14 +254,44 @@ export async function applyBoardTemplate(roomId: string, template: BoardTemplate
           ? 'That board is too big to copy (up to 50 lists and 1,000 cards).'
           : 'The template couldn’t be applied.',
     )
-  return data as { ok: true; lists: number; cards: number }
+  const failedFiles =
+    sourceRoomId && sourceRoomId !== roomId ? await rehomeBoardFiles(sourceRoomId, roomId) : 0
+  return {
+    ...(data as { ok: true; lists: number; cards: number }),
+    failedFiles,
+  }
+}
+
+/** Copies the files of every card in `toRoom` that still points into `fromRoom`'s storage. */
+async function rehomeBoardFiles(fromRoom: string, toRoom: string) {
+  const { data } = await supabase
+    .from('tasks')
+    .select('id, images, attachments, cover')
+    .eq('room_id', toRoom)
+  const marker = `/board-assets/${fromRoom}/`
+  const ids = (data ?? [])
+    .filter((t) => JSON.stringify([t.images, t.attachments, t.cover]).includes(marker))
+    .map((t) => t.id as string)
+  let failed = 0
+  // A few at a time: each card is a read, a copy per file and a write.
+  for (let i = 0; i < ids.length; i += 4) {
+    const batch = ids.slice(i, i + 4).map((id) => rehomeFiles(id, fromRoom, toRoom))
+    for (const n of await Promise.all(batch)) failed += n
+  }
+  return failed
 }
 
 // ---------- copying a room you're in ----------
 
 /** The rows a room's board is made of (untyped, as the client returns them). */
 export interface BoardRows {
-  categories: { id: string; name: string; position: number | null; wip_limit?: number | null; archived_at?: string | null }[]
+  categories: {
+    id: string
+    name: string
+    position: number | null
+    wip_limit?: number | null
+    archived_at?: string | null
+  }[]
   tasks: {
     category_id: string
     title: string
@@ -241,12 +304,31 @@ export interface BoardRows {
     checklists?: unknown
     is_template?: boolean | null
     archived_at?: string | null
+    due_date?: string | null
+    images?: unknown
+    attachments?: unknown
+    cover?: unknown
   }[]
   labels: { id: string; name: string | null; color: string }[]
-  options: { type: string; value: string; label: string; color: string | null }[]
+  options: {
+    type: string
+    value: string
+    label: string
+    color: string | null
+  }[]
   fields: { id: string; name: string; default_value: string | null }[]
-  fieldOptions: { field_id: string; value: string; label: string; color: string | null }[]
-  names: { field_type: string; name: string; default_value: string | null; is_deleted: boolean | null }[]
+  fieldOptions: {
+    field_id: string
+    value: string
+    label: string
+    color: string | null
+  }[]
+  names: {
+    field_type: string
+    name: string
+    default_value: string | null
+    is_deleted: boolean | null
+  }[]
   settings: { crossoffs?: unknown; color_field?: string | null } | null
 }
 
@@ -280,15 +362,20 @@ export function snapshotBoard(rows: BoardRows, { cards }: { cards: boolean }): B
   const lists = rows.categories
     .filter((c) => !c.archived_at)
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-    .map(
-      (c): TemplateList => ({
-        name: c.name,
-        wip_limit: c.wip_limit ?? null,
-        cards: rows.tasks
-          .filter((t) => t.category_id === c.id && !t.archived_at && (cards || t.is_template))
-          .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-          .map((t) => ({
+    .map((c): TemplateList => ({
+      name: c.name,
+      wip_limit: c.wip_limit ?? null,
+      cards: rows.tasks
+        .filter((t) => t.category_id === c.id && !t.archived_at && (cards || t.is_template))
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+        .map((t) => {
+          const files = taskFiles(t)
+          const cover = readCover(t.cover)
+          return {
             title: t.title,
+            ...(t.due_date ? { due_date: t.due_date } : {}),
+            ...(files.length ? { attachments: files } : {}),
+            ...(cover ? { cover } : {}),
             ...(t.description ? { description: t.description } : {}),
             status: t.status ?? null,
             urgency: t.urgency ?? null,
@@ -307,14 +394,18 @@ export function snapshotBoard(rows: BoardRows, { cards }: { cards: boolean }): B
               title: l.title,
               items: l.items.map((i) => ({ text: i.text, done: i.done })),
             })),
-          })),
-      }),
-    )
+          }
+        }),
+    }))
 
   const pick = (type: string) =>
     rows.options
       .filter((o) => o.type === type)
-      .map((o) => ({ value: o.value, label: o.label, ...(o.color ? { color: o.color } : {}) }))
+      .map((o) => ({
+        value: o.value,
+        label: o.label,
+        ...(o.color ? { color: o.color } : {}),
+      }))
 
   return {
     categories,
@@ -325,7 +416,11 @@ export function snapshotBoard(rows: BoardRows, { cards }: { cards: boolean }): B
       default: f.default_value,
       options: rows.fieldOptions
         .filter((o) => o.field_id === f.id)
-        .map((o) => ({ value: o.value, label: o.label, ...(o.color ? { color: o.color } : {}) })),
+        .map((o) => ({
+          value: o.value,
+          label: o.label,
+          ...(o.color ? { color: o.color } : {}),
+        })),
     })),
     // Unnamed labels can't be matched up by name on cards, but they still belong on the board.
     labels: rows.labels.map((l) => ({ name: l.name ?? '', color: l.color })),
@@ -368,7 +463,7 @@ export async function loadBoardSnapshot(roomId: string, opts: { cards: boolean }
         .order('created_at')
     : { data: [], error: null }
   if (fo.error) throw new Error(fo.error.message)
-  return snapshotBoard(
+  const template = snapshotBoard(
     {
       categories: c.data ?? [],
       tasks: t.data ?? [],
@@ -381,4 +476,5 @@ export async function loadBoardSnapshot(roomId: string, opts: { cards: boolean }
     },
     opts,
   )
+  return { ...template, sourceRoomId: roomId }
 }

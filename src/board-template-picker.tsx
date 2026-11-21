@@ -183,7 +183,8 @@ export const BoardTemplatePicker: React.FC<Props> = ({ title, intro, userId, exc
             )}
             <p className="m-0 text-[11.5px]" style={{ color: 'var(--dv-muted)' }}>
               Copies its lists, card limits, labels, categories and card templates. With cards, it
-              copies those too, without comments or members.
+              copies those too, with their due dates and attachments, but not comments or members.
+              A board that already has lists keeps its own settings.
             </p>
           </section>
         )}
