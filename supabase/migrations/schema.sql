@@ -8,6 +8,7 @@ CREATE TABLE public.categories (
   position integer NOT NULL DEFAULT 0,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   archived_at timestamp with time zone,
+  wip_limit integer CHECK (wip_limit IS NULL OR wip_limit >= 1 AND wip_limit <= 999),
   CONSTRAINT categories_pkey PRIMARY KEY (id),
   CONSTRAINT categories_room_id_fkey FOREIGN KEY (room_id) REFERENCES public.rooms(id)
 );
@@ -31,6 +32,7 @@ CREATE TABLE public.tasks (
   cover jsonb,
   member_ids ARRAY NOT NULL DEFAULT '{}'::uuid[],
   archived_at timestamp with time zone,
+  is_template boolean NOT NULL DEFAULT false,
   CONSTRAINT tasks_pkey PRIMARY KEY (id),
   CONSTRAINT tasks_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.categories(id),
   CONSTRAINT tasks_room_id_fkey FOREIGN KEY (room_id) REFERENCES public.rooms(id),

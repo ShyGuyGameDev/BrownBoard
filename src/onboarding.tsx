@@ -11,6 +11,7 @@ import {
   EyeOff,
   Info,
   KeyRound,
+  LayoutTemplate,
   Link2,
   LogOut,
   Mail,
@@ -56,6 +57,8 @@ import {
 import { buildShareLink, colorFor, goHome, goToRoom, hexColorFor } from './lib/room-links'
 import { cleanHexColor } from './lib/sanitize'
 import { Avatar } from './avatar'
+import { BoardTemplatePicker } from './board-template-picker'
+import { applyBoardTemplate } from './lib/board-templates'
 import { getLastAccount, setSignInIntent, setStartRoomAfterSignIn } from './lib/sign-in-intent'
 import { useTheme } from './lib/theme'
 import { fullDate, relative } from './lib/time'
@@ -1914,6 +1917,7 @@ export const RoomsHome: React.FC = () => {
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
+  const [pickingTemplate, setPickingTemplate] = useState(false)
   const [query, setQuery] = useState('')
   const [settingsId, setSettingsId] = useState<string | null>(null)
   /** Owner leaving from the card menu: picking who takes over. */
@@ -2104,11 +2108,48 @@ export const RoomsHome: React.FC = () => {
               {starting ? <span className="dv-spinner" /> : <Plus size={14} />}
               New room
             </button>
+            <button
+              className="dv-btn"
+              disabled={starting}
+              title="Start a room from a ready-made board or a copy of one of yours"
+              onClick={() => {
+                setStartError(null)
+                setPickingTemplate(true)
+              }}
+            >
+              <LayoutTemplate size={14} />
+              From template
+            </button>
           </div>
         </div>
 
         {error && <Alert>{error}</Alert>}
         {startError && <Alert>{startError}</Alert>}
+        {pickingTemplate && user && (
+          <BoardTemplatePicker
+            title="New room from a template"
+            intro="The room opens untitled, with these lists, labels, categories and card templates. Name it to keep it."
+            userId={user.id}
+            onPick={async (template) => {
+              setStarting(true)
+              const room = await createQuickRoom().catch((e) => {
+                setStarting(false)
+                throw e
+              })
+              try {
+                await applyBoardTemplate(room.roomId, template)
+              } catch (e) {
+                setStarting(false)
+                // Shown in the picker. The empty room still exists, under Untitled.
+                throw new Error(
+                  `${errorText(e)} An empty untitled room was made; open it to try again from its board.`,
+                )
+              }
+              goToRoom(room.roomId)
+            }}
+            onClose={() => setPickingTemplate(false)}
+          />
+        )}
 
         {!error && (shown === null || shown.length > 0) && (
           <div className="dv-room-grid">

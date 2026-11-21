@@ -2970,3 +2970,535 @@ button.dv-tag {
 :root:not([data-theme='dark']) .dv-logo {
   filter: invert(1) hue-rotate(180deg);
 }
+
+/* =====================================================================
+   Card limits (WIP), templates, move / copy, calendar, shortcuts
+   ===================================================================== */
+
+/* ---------- WIP limits ---------- */
+.dv-wip {
+  padding: 1px 6px;
+  border-radius: var(--dv-radius-xs);
+  font-size: var(--dv-text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--dv-muted);
+  background: color-mix(in srgb, var(--dv-text) 6%, transparent);
+}
+.dv-wip[data-wip='at'] {
+  color: color-mix(in srgb, var(--dv-warning) 60%, var(--dv-text));
+  background: color-mix(in srgb, var(--dv-warning) 16%, transparent);
+}
+.dv-wip[data-wip='over'] {
+  color: #fff;
+  background: var(--dv-danger);
+  font-weight: var(--dv-weight-semibold);
+}
+.dv-col[data-wip='over'] {
+  background: color-mix(in srgb, var(--dv-danger) 9%, var(--dv-panel-2));
+  border-color: color-mix(in srgb, var(--dv-danger) 35%, transparent);
+}
+.dv-col-archive[data-open='true'] {
+  opacity: 1;
+}
+.dv-wip-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px 8px;
+}
+.dv-wip-form input::-webkit-inner-spin-button {
+  opacity: 0.5;
+}
+
+/* ---------- card templates ---------- */
+.dv-card[data-template='true'] {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--dv-accent) 4%, var(--dv-panel));
+}
+.dv-template-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+  padding: 1px 6px;
+  border-radius: var(--dv-radius-xs);
+  font-size: 10.5px;
+  font-weight: var(--dv-weight-semibold);
+  color: var(--dv-accent);
+  background: var(--dv-accent-soft);
+}
+.dv-template-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--dv-radius-lg);
+  font-size: var(--dv-text-sm);
+  color: var(--dv-text);
+  background: var(--dv-accent-soft);
+}
+.dv-template-banner > svg {
+  color: var(--dv-accent);
+  flex-shrink: 0;
+}
+
+/* ---------- board templates ---------- */
+.dv-board-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px dashed var(--dv-border);
+  border-radius: 14px;
+  color: var(--dv-text);
+}
+.dv-board-empty > svg {
+  color: var(--dv-accent);
+}
+.dv-tpl {
+  max-width: 760px;
+}
+.dv-tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+}
+.dv-tpl-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  text-align: left;
+  border: 1px solid var(--dv-border);
+  border-radius: var(--dv-radius-lg);
+  background: var(--dv-panel);
+  color: var(--dv-text);
+  cursor: pointer;
+  transition:
+    border-color var(--dv-dur-fast),
+    box-shadow var(--dv-dur-fast);
+}
+.dv-tpl-option:hover:not(:disabled) {
+  border-color: var(--dv-accent);
+  box-shadow: 0 0 0 3px var(--dv-accent-soft);
+}
+.dv-tpl-option:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.dv-tpl-preview {
+  display: flex;
+  gap: 4px;
+  height: 64px;
+  margin-bottom: 4px;
+  padding: 6px;
+  overflow: hidden;
+  border-radius: var(--dv-radius-md);
+  background: var(--dv-panel-2);
+}
+.dv-tpl-col {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--dv-text) 5%, transparent);
+}
+.dv-tpl-col-name {
+  overflow: hidden;
+  font-size: 8.5px;
+  font-weight: var(--dv-weight-semibold);
+  line-height: 1.1;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--dv-muted);
+}
+.dv-tpl-card {
+  height: 8px;
+  border-radius: 2px;
+  background: var(--dv-panel);
+  box-shadow: var(--dv-shadow-sm);
+}
+.dv-tpl-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--dv-text-md);
+  font-weight: var(--dv-weight-semibold);
+}
+.dv-tpl-desc {
+  font-size: var(--dv-text-xs);
+  color: var(--dv-muted);
+}
+.dv-tpl-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--dv-border);
+}
+
+/* A labelled native checkbox. */
+.dv-tick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--dv-text-sm);
+  cursor: pointer;
+}
+.dv-tick input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--dv-accent);
+}
+
+/* ---------- move / copy ---------- */
+.dv-transfer {
+  max-width: 520px;
+}
+.dv-transfer-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 110px;
+  gap: 10px;
+}
+.dv-transfer-room {
+  grid-column: 1 / -1;
+}
+.dv-transfer-title {
+  height: auto;
+  padding: 8px 10px;
+  resize: none;
+  line-height: 1.4;
+}
+.dv-transfer-keep {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.dv-transfer-keep legend {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 0;
+}
+.dv-transfer-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--dv-radius-md);
+  font-size: var(--dv-text-xs);
+  color: var(--dv-muted);
+  background: var(--dv-panel-2);
+}
+@media (max-width: 640px) {
+  .dv-transfer-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- shortcuts ---------- */
+.dv-shortcuts {
+  max-width: 720px;
+}
+.dv-shortcut-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px 28px;
+}
+.dv-shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--dv-border) 60%, transparent);
+}
+.dv-shortcut-row dt {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  order: 2;
+}
+.dv-shortcut-row dd {
+  margin: 0;
+  font-size: var(--dv-text-sm);
+}
+.dv-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--dv-muted);
+}
+.dv-keys .dv-kbd {
+  min-width: 20px;
+  text-align: center;
+}
+.dv-shortcut-or {
+  font-size: 10.5px;
+  color: var(--dv-muted);
+}
+
+/* ---------- calendar ---------- */
+.dv-cols[hidden] {
+  display: none !important;
+}
+.dv-cal {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 24px 24px;
+}
+.dv-cal-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.dv-cal-period {
+  margin: 0;
+  font-size: var(--dv-text-lg);
+  font-weight: var(--dv-weight-semibold);
+}
+.dv-cal-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+}
+.dv-cal-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--dv-border);
+  border-radius: var(--dv-radius-xl);
+  background: var(--dv-panel-2);
+}
+.dv-cal-weekdays,
+.dv-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+.dv-cal-weekdays span {
+  padding: 6px 8px;
+  font-size: var(--dv-text-2xs);
+  font-weight: var(--dv-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--dv-muted);
+}
+.dv-cal[data-mode='week'] .dv-cal-weekdays {
+  display: none;
+}
+.dv-cal-grid {
+  flex: 1;
+  grid-auto-rows: minmax(104px, 1fr);
+  gap: 1px;
+  overflow-y: auto;
+  background: var(--dv-border);
+  border-top: 1px solid var(--dv-border);
+}
+.dv-cal[data-mode='week'] .dv-cal-grid {
+  border-top: 0;
+}
+.dv-cal-day {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: var(--dv-panel);
+  transition: background var(--dv-dur-fast);
+}
+.dv-cal-day[data-outside='true'] {
+  background: color-mix(in srgb, var(--dv-panel) 55%, var(--dv-panel-2));
+}
+.dv-cal-day[data-outside='true'] .dv-cal-date {
+  color: var(--dv-muted);
+}
+.dv-cal-day[data-over='true'],
+.dv-cal-tray[data-over='true'] {
+  background: color-mix(in srgb, var(--dv-accent) 10%, var(--dv-panel));
+  box-shadow: inset 0 0 0 2px var(--dv-accent);
+}
+.dv-cal-day[data-expanded='true'] {
+  position: relative;
+  z-index: 2;
+  box-shadow: var(--dv-shadow);
+}
+.dv-cal-date {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 11px;
+  font-size: var(--dv-text-xs);
+  font-weight: var(--dv-weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+.dv-cal-day[data-today='true'] .dv-cal-date {
+  color: var(--dv-accent-fg);
+  background: var(--dv-accent);
+}
+.dv-cal-dow {
+  font-weight: var(--dv-weight-medium);
+  text-transform: uppercase;
+  font-size: var(--dv-text-2xs);
+}
+.dv-cal-cards {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+.dv-cal-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 6px 3px 9px;
+  text-align: left;
+  border: 1px solid var(--dv-border);
+  border-radius: var(--dv-radius-sm);
+  background: var(--dv-panel);
+  color: var(--dv-text);
+  font-size: 11.5px;
+  line-height: 1.3;
+  cursor: grab;
+  box-shadow: var(--dv-shadow-sm);
+}
+.dv-cal-card::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--bar);
+}
+.dv-cal-card:hover {
+  border-color: color-mix(in srgb, var(--dv-text) 25%, var(--dv-border));
+}
+.dv-cal-card[data-state='overdue'] {
+  border-color: color-mix(in srgb, var(--dv-danger) 55%, var(--dv-border));
+}
+.dv-cal-card[data-done='true'] .dv-cal-title {
+  color: var(--dv-muted);
+  text-decoration: line-through;
+}
+.dv-cal-card[data-dragging='true'] {
+  opacity: 0.4;
+}
+.dv-cal-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dv-cal[data-mode='week'] .dv-cal-title {
+  white-space: normal;
+}
+.dv-cal-list {
+  overflow: hidden;
+  font-size: 10.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--dv-muted);
+}
+.dv-cal-labels {
+  display: flex;
+  gap: 2px;
+}
+.dv-cal-labels span {
+  width: 16px;
+  height: 4px;
+  border-radius: 2px;
+}
+.dv-cal-more {
+  align-self: flex-start;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: var(--dv-radius-xs);
+  background: transparent;
+  color: var(--dv-muted);
+  font-size: 11px;
+  font-weight: var(--dv-weight-medium);
+  cursor: pointer;
+}
+.dv-cal-more:hover {
+  color: var(--dv-text);
+  background: var(--dv-panel-2);
+}
+.dv-cal-tray {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 240px;
+  flex-shrink: 0;
+  min-height: 0;
+  padding: 10px;
+  border: 1px solid var(--dv-border);
+  border-radius: var(--dv-radius-xl);
+  background: var(--dv-panel-2);
+}
+.dv-cal-tray .dv-cal-cards {
+  flex: 1;
+  overflow-y: auto;
+}
+.dv-cal-tray .dv-cal-title {
+  white-space: normal;
+}
+@media (max-width: 640px) {
+  .dv-cal {
+    padding: 0 12px 12px;
+  }
+  .dv-cal-bar .dv-btn,
+  .dv-cal-bar .dv-iconbtn {
+    min-width: 40px;
+  }
+  .dv-cal-body {
+    flex-direction: column;
+  }
+  .dv-cal-tray {
+    width: auto;
+    max-height: 32vh;
+  }
+  /* Month: small cells with a few short chips. Week: one day per row. */
+  .dv-cal[data-mode='month'] .dv-cal-grid {
+    grid-auto-rows: minmax(64px, 1fr);
+  }
+  .dv-cal[data-mode='month'] .dv-cal-day {
+    padding: 3px;
+  }
+  .dv-cal[data-mode='month'] .dv-cal-card {
+    padding: 1px 3px 1px 6px;
+    font-size: 10px;
+  }
+  .dv-cal[data-mode='month'] .dv-cal-card::before {
+    left: 2px;
+    width: 2px;
+  }
+  .dv-cal[data-mode='month'] .dv-cal-labels {
+    display: none;
+  }
+  .dv-cal[data-mode='week'] .dv-cal-grid {
+    grid-template-columns: 1fr;
+    grid-auto-rows: minmax(56px, auto);
+  }
+}

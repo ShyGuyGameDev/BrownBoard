@@ -2,6 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive,
   AlignLeft,
+  Copy,
+  LayoutTemplate,
+  MoveRight,
   CalendarDays,
   Check,
   CheckSquare,
@@ -127,6 +130,15 @@ interface Props {
   onDeleteLabel: (label: Label) => void
   /** The card's comment count changed (posted, deleted, or loaded with a teammate's new one). */
   onCommentCount: (count: number) => void
+  /** A card template: shown with a banner, and used from "From template" under any list. */
+  isTemplate: boolean
+  onToggleTemplate: () => void
+  /** Makes a new card from this template, in the same list. */
+  onUseTemplate: () => void
+  /** Opens the Move / Copy dialog. */
+  onTransfer: (mode: 'move' | 'copy') => void
+  /** A picker to open straight away (the "l" shortcut opens labels). */
+  initialPop?: 'labels' | 'members' | 'due'
   onClose: () => void
 }
 
@@ -214,13 +226,29 @@ export const CardDetail: React.FC<Props> = (props) => {
 
   const openPop = (e: React.MouseEvent<HTMLElement>, p: Pop, width = 272) => {
     e.stopPropagation()
-    const r = e.currentTarget.getBoundingClientRect()
+    openPopAt(e.currentTarget, p, width)
+  }
+  function openPopAt(el: HTMLElement, p: Pop, width = 272) {
+    const r = el.getBoundingClientRect()
     setPop({
       ...p,
       x: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)),
       y: Math.min(r.bottom + 6, window.innerHeight - 380),
     })
   }
+
+  // Open the picker a shortcut asked for, once the dialog has been laid out.
+  const initialPop = props.initialPop
+  useEffect(() => {
+    if (!initialPop) return
+    const frame = requestAnimationFrame(() => {
+      const el = dialogRef.current?.querySelector<HTMLElement>(`[data-pop="${initialPop}"]`)
+      if (el) openPopAt(el, { kind: initialPop })
+    })
+    return () => cancelAnimationFrame(frame)
+    // Only on opening; openPopAt only reads the element it's given.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const saveTitle = () => {
     setEditingTitle(false)
@@ -429,6 +457,19 @@ export const CardDetail: React.FC<Props> = (props) => {
           </div>
         )}
 
+        {props.isTemplate && (
+          <div className="dv-template-banner" role="note">
+            <LayoutTemplate size={15} aria-hidden />
+            <span className="min-w-0 flex-1">
+              This is a template card. Use <strong>From template</strong> under any list to make a
+              card like it.
+            </span>
+            <button className="dv-btn primary !h-8" onClick={props.onUseTemplate}>
+              Create card from template
+            </button>
+          </div>
+        )}
+
         {/* ---------- header ---------- */}
         <header className="dv-detail-head">
           <div className="min-w-0 flex-1">
@@ -572,6 +613,7 @@ export const CardDetail: React.FC<Props> = (props) => {
               <button
                 className="dv-prop-add !mt-0"
                 aria-label="Add or remove labels"
+                data-pop="labels"
                 onClick={(e) => openPop(e, { kind: 'labels' })}
               >
                 <Plus size={12} />
@@ -601,6 +643,7 @@ export const CardDetail: React.FC<Props> = (props) => {
               <button
                 className="dv-prop-add !mt-0"
                 aria-label="Add or remove members"
+                data-pop="members"
                 onClick={(e) => openPop(e, { kind: 'members' })}
               >
                 <Plus size={12} />
@@ -623,6 +666,7 @@ export const CardDetail: React.FC<Props> = (props) => {
               className="dv-chip dv-due"
               data-state={due ?? 'none'}
               title={task.dueDate && due ? dueTitle(task.dueDate, due) : 'Set a due date'}
+              data-pop="due"
               onClick={(e) => openPop(e, { kind: 'due' })}
             >
               <CalendarDays size={12} />
@@ -806,6 +850,36 @@ export const CardDetail: React.FC<Props> = (props) => {
           <button className="dv-btn" onClick={props.onSendToCanvas}>
             <PenTool size={14} />
             Show on canvas
+          </button>
+          <button
+            className="dv-btn"
+            title="Move this card to another list or room (Shift+M)"
+            onClick={() => props.onTransfer('move')}
+          >
+            <MoveRight size={14} />
+            Move
+          </button>
+          <button
+            className="dv-btn"
+            title="Copy this card to a list in this room or another one"
+            onClick={() => props.onTransfer('copy')}
+          >
+            <Copy size={14} />
+            Copy
+          </button>
+          <button
+            className="dv-btn"
+            data-active={props.isTemplate}
+            aria-pressed={props.isTemplate}
+            title={
+              props.isTemplate
+                ? 'Turn this back into an ordinary card'
+                : 'Make this a card template: new cards can be made from it under any list'
+            }
+            onClick={props.onToggleTemplate}
+          >
+            <LayoutTemplate size={14} />
+            {props.isTemplate ? 'Template' : 'Make template'}
           </button>
           <button
             className="dv-btn ml-auto"

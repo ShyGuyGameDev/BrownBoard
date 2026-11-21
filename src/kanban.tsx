@@ -9,6 +9,10 @@ import {
   ListFilter,
   Palette,
   GripVertical,
+  Kanban,
+  Keyboard,
+  LayoutTemplate,
+  MoreHorizontal,
   Pencil,
   PenTool,
   Plus,
@@ -50,12 +54,20 @@ import { CardBadges, CardDetail } from './card-detail'
 import { ActiveFilters, FilterMenu } from './board-filters'
 import {
   type BoardFilters,
+  EMPTY_FILTERS,
   activeFilterCount,
   matchesFilters,
   readFilters,
   saveFilters,
 } from './lib/filters'
 import { ArchivePanel } from './archive-panel'
+import { CalendarView } from './calendar-view'
+import { CardTransferDialog, type TransferMode } from './card-transfer-dialog'
+import { BoardTemplatePicker } from './board-template-picker'
+import { ShortcutsHelp } from './shortcuts-help'
+import { KEEP_ALL, type TransferTarget, type CopyKeep, copyCard, moveCard } from './lib/card-transfer'
+import { applyBoardTemplate } from './lib/board-templates'
+import { isPlainKey, stepIndex } from './lib/shortcuts'
 import { useIsMobile } from './lib/viewport'
 import { takePendingCard } from './lib/pending-card'
 import {
@@ -82,6 +94,7 @@ type DbCategory = {
   name: string
   position: number | null
   archived_at?: string | null
+  wip_limit?: number | null
 }
 type DbTask = {
   id: string
@@ -101,6 +114,7 @@ type DbTask = {
   checklists?: unknown
   cover?: unknown
   archived_at?: string | null
+  is_template?: boolean | null
 }
 
 interface CustomFieldOption {
@@ -134,13 +148,30 @@ interface Task {
   checklists: Checklist[]
   cover: Cover
   customFields: Record<string, string>
+  /** A card template: new cards can be made from it ("From template" under any list). */
+  isTemplate: boolean
 }
 
 interface Category {
   id: string
   name: string
   position: number
+  /** Soft WIP limit: the list turns red above this many cards. null = none. */
+  wipLimit: number | null
   tasks: Task[]
+}
+
+/** Cards that count toward a list's WIP limit (templates are tools, not work). */
+const wipCount = (c: Category) => c.tasks.filter((t) => !t.isTemplate).length
+
+type BoardView = 'board' | 'calendar'
+const viewKey = (roomId: string) => `brownboard:view:${roomId}`
+const readView = (roomId: string): BoardView => {
+  try {
+    return localStorage.getItem(viewKey(roomId)) === 'calendar' ? 'calendar' : 'board'
+  } catch {
+    return 'board'
+  }
 }
 
 /** List widths in px. The default matches .dv-col in devboard.css. */
@@ -183,6 +214,7 @@ const mapTask = (t: DbTask): Task => ({
   checklists: readChecklists(t.checklists),
   cover: readCover(t.cover),
   customFields: readCustomFields(t.custom_fields),
+  isTemplate: t.is_template === true,
 })
 
 /** Done tasks sink to the bottom of their list; order is otherwise kept. */
@@ -209,6 +241,7 @@ const buildBoard = (
     id: c.id,
     name: c.name,
     position: c.position ?? 0,
+    wipLimit: c.wip_limit ?? null,
     tasks: sinkDone(buckets.get(c.id) ?? [], crossoffs),
   }))
 }
@@ -249,7 +282,7 @@ interface MenuState {
 }
 
 export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) => {
-  const { roomId, send, on, peers, setActivity, setPlace, setSelection } = useRoom()
+  const { roomId, roomName, send, on, peers, setActivity, setPlace, setSelection } = useRoom()
 
   const [categories, setCategories] = useState<Category[]>([])
   const categoriesRef = useRef<Category[]>([])
@@ -333,6 +366,27 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   } | null>(null)
   const [assignees, setAssignees] = useState<TaskAssignee[]>([])
   const [menu, setMenu] = useState<MenuState | null>(null)
+  const [view, setView] = useState<BoardView>(() => readView(roomId))
+  useEffect(() => {
+    try {
+      localStorage.setItem(viewKey(roomId), view)
+    } catch {
+      /* not remembered */
+    }
+  }, [roomId, view])
+  /** The Move / Copy dialog, for one card. */
+  const [transfer, setTransfer] = useState<{ mode: TransferMode; taskId: string } | null>(null)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [boardTemplateOpen, setBoardTemplateOpen] = useState(false)
+  /** A list's "…" menu, with the WIP limit being typed. */
+  const [listMenu, setListMenu] = useState<{ catId: string; x: number; y: number; limit: string } | null>(null)
+  /** "From template" under a list: which list the new card goes in. */
+  const [templateMenu, setTemplateMenu] = useState<{ catId: string; x: number; y: number } | null>(null)
+  /** A picker the card detail opens with (the "l" shortcut). */
+  const [openCardPop, setOpenCardPop] = useState<'labels' | null>(null)
+  /** The card under the pointer, for shortcuts when nothing has keyboard focus. */
+  const hoverId = useRef<string | null>(null)
+  const filterBtnRef = useRef<HTMLButtonElement>(null)
 
   const [dragId, setDragId] = useState<string | null>(null)
   const dragRef = useRef<{ taskId: string } | null>(null)
@@ -365,7 +419,11 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const fileInputRef = useRef<HTMLInputElement>(null)
   const uploadTarget = useRef<string | null>(null)
 
-  const activity = settingsOpen
+  const activity = transfer
+    ? transfer.mode === 'move'
+      ? 'Moving a card'
+      : 'Copying a card'
+    : settingsOpen
     ? 'Editing board settings'
     : openCardId
       ? 'Viewing a board card'
@@ -622,6 +680,8 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       } else if (e.key === 'Escape') {
         setMenu(null)
         setFilterMenu(null)
+        setListMenu(null)
+        setTemplateMenu(null)
         if (fieldToRemove) setFieldToRemove(null)
         else if (defaultFieldToRemove) setDefaultFieldToRemove(null)
         else setSettingsOpen(false)
@@ -646,7 +706,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     if (data) {
       setCategories((prev) => [
         ...prev,
-        { id: data.id, name: data.name, position: data.position ?? position, tasks: [] },
+        { id: data.id, name: data.name, position: data.position ?? position, wipLimit: null, tasks: [] },
       ])
       setNewListName('')
       setAddingList(false)
@@ -666,6 +726,34 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
       fail(err.message)
       loadBoard(true)
     } else sync()
+  }
+
+  // ---------- WIP limits ----------
+
+  /** A soft limit, as in Jira: going over it turns the list red and says so, but isn't blocked. */
+  const warnIfOverLimit = (cat: Category | undefined, count: number) => {
+    if (cat?.wipLimit && count > cat.wipLimit)
+      toast(`“${cat.name}” is over its limit of ${cat.wipLimit} card${cat.wipLimit === 1 ? '' : 's'}.`)
+  }
+
+  const saveWipLimit = async (catId: string, raw: string) => {
+    setListMenu(null)
+    const n = raw.trim() === '' ? null : Math.round(Number(raw))
+    if (n !== null && (!Number.isFinite(n) || n < 1 || n > 999))
+      return toast('A card limit is a number from 1 to 999.')
+    const cat = categoriesRef.current.find((c) => c.id === catId)
+    if (!cat || cat.wipLimit === n) return
+    setCategories((prev) => prev.map((c) => (c.id === catId ? { ...c, wipLimit: n } : c)))
+    const { error: err } = await supabase.from('categories').update({ wip_limit: n }).eq('id', catId)
+    if (err) {
+      fail(
+        err.message.includes('wip_limit')
+          ? 'Card limits need the latest database update.'
+          : err.message,
+      )
+      return loadBoard(true)
+    }
+    sync()
   }
 
   // ---------- task categories ----------
@@ -813,6 +901,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           c.id === categoryId ? { ...c, tasks: sinkDone([...c.tasks, mapped], crossoffs) } : c,
         ),
       )
+      if (cat) warnIfOverLimit(cat, wipCount(cat) + 1)
       sync()
     }
   }
@@ -833,6 +922,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         | 'checklists'
         | 'cover'
         | 'customFields'
+        | 'isTemplate'
       >
     >,
   ) => {
@@ -850,8 +940,18 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     })
     setCategories(next)
     if (resort) savePositions(prev, next)
-    const { files, dueDate, memberIds, labelIds, checklists, customFields: fields, ...rest } = patch
+    const {
+      files,
+      dueDate,
+      memberIds,
+      labelIds,
+      checklists,
+      customFields: fields,
+      isTemplate,
+      ...rest
+    } = patch
     const dbPatch: Record<string, unknown> = { ...rest }
+    if ('isTemplate' in patch) dbPatch.is_template = isTemplate
     if ('dueDate' in patch) dbPatch.due_date = dueDate
     if ('memberIds' in patch) dbPatch.member_ids = memberIds
     if ('labelIds' in patch) dbPatch.label_ids = labelIds
@@ -1074,15 +1174,21 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
   // ---------- status / urgency menu ----------
 
+  /** Opens a card's field menu under `at` (a clicked chip, or the card itself for a shortcut). */
   const openMenu = (
-    e: React.MouseEvent<HTMLElement>,
+    at: React.MouseEvent<HTMLElement> | HTMLElement,
     kind: MenuState['kind'],
     taskId: string,
     categoryId: string,
     fieldId?: string,
   ) => {
-    e.stopPropagation()
-    const r = e.currentTarget.getBoundingClientRect()
+    let el: HTMLElement
+    if (at instanceof HTMLElement) el = at
+    else {
+      at.stopPropagation()
+      el = at.currentTarget
+    }
+    const r = el.getBoundingClientRect()
     setMenu({
       kind,
       taskId,
@@ -1573,6 +1679,91 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     sync()
   }
 
+  // ---------- card templates ----------
+
+  const toggleTemplate = (taskId: string) => {
+    const task = findTask(taskId)
+    if (!task) return
+    patchTask(taskId, { isTemplate: !task.isTemplate })
+    toast(
+      task.isTemplate
+        ? `“${task.title}” is an ordinary card again.`
+        : `“${task.title}” is now a template. Use From template under any list.`,
+    )
+  }
+
+  /** A new card from a template, at the bottom of a list, opened so it can be filled in. */
+  const createFromTemplate = async (templateId: string, catId: string) => {
+    setTemplateMenu(null)
+    const cat = categoriesRef.current.find((c) => c.id === catId)
+    try {
+      const { taskId } = await copyCard(
+        templateId,
+        roomId,
+        { roomId, listId: catId, position: null },
+        { keep: KEEP_ALL, template: false },
+      )
+      await loadBoard(true)
+      sync()
+      if (cat) warnIfOverLimit(cat, wipCount(cat) + 1)
+      setOpenCardId(taskId)
+    } catch (e) {
+      fail(e instanceof Error ? e.message : 'Could not create the card')
+    }
+  }
+
+  // ---------- move / copy to a list or room ----------
+
+  const submitTransfer = async (
+    target: TransferTarget & { roomName: string; listName: string },
+    copy: { title: string; keep: CopyKeep; template: boolean } | null,
+  ) => {
+    const task = transfer && findTask(transfer.taskId)
+    if (!task) return setTransfer(null)
+    const here = target.roomId === roomId
+    const toCat = categoriesRef.current.find((c) => c.id === target.listId)
+
+    // Within this room a move is the same as dragging, done right away.
+    if (!copy && here && toCat) {
+      const fromIdx = toCat.tasks.findIndex((t) => t.id === task.id)
+      let at = target.position ?? toCat.tasks.length
+      // moveTask counts the index before the card leaves; a later slot in its own list is one on.
+      if (fromIdx >= 0 && target.position !== null && fromIdx < target.position) at += 1
+      moveTask(task.id, target.listId, at)
+      setTransfer(null)
+      return
+    }
+
+    const result = copy
+      ? await copyCard(task.id, roomId, target, copy)
+      : await moveCard(task.id, roomId, target)
+    setTransfer(null)
+    if (!copy) setOpenCardId(null)
+    await loadBoard(true)
+    sync()
+    const where = here ? `“${target.listName}”` : `“${target.listName}” in ${target.roomName}`
+    toast(
+      `${copy ? 'Copied' : 'Moved'} “${task.title}” to ${where}.` +
+        (result.failedFiles
+          ? ` ${result.failedFiles} file${result.failedFiles === 1 ? '' : 's'} still link to this room.`
+          : ''),
+    )
+    if (here && toCat) {
+      warnIfOverLimit(toCat, wipCount(toCat) + 1)
+      setFlashId(result.taskId)
+      window.setTimeout(() => setFlashId(null), 2200)
+    }
+  }
+
+  /** Adds a board template's lists, labels and categories to this board. */
+  const addBoardTemplate = async (template: Parameters<typeof applyBoardTemplate>[1], name: string) => {
+    const r = await applyBoardTemplate(roomId, template)
+    setBoardTemplateOpen(false)
+    await loadBoard(true)
+    sync()
+    toast(`Added ${r.lists} list${r.lists === 1 ? '' : 's'} from “${name}”.`)
+  }
+
   // ---------- drag and drop (move happens on drop, so the dragged node never remounts mid-drag) ----------
 
   const setDrop = (v: { cat: string; index: number } | null) => {
@@ -1685,6 +1876,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     })
     setCategories(next)
     savePositions(prev, next)
+    if (fromCat.id !== toCat && !task.isTemplate) {
+      const to = next.find((c) => c.id === toCat)
+      if (to) warnIfOverLimit(to, wipCount(to))
+    }
   }
 
   /** Persists only the task positions / lists that changed between two board states. */
@@ -1930,9 +2125,181 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     matchesQuery(t) &&
     matchesFilters(filters, t, isTaskDone(crossoffs, t), (field) => categoryValue(t, field))
   const totals = useMemo(() => {
-    const all = categories.flatMap((c) => c.tasks)
+    const all = categories.flatMap((c) => c.tasks).filter((t) => !t.isTemplate)
     return { all: all.length, done: all.filter((t) => isTaskDone(crossoffs, t)).length }
   }, [categories, crossoffs])
+  const templates = categories.flatMap((c) =>
+    c.tasks.filter((t) => t.isTemplate).map((task) => ({ task, list: c.name })),
+  )
+
+  // ---------- keyboard shortcuts (see lib/shortcuts.ts for the list shown by "?") ----------
+
+  const cardEl = (id: string) => document.querySelector<HTMLElement>(`[data-card-id="${id}"]`)
+  const focusCard = (id: string) => {
+    const el = cardEl(id)
+    if (!el) return
+    el.focus({ preventScroll: true })
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+  }
+  /** The card a shortcut acts on: the focused one, else the one under the pointer. */
+  const selectedCard = () => {
+    const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
+      '[data-card-id]',
+    )
+    const id = focused?.dataset.cardId ?? hoverId.current
+    if (!id) return null
+    for (const c of categoriesRef.current) {
+      const task = c.tasks.find((t) => t.id === id)
+      if (task) return { task, cat: c }
+    }
+    return null
+  }
+
+  const onBoardKey = (e: KeyboardEvent) => {
+    if (loading || !isPlainKey(e) || isTyping(e) || e.defaultPrevented) return
+    // Holding a key down repeats only the moves between cards.
+    if (e.repeat && !['j', 'k', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key))
+      return
+    // Anything open on top (card, dialog, menu) has the keyboard.
+    if (
+      openCardId ||
+      settingsOpen ||
+      archiveOpen ||
+      transfer ||
+      helpOpen ||
+      boardTemplateOpen ||
+      menu ||
+      filterMenu ||
+      listMenu ||
+      templateMenu ||
+      viewer ||
+      document.querySelector('.dv-modal-backdrop')
+    )
+      return
+    const key = e.key
+    const done = () => e.preventDefault()
+
+    // Either view.
+    if (key === '?') return done(), setHelpOpen(true)
+    if (key === 'v') return done(), setView((v) => (v === 'board' ? 'calendar' : 'board'))
+    if (key === 'f') {
+      done()
+      const r = filterBtnRef.current?.getBoundingClientRect()
+      if (r) setFilterMenu({ x: Math.min(r.left, window.innerWidth - 300), y: r.bottom + 6 })
+      return
+    }
+    if (key === 'x') {
+      done()
+      setQuery('')
+      setFilters(EMPTY_FILTERS)
+      return
+    }
+    if (key === 'q') {
+      done()
+      if (!userId) return toast('Sign in to be on cards.')
+      const mine = filters.members.includes(userId)
+      setFilters({
+        ...filters,
+        members: mine ? filters.members.filter((id) => id !== userId) : [...filters.members, userId],
+      })
+      toast(mine ? 'Showing everyone’s cards.' : 'Showing only cards you’re on.')
+      return
+    }
+    if (view !== 'board') return
+
+    const sel = selectedCard()
+    const cols = categories.map((c) => ({ cat: c, ids: c.tasks.filter(matches).map((t) => t.id) }))
+    const col = sel ? cols.findIndex((c) => c.cat.id === sel.cat.id) : -1
+    const row = sel && col >= 0 ? cols[col].ids.indexOf(sel.task.id) : -1
+
+    if (key === 'n') {
+      done()
+      const target = sel?.cat ?? categories[0]
+      if (!target) return setAddingList(true)
+      const input = document.getElementById(`add-card-${target.id}`) as HTMLInputElement | null
+      input?.focus()
+      input?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      return
+    }
+
+    // Moving the selection.
+    if (key === 'ArrowDown' || key === 'j' || key === 'ArrowUp' || key === 'k') {
+      done()
+      const by = key === 'ArrowDown' || key === 'j' ? 1 : -1
+      if (col < 0 || row < 0) {
+        const first = cols.find((c) => c.ids.length)
+        if (first) focusCard(first.ids[by > 0 ? 0 : first.ids.length - 1])
+        return
+      }
+      const next = stepIndex(row, by, cols[col].ids.length)
+      if (next >= 0) focusCard(cols[col].ids[next])
+      return
+    }
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      done()
+      const by = key === 'ArrowRight' ? 1 : -1
+      for (let i = (col < 0 ? (by > 0 ? -1 : cols.length) : col) + by; i >= 0 && i < cols.length; i += by) {
+        if (!cols[i].ids.length) continue
+        focusCard(cols[i].ids[Math.min(Math.max(row, 0), cols[i].ids.length - 1)])
+        if (isMobile) showColumn(i)
+        return
+      }
+      return
+    }
+
+    if (!sel) return
+    const { task, cat } = sel
+    const el = cardEl(task.id)
+    if (key === 'e') return done(), setOpenCardId(task.id)
+    if (key === 'c') {
+      done()
+      const ids = cols[col]?.ids ?? []
+      const after = ids[row + 1] ?? ids[row - 1]
+      archiveTask(task.id)
+      if (after) requestAnimationFrame(() => focusCard(after))
+      return
+    }
+    if (key === 'd' && el) return done(), openMenu(el, 'due_date', task.id, cat.id)
+    if (key === 'm' && el) return done(), openMenu(el, 'assignee', task.id, cat.id)
+    if (key === 'l') {
+      done()
+      setOpenCardPop('labels')
+      setOpenCardId(task.id)
+      return
+    }
+    if (key === ' ') {
+      // Space on a focused button or link presses it.
+      const focus = document.activeElement
+      if (focus && focus !== document.body && !focus.matches('[data-card-id]')) return
+      done()
+      if (!userId) return toast('Sign in to be on cards.')
+      const on = task.memberIds.includes(userId)
+      patchTask(task.id, {
+        memberIds: on ? task.memberIds.filter((id) => id !== userId) : [...task.memberIds, userId],
+      })
+      toast(on ? `You’re off “${task.title}”.` : `You’re on “${task.title}”.`)
+      return
+    }
+    if (key === ',' || key === '.' || key === '<' || key === '>') {
+      done()
+      const i = categories.findIndex((c) => c.id === cat.id) + (key === ',' || key === '<' ? -1 : 1)
+      const to = categories[i]
+      if (!to) return
+      moveTask(task.id, to.id, key === '<' || key === '>' ? 0 : to.tasks.length)
+      requestAnimationFrame(() => focusCard(task.id))
+      if (isMobile) showColumn(i)
+      return
+    }
+    if (key === 'M') return done(), setTransfer({ mode: 'move', taskId: task.id })
+  }
+  const onBoardKeyRef = useRef(onBoardKey)
+  onBoardKeyRef.current = onBoardKey
+  useEffect(() => {
+    if (!active) return
+    const onKey = (e: KeyboardEvent) => onBoardKeyRef.current(e)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [active])
 
   // ---------- render ----------
 
@@ -2277,6 +2644,28 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         >
           <Settings2 size={15} />
         </button>
+        <div className="dv-seg dv-view-seg shrink-0" role="radiogroup" aria-label="View">
+          <button
+            role="radio"
+            aria-checked={view === 'board'}
+            data-active={view === 'board'}
+            title="Board (v)"
+            onClick={() => setView('board')}
+          >
+            <Kanban size={14} />
+            <span className="dv-hide-mobile">Board</span>
+          </button>
+          <button
+            role="radio"
+            aria-checked={view === 'calendar'}
+            data-active={view === 'calendar'}
+            title="Calendar (v)"
+            onClick={() => setView('calendar')}
+          >
+            <CalendarDays size={14} />
+            <span className="dv-hide-mobile">Calendar</span>
+          </button>
+        </div>
         <div className="dv-board-search relative w-72">
           <Search
             size={14}
@@ -2311,7 +2700,9 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           )}
         </div>
         <button
+          ref={filterBtnRef}
           className="dv-btn shrink-0"
+          title="Filter (f)"
           data-active={filterCount > 0}
           aria-label={filterCount > 0 ? `Filter, ${filterCount} on` : 'Filter'}
           aria-haspopup="menu"
@@ -2331,7 +2722,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           {totals.done} of {totals.all} done
         </span>
         <button
-          className="dv-btn !h-8 ml-auto shrink-0"
+          className="dv-iconbtn dv-hide-mobile ml-auto shrink-0"
+          title="Keyboard shortcuts (?)"
+          aria-label="Keyboard shortcuts"
+          onClick={() => setHelpOpen(true)}
+        >
+          <Keyboard size={15} />
+        </button>
+        <button
+          className="dv-btn !h-8 shrink-0"
           title="Archived cards and lists"
           aria-label="Archived cards and lists"
           onClick={() => setArchiveOpen(true)}
@@ -2368,7 +2767,31 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
         total={totals.all}
       />
 
-      {isMobile && categories.length > 1 && (
+      {view === 'calendar' && (
+        <CalendarView
+          roomId={roomId}
+          active={active && !openCardId && !transfer && !helpOpen}
+          cards={categories.flatMap((c) =>
+            c.tasks
+              .filter((t) => !t.isTemplate && matches(t))
+              .map((t) => ({
+                id: t.id,
+                title: t.title,
+                dueDate: t.dueDate,
+                listName: c.name,
+                done: isTaskDone(crossoffs, t),
+                color: barColorOf(t),
+                labels: t.labelIds
+                  .map((id) => labelsById.get(id))
+                  .filter((l): l is Label => !!l),
+              })),
+          )}
+          onOpen={setOpenCardId}
+          onSetDue={(id, day) => patchTask(id, { dueDate: day })}
+        />
+      )}
+
+      {view === 'board' && isMobile && categories.length > 1 && (
         <div ref={pagerRef} className="dv-col-pager" role="tablist" aria-label="Lists">
           {categories.map((cat, i) => (
             <button
@@ -2388,6 +2811,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
 
       {/* Columns */}
       <div
+        hidden={view !== 'board'}
         ref={colsRef}
         className="dv-scroll dv-cols relative flex min-h-0 flex-1 items-start gap-4 overflow-x-auto px-6 pb-6"
         data-col-drag={colDragId !== null}
@@ -2397,9 +2821,18 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           const visible = cat.tasks.filter(matches)
           const input = newTaskInputs[cat.id] || ''
           const isDropCol = dropAt?.cat === cat.id
+          const count = wipCount(cat)
+          const wip = cat.wipLimit
+            ? count > cat.wipLimit
+              ? 'over'
+              : count === cat.wipLimit
+                ? 'at'
+                : 'under'
+            : null
           return (
             <section
               key={cat.id}
+              data-wip={wip ?? undefined}
               ref={(el) => {
                 if (el) colEls.current.set(cat.id, el)
                 else colEls.current.delete(cat.id)
@@ -2507,16 +2940,43 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                     {cat.name}
                   </h2>
                 )}
-                <span className="text-xs tabular-nums" style={{ color: 'var(--dv-muted)' }}>
-                  {filtering ? `${visible.length}/${cat.tasks.length}` : cat.tasks.length}
-                </span>
+                {cat.wipLimit ? (
+                  <span
+                    className="dv-wip"
+                    data-wip={wip}
+                    title={
+                      wip === 'over'
+                        ? `Over the limit: ${count} cards, limit ${cat.wipLimit}`
+                        : `${count} of ${cat.wipLimit} cards (limit)`
+                    }
+                    aria-label={`${count} of ${cat.wipLimit} cards${wip === 'over' ? ', over the limit' : ''}`}
+                  >
+                    {filtering && visible.length !== cat.tasks.length && `${visible.length} · `}
+                    {count}/{cat.wipLimit}
+                  </span>
+                ) : (
+                  <span className="text-xs tabular-nums" style={{ color: 'var(--dv-muted)' }}>
+                    {filtering ? `${visible.length}/${count}` : count}
+                  </span>
+                )}
                 <button
                   className="dv-col-archive dv-iconbtn !h-6 !w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                  onClick={() => archiveCategory(cat)}
-                  title="Archive list"
-                  aria-label={`Archive the list ${cat.name}`}
+                  data-open={listMenu?.catId === cat.id}
+                  aria-haspopup="menu"
+                  aria-expanded={listMenu?.catId === cat.id}
+                  onClick={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect()
+                    setListMenu({
+                      catId: cat.id,
+                      x: Math.max(8, Math.min(r.right - 240, window.innerWidth - 248)),
+                      y: Math.min(r.bottom + 4, window.innerHeight - 240),
+                      limit: cat.wipLimit ? String(cat.wipLimit) : '',
+                    })
+                  }}
+                  title="List actions"
+                  aria-label={`Actions for the list ${cat.name}`}
                 >
-                  <Archive size={13} />
+                  <MoreHorizontal size={14} />
                 </button>
               </header>
 
@@ -2598,9 +3058,15 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                         // Reordering a filtered list would put cards between hidden ones.
                         draggable={!filtering}
                         tabIndex={0}
-                        aria-label={`${task.title}. Open card`}
+                        aria-label={`${task.isTemplate ? 'Template: ' : ''}${task.title}. Open card`}
+                        data-card-id={task.id}
+                        data-template={task.isTemplate}
                         data-dragging={dragId === task.id}
                         data-done={done}
+                        onMouseEnter={() => (hoverId.current = task.id)}
+                        onMouseLeave={() => {
+                          if (hoverId.current === task.id) hoverId.current = null
+                        }}
                         className={`dv-card ${flashId === task.id ? 'dv-flash' : ''}`}
                         style={
                           fileOverId === task.id
@@ -2618,6 +3084,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                           const previewScale = 0.88
                           const preview = e.currentTarget.cloneNode(true) as HTMLElement
                           preview.removeAttribute('id')
+                          preview.removeAttribute('data-card-id')
                           preview.removeAttribute('data-done')
                           preview.setAttribute('data-dragging', 'false')
                           Object.assign(preview.style, {
@@ -2697,6 +3164,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               <img src={task.cover.url} alt="" draggable={false} loading="lazy" />
                             )}
                           </div>
+                        )}
+                        {task.isTemplate && (
+                          <span className="dv-template-badge">
+                            <LayoutTemplate size={11} aria-hidden />
+                            Template
+                          </span>
                         )}
                         {cardLabels.length > 0 && (
                           <div className="dv-card-labels">
@@ -2888,8 +3361,10 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
               <div className="p-2">
                 <div className="flex gap-1.5">
                   <input
+                    id={`add-card-${cat.id}`}
                     className="dv-input"
                     placeholder="Add a task"
+                    aria-label={`Add a task to ${cat.name}`}
                     value={input}
                     onChange={(e) => setNewTaskInputs((p) => ({ ...p, [cat.id]: e.target.value }))}
                     onKeyDown={(e) => e.key === 'Enter' && addTask(cat.id)}
@@ -2903,6 +3378,25 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                   >
                     <Plus size={15} />
                   </button>
+                  {templates.length > 0 && (
+                    <button
+                      className="dv-iconbtn shrink-0"
+                      style={{ background: 'var(--dv-panel)', border: '1px solid var(--dv-border)' }}
+                      title="Create a card from a template"
+                      aria-label={`Create a card in ${cat.name} from a template`}
+                      aria-haspopup="menu"
+                      onClick={(e) => {
+                        const r = e.currentTarget.getBoundingClientRect()
+                        setTemplateMenu({
+                          catId: cat.id,
+                          x: Math.max(8, Math.min(r.right - 256, window.innerWidth - 264)),
+                          y: Math.max(8, r.top - 8),
+                        })
+                      }}
+                    >
+                      <LayoutTemplate size={15} />
+                    </button>
+                  )}
                 </div>
               </div>
             </section>
@@ -2958,6 +3452,26 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
             >
               <Plus size={15} />
               Add list
+            </button>
+          )}
+          {categories.length === 0 ? (
+            <div className="dv-board-empty">
+              <LayoutTemplate size={18} aria-hidden />
+              <p className="m-0 text-[13px] font-medium">Start from a template</p>
+              <p className="m-0 text-xs" style={{ color: 'var(--dv-muted)' }}>
+                Lists, labels, categories and card templates for kanban, sprints, bugs and more, or
+                a copy of one of your rooms.
+              </p>
+              <button className="dv-btn primary self-start" onClick={() => setBoardTemplateOpen(true)}>
+                Browse templates
+              </button>
+            </div>
+          ) : (
+            <button
+              className="dv-link mt-2 px-1 text-xs"
+              onClick={() => setBoardTemplateOpen(true)}
+            >
+              Add lists from a template
             </button>
           )}
         </div>
@@ -3451,8 +3965,158 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           onUpdateLabel={updateLabel}
           onDeleteLabel={deleteLabel}
           onCommentCount={setOpenCardCommentCount}
-          onClose={() => setOpenCardId(null)}
+          isTemplate={openCard.task.isTemplate}
+          onToggleTemplate={() => toggleTemplate(openCard.task.id)}
+          onUseTemplate={() => createFromTemplate(openCard.task.id, openCard.listId)}
+          onTransfer={(mode) => setTransfer({ mode, taskId: openCard.task.id })}
+          initialPop={openCardPop ?? undefined}
+          onClose={() => {
+            setOpenCardId(null)
+            setOpenCardPop(null)
+            // Back to the card, so the keyboard carries on from where it was.
+            const id = openCard.task.id
+            requestAnimationFrame(() => cardEl(id)?.focus({ preventScroll: true }))
+          }}
         />
+      )}
+
+      {transfer &&
+        (() => {
+          const task = findTask(transfer.taskId)
+          const from = categories.find((c) => c.tasks.some((t) => t.id === transfer.taskId))
+          if (!task || !from) return null
+          return (
+            <CardTransferDialog
+              key={transfer.taskId + transfer.mode}
+              mode={transfer.mode}
+              card={{ id: task.id, title: task.title, isTemplate: task.isTemplate }}
+              room={{ id: roomId, name: roomName }}
+              listId={from.id}
+              lists={categories.map((c) => ({ id: c.id, name: c.name, count: c.tasks.length }))}
+              userId={userId}
+              onSubmit={submitTransfer}
+              onClose={() => setTransfer(null)}
+            />
+          )
+        })()}
+
+      {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}
+
+      {boardTemplateOpen && (
+        <BoardTemplatePicker
+          title={categories.length ? 'Add lists from a template' : 'Start from a template'}
+          intro={
+            categories.length
+              ? 'Its lists go after this board’s own. Labels and categories this board already has are reused.'
+              : 'Pick a ready-made board, or copy the setup of one of your rooms.'
+          }
+          userId={userId}
+          excludeRoomId={roomId}
+          onPick={addBoardTemplate}
+          onClose={() => setBoardTemplateOpen(false)}
+        />
+      )}
+
+      {/* A list's "…" menu: card limit and archive */}
+      {listMenu &&
+        (() => {
+          const cat = categories.find((c) => c.id === listMenu.catId)
+          if (!cat) return null
+          return (
+            <>
+              <div className="fixed inset-0 z-40" onPointerDown={() => setListMenu(null)} />
+              <div
+                className="dv-menu fixed z-50 w-60"
+                role="menu"
+                aria-label={`${cat.name} actions`}
+                style={{ left: listMenu.x, top: listMenu.y }}
+                onKeyDown={(e) => e.key === 'Escape' && setListMenu(null)}
+              >
+                <form
+                  className="dv-wip-form"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    saveWipLimit(cat.id, listMenu.limit)
+                  }}
+                >
+                  <label htmlFor="wip-limit" className="dv-menu-head !p-0">
+                    Card limit (WIP)
+                  </label>
+                  <div className="flex gap-1.5">
+                    <input
+                      id="wip-limit"
+                      autoFocus
+                      type="number"
+                      min={1}
+                      max={999}
+                      inputMode="numeric"
+                      className="dv-input !h-8"
+                      placeholder="No limit"
+                      value={listMenu.limit}
+                      onChange={(e) => setListMenu({ ...listMenu, limit: e.target.value })}
+                    />
+                    <button className="dv-btn primary !h-8">Save</button>
+                  </div>
+                  <p className="m-0 text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+                    The list turns red when it has more cards than this. Card templates don’t count.
+                  </p>
+                  {cat.wipLimit && (
+                    <button
+                      type="button"
+                      className="dv-link self-start text-xs"
+                      onClick={() => saveWipLimit(cat.id, '')}
+                    >
+                      Remove the limit
+                    </button>
+                  )}
+                </form>
+                <div className="dv-menu-sep" />
+                <button
+                  className="dv-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setListMenu(null)
+                    archiveCategory(cat)
+                  }}
+                >
+                  <Archive size={14} />
+                  Archive list
+                </button>
+              </div>
+            </>
+          )
+        })()}
+
+      {/* "From template": a new card in this list from one of the board's templates */}
+      {templateMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onPointerDown={() => setTemplateMenu(null)} />
+          <div
+            className="dv-menu fixed z-50 w-64"
+            role="menu"
+            aria-label="Card templates"
+            style={{ left: templateMenu.x, top: templateMenu.y, transform: 'translateY(-100%)' }}
+            onKeyDown={(e) => e.key === 'Escape' && setTemplateMenu(null)}
+          >
+            <div className="dv-menu-head">Create a card from…</div>
+            <div className="max-h-72 overflow-y-auto">
+              {templates.map(({ task, list }) => (
+                <button
+                  key={task.id}
+                  className="dv-menu-item"
+                  role="menuitem"
+                  onClick={() => createFromTemplate(task.id, templateMenu.catId)}
+                >
+                  <LayoutTemplate size={14} />
+                  <span className="min-w-0 flex-1 truncate">{task.title}</span>
+                  <span className="truncate text-[11px]" style={{ color: 'var(--dv-muted)' }}>
+                    {list}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
       )}
 
       {archiveOpen && (
