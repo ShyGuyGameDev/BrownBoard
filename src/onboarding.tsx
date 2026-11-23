@@ -2,7 +2,9 @@ import React, { useEffect, useId, useRef, useState } from 'react'
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowRight,
   ArrowUpRight,
+  CalendarDays,
   Check,
   ChevronRight,
   Clock,
@@ -10,6 +12,7 @@ import {
   Eye,
   EyeOff,
   Info,
+  Kanban,
   KeyRound,
   LayoutTemplate,
   Link2,
@@ -17,6 +20,7 @@ import {
   Mail,
   Moon,
   MoreHorizontal,
+  PenTool,
   Pencil,
   Plus,
   Search,
@@ -24,6 +28,7 @@ import {
   Sun,
   Trash2,
   UserRound,
+  Users,
   X,
 } from 'lucide-react'
 import { EMAIL_RE, MIN_PASSWORD, isElectron, useAuth, usernameFromEmail } from './lib/auth-context'
@@ -62,6 +67,7 @@ import { applyBoardTemplate } from './lib/board-templates'
 import { getLastAccount, setSignInIntent, setStartRoomAfterSignIn } from './lib/sign-in-intent'
 import { useTheme } from './lib/theme'
 import { fullDate, relative } from './lib/time'
+import './landing.css'
 
 /* ------------------------------------------------------------------ */
 /* Pieces                                                              */
@@ -490,12 +496,124 @@ const ForgotForm: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 /* Onboarding                                                          */
 /* ------------------------------------------------------------------ */
 
-type Step = 'choose' | 'account' | 'forgot'
+type Step = 'landing' | 'choose' | 'account' | 'forgot'
+
+/** Public landing page shown before the existing account / guest onboarding choices. */
+const LandingPage: React.FC<{ onStart: () => void; onSignIn: () => void }> = ({
+  onStart,
+  onSignIn,
+}) => (
+  <main className="dv-landing">
+    <header className="dv-landing-header dv-drag">
+      <Brand />
+      <nav className="dv-landing-nav dv-no-drag" aria-label="Main navigation">
+        <button
+          type="button"
+          className="dv-link"
+          onClick={() => {
+            const features = document.getElementById('features')
+            features?.scrollIntoView()
+            features?.focus({ preventScroll: true })
+          }}
+        >
+          Features
+        </button>
+        <button className="dv-btn ghost" onClick={onSignIn}>Sign in</button>
+        <ThemeButton />
+      </nav>
+    </header>
+
+    <section className="dv-landing-hero">
+      <div className="dv-landing-copy">
+        <h1>Plan the work.<br /><em>See the whole picture.</em></h1>
+        <p>
+          Track tasks on a Kanban board, sketch ideas on an infinite canvas, and work with your
+          team in the same room.
+        </p>
+        <div className="dv-landing-actions">
+          <button className="dv-btn primary lg" onClick={onStart}>
+            Get started <ArrowRight size={16} />
+          </button>
+          <button className="dv-btn lg" onClick={onSignIn}>I already have an account</button>
+        </div>
+        <div className="dv-landing-proof"><Users size={15} /> Invite teammates with a room link</div>
+      </div>
+
+      <div
+        className="dv-landing-preview"
+        role="img"
+        aria-label="A sample BrownBoard room with a task board, sticky notes, and a linked task on the canvas"
+      >
+        <div className="dv-preview-window">
+          <div className="dv-preview-topbar">
+            <span className="dv-preview-mark">b</span>
+            <span>Launch plan</span>
+            <span className="dv-preview-online"><i /> 3 here</span>
+          </div>
+          <div className="dv-preview-tabs">
+            <strong><Kanban size={13} /> Board</strong><span><PenTool size={13} /> Canvas</span>
+          </div>
+          <div className="dv-preview-board">
+            <div className="dv-preview-list">
+              <b>Next up <small>2</small></b>
+              <div className="dv-preview-card"><i className="violet" />Sketch first-run flow<span>▤ 3&nbsp; · &nbsp;◷ Fri</span></div>
+              <div className="dv-preview-card"><i className="amber" />Collect launch feedback<span>◉ 2</span></div>
+            </div>
+            <div className="dv-preview-list">
+              <b>In progress <small>1</small></b>
+              <div className="dv-preview-card"><i className="green" />Build the shared board<span>▤ 2&nbsp; · &nbsp;◉ 2</span></div>
+            </div>
+            <div className="dv-preview-canvas">
+              <span className="dv-preview-note">What should<br />we make clear?</span>
+              <span className="dv-preview-sticky">Keep the next<br />step visible</span>
+              <span className="dv-preview-connector" />
+              <span className="dv-preview-task"><i /> User interviews</span>
+            </div>
+          </div>
+          <div className="dv-preview-caption"><span><i /> One room, shared live</span><span>Board <b>↔</b> Canvas</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section className="dv-landing-features" id="features" tabIndex={-1}>
+      <div className="dv-landing-section-head">
+        <h2>Keep the plan and the ideas connected.</h2>
+      </div>
+      <div className="dv-landing-feature-grid">
+        <article className="dv-landing-feature">
+          <span className="dv-landing-feature-icon"><Kanban size={19} /></span>
+          <h3>Move work forward</h3>
+          <p>Organize tasks into lists, set owners and due dates, and see what’s blocked or done.</p>
+        </article>
+        <article className="dv-landing-feature">
+          <span className="dv-landing-feature-icon"><PenTool size={19} /></span>
+          <h3>Think out loud</h3>
+          <p>Sketch, collect notes, map connections, and put task cards right on an open canvas.</p>
+        </article>
+        <article className="dv-landing-feature">
+          <span className="dv-landing-feature-icon"><Users size={19} /></span>
+          <h3>Work in the same room</h3>
+          <p>Share a room with a link and see teammates’ updates as the work takes shape.</p>
+        </article>
+      </div>
+      <div className="dv-landing-bottom">
+        <span><CalendarDays size={15} /> Boards, calendars, and a flexible canvas</span>
+        <button className="dv-link" onClick={onStart}>Make a room to get started <ArrowRight size={14} /></button>
+      </div>
+    </section>
+    <footer className="dv-landing-footer">BrownBoard</footer>
+  </main>
+)
 
 /** First screen for anyone without an account session (opened without a room link). */
 export const Onboarding: React.FC = () => {
   const { signInAsGuest, signInWithGoogle } = useAuth()
-  const [step, setStep] = useState<Step>('choose')
+  const [step, setStep] = useState<Step>('landing')
+  const [accountBack, setAccountBack] = useState<'landing' | 'choose'>('choose')
+  const openAccount = (from: 'landing' | 'choose') => {
+    setAccountBack(from)
+    setStep('account')
+  }
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Set when "Start a blank room" is signing in the last account first.
@@ -525,7 +643,7 @@ export const Onboarding: React.FC = () => {
     setStartRoomAfterSignIn(true)
     if (last.method === 'email') {
       setStartingAs(last.login)
-      setStep('account')
+      openAccount('choose')
       return
     }
     setStarting(true)
@@ -538,10 +656,15 @@ export const Onboarding: React.FC = () => {
     }
   }
 
+  if (step === 'landing') {
+    return <LandingPage onStart={() => setStep('choose')} onSignIn={() => openAccount('landing')} />
+  }
+
   return (
     <AuthLayout>
       {step === 'choose' && (
         <>
+          <BackButton label="About BrownBoard" onClick={() => setStep('landing')} />
           <div className="flex flex-col gap-2">
             <h1>Welcome to BrownBoard</h1>
             <p className="dv-sub">
@@ -549,7 +672,7 @@ export const Onboarding: React.FC = () => {
             </p>
           </div>
           <div className="flex flex-col gap-3">
-            <button className="dv-choice" onClick={() => setStep('account')}>
+            <button className="dv-choice" onClick={() => openAccount('choose')}>
               <span className="dv-choice-icon">
                 <UserRound size={18} />
               </span>
@@ -588,7 +711,7 @@ export const Onboarding: React.FC = () => {
             onClick={() => {
               setStartRoomAfterSignIn(false)
               setStartingAs(null)
-              setStep('choose')
+              setStep(accountBack)
             }}
           />
           {startingAs && (
