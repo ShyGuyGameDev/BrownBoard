@@ -971,12 +971,16 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       ctx.strokeStyle = col
       ctx.fillStyle = col
       ctx.lineWidth = lw
-      ctx.beginPath()
-      ctx.moveTo(p[0].x, p[0].y)
-      ctx.lineTo(p[1].x, p[1].y)
-      ctx.stroke()
       const ang = Math.atan2(p[1].y - p[0].y, p[1].x - p[0].x)
       const head = 9 + lw * 1.5
+      // The line stops at the base of the arrowhead, so it doesn't poke out past the tip.
+      const base = head * Math.cos(0.4)
+      if (Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y) > base) {
+        ctx.beginPath()
+        ctx.moveTo(p[0].x, p[0].y)
+        ctx.lineTo(p[1].x - base * Math.cos(ang), p[1].y - base * Math.sin(ang))
+        ctx.stroke()
+      }
       ctx.beginPath()
       ctx.moveTo(p[1].x, p[1].y)
       ctx.lineTo(p[1].x - head * Math.cos(ang - 0.4), p[1].y - head * Math.sin(ang - 0.4))

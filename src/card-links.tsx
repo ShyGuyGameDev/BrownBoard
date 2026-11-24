@@ -19,7 +19,7 @@ const ARROW: Record<Edge, string> = { up: '↑', down: '↓', left: '←', right
 
 interface Scene {
   board: Box
-  arrows: { key: string; d: string; out: boolean }[]
+  arrows: { key: string; line: string; head: string; out: boolean }[]
   rings: { id: string; box: Box }[]
   pills: { id: string; box: Box; edge: Edge }[]
 }
@@ -79,7 +79,7 @@ function buildScene(id: string, links: CardLink[], boardEl: HTMLElement): Scene 
       return {
         key: `${a.other}${a.out ? '>' : '<'}`,
         out: a.out,
-        d: a.out ? arrowPath(from, a.to, y, y2, board) : arrowPath(a.to, from, y2, y, board),
+        ...(a.out ? arrowPath(from, a.to, y, y2, board) : arrowPath(a.to, from, y2, y, board)),
       }
     })
   })
@@ -133,24 +133,6 @@ function Arrows({
         height="100%"
         viewBox={`${board.left} ${board.top} ${board.right - board.left} ${board.bottom - board.top}`}
       >
-        <defs>
-          {['out', 'in'].map((dir) => (
-            <marker
-              key={dir}
-              id={`dv-link-tip-${dir}`}
-              data-dir={dir}
-              viewBox="0 0 8 8"
-              refX="7"
-              refY="4"
-              markerWidth="8"
-              markerHeight="8"
-              markerUnits="userSpaceOnUse"
-              orient="auto"
-            >
-              <path d="M0.5 0.5 L7.5 4 L0.5 7.5 Z" />
-            </marker>
-          ))}
-        </defs>
         {scene.rings.map(({ id, box }) => (
           <rect
             key={id}
@@ -162,18 +144,12 @@ function Arrows({
             rx="9"
           />
         ))}
-        {scene.arrows.map((a) => {
-          const dir = a.out ? 'out' : 'in'
-          return (
-            <path
-              key={a.key}
-              className="dv-links-arrow"
-              data-dir={dir}
-              d={a.d}
-              markerEnd={`url(#dv-link-tip-${dir})`}
-            />
-          )
-        })}
+        {scene.arrows.map((a) => (
+          <g key={a.key} className="dv-links-arrow" data-dir={a.out ? 'out' : 'in'}>
+            <path className="dv-links-line" d={a.line} />
+            <path className="dv-links-head" d={a.head} />
+          </g>
+        ))}
       </svg>
       {scene.pills.map(({ id, box, edge }) => (
         <div

@@ -547,21 +547,20 @@ body.dv-grabbing * {
   display: block;
 }
 .dv-links-arrow {
-  fill: none;
-  stroke: var(--dv-accent);
-  stroke-width: 1.75;
-  stroke-linecap: round;
+  color: var(--dv-accent);
   opacity: 0.5;
 }
 /* Arrows coming in from other cards are quieter than the ones going out. */
 .dv-links-arrow[data-dir='in'] {
-  stroke: var(--dv-muted);
+  color: var(--dv-muted);
 }
-.dv-links marker path {
-  fill: var(--dv-accent);
+.dv-links-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
 }
-.dv-links marker[data-dir='in'] path {
-  fill: var(--dv-muted);
+.dv-links-head {
+  fill: currentColor;
 }
 .dv-links-ring {
   fill: none;

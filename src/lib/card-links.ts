@@ -110,7 +110,11 @@ export const placePill = (
 const isShowingAny = (b: Box) => b.right > b.left && b.bottom > b.top
 
 /** Distance between the arrow tip and the card it points at. */
-const TIP_GAP = 4
+const TIP_GAP = 3
+const HEAD_LENGTH = 8
+const HEAD_HALF = 4
+/** The line runs straight for this far before the head, so the head always lines up with it. */
+const LEAD = 5
 
 /**
  * Which sides an arrow leaves and enters by. Boxes side by side use their facing sides; boxes above
@@ -123,11 +127,13 @@ export const sidesFor = (from: Box, to: Box, board: Box): { start: 1 | -1; end: 
   return { start: side, end: side }
 }
 
-/** An SVG cubic path between two boxes, plus its tip. `y1`/`y2` are the heights it meets each at. */
-export const arrowPath = (from: Box, to: Box, y1: number, y2: number, board: Box): string => {
+/** An arrow between two boxes, as SVG paths. `y1`/`y2` are the heights it meets each at. */
+export const arrowPath = (from: Box, to: Box, y1: number, y2: number, board: Box) => {
   const { start, end } = sidesFor(from, to, board)
   const x1 = start === 1 ? from.right : from.left
-  const x2 = (end === 1 ? to.right : to.left) + end * TIP_GAP
+  const tip = (end === 1 ? to.right : to.left) + end * TIP_GAP
+  const base = tip + end * HEAD_LENGTH
+  const x2 = base + end * LEAD
   let c1: number
   let c2: number
   if (start === end) {
@@ -136,12 +142,15 @@ export const arrowPath = (from: Box, to: Box, y1: number, y2: number, board: Box
     c1 = out
     c2 = out
   } else {
-    const reach = Math.max(28, Math.abs(x2 - x1) * 0.45)
+    const reach = Math.max(12, Math.abs(x2 - x1) * 0.5)
     c1 = x1 + start * reach
     c2 = x2 + end * reach
   }
   const n = (v: number) => Math.round(v * 10) / 10
-  return `M${n(x1)} ${n(y1)} C${n(c1)} ${n(y1)} ${n(c2)} ${n(y2)} ${n(x2)} ${n(y2)}`
+  return {
+    line: `M${n(x1)} ${n(y1)} C${n(c1)} ${n(y1)} ${n(c2)} ${n(y2)} ${n(x2)} ${n(y2)} L${n(base)} ${n(y2)}`,
+    head: `M${n(tip)} ${n(y2)} L${n(base)} ${n(y2 - HEAD_HALF)} L${n(base)} ${n(y2 + HEAD_HALF)} Z`,
+  }
 }
 
 /** Spreads `count` arrows evenly around the middle of a box's side. */

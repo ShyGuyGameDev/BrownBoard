@@ -30,8 +30,10 @@ describe('arrows', () => {
     expect(sidesFor(box(300, 0), box(300, 200), board)).toEqual({ start: 1, end: 1 })
     expect(sidesFor(box(790, 0), box(790, 200), board)).toEqual({ start: -1, end: -1 })
   })
-  it('stops just short of the card it points at', () => {
-    expect(arrowPath(box(0, 0), box(300, 0), 40, 40, board)).toMatch(/^M200 40 .* 296 40$/)
+  it('ends the line, straight, at the base of a head just short of the card', () => {
+    const { line, head } = arrowPath(box(0, 0), box(300, 0), 40, 60, board)
+    expect(line).toMatch(/^M200 40 .* 284 60 L289 60$/)
+    expect(head).toBe('M297 60 L289 56 L289 64 Z')
   })
 })
 
