@@ -76,6 +76,7 @@ const from = (table: string) => {
 vi.mock('./lib/supabase', () => ({ supabase: { from: (t: string) => from(t), rpc: (...a: unknown[]) => rpc(...a) } }))
 
 import { KanbanBoard } from './kanban'
+import { setCanvasLinks } from './lib/bus'
 import { RoomContext, type RoomContextValue } from './lib/room-context'
 import { AuthContext, type AuthContextValue } from './lib/auth-context'
 
@@ -272,6 +273,37 @@ describe('keyboard shortcuts', () => {
     await press('ArrowRight')
     await press('n')
     expect(document.activeElement?.id).toBe('add-card-doing')
+  })
+})
+
+describe('card links', () => {
+  const hover = async (id: string) => {
+    await act(async () => {
+      $(`[data-card-id="${id}"]`)!.dispatchEvent(new Event('pointerover', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 200))
+    })
+    await flush()
+  }
+  const arrows = () =>
+    [...document.querySelectorAll<SVGElement>('.dv-links-arrow')].map((a) => a.dataset.dir)
+
+  it('draws arrows for the hovered card only, by direction', async () => {
+    const size = vi
+      .spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, top: 0, right: 300, bottom: 100 } as DOMRect)
+    await act(async () =>
+      setCanvasLinks(new Map([['t1', 2], ['t3', 1]]), [{ from: 't1', to: 't3' }]),
+    )
+    expect($('[data-card-id="t1"]')!.textContent).toContain('1 linked card · 1 other')
+    expect(arrows()).toEqual([])
+    await hover('t1')
+    expect(arrows()).toEqual(['out'])
+    await hover('t3')
+    expect(arrows()).toEqual(['in'])
+    await hover('t2')
+    expect(arrows()).toEqual([])
+    await act(async () => setCanvasLinks(new Map(), []))
+    size.mockRestore()
   })
 })
 

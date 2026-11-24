@@ -535,6 +535,58 @@ body.dv-grabbing * {
 .dv-card[data-dragging='true'] {
   opacity: 0.35;
 }
+/* Arrows from the hovered card to the cards it's linked to. Over the board, under every menu. */
+.dv-links {
+  position: fixed;
+  z-index: 20;
+  overflow: hidden;
+  pointer-events: none;
+  animation: dv-links-in var(--dv-dur-base) var(--dv-ease);
+}
+.dv-links svg {
+  display: block;
+}
+.dv-links-arrow {
+  fill: none;
+  stroke: var(--dv-accent);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  opacity: 0.5;
+}
+/* Arrows coming in from other cards are quieter than the ones going out. */
+.dv-links-arrow[data-dir='in'] {
+  stroke: var(--dv-muted);
+}
+.dv-links marker path {
+  fill: var(--dv-accent);
+}
+.dv-links marker[data-dir='in'] path {
+  fill: var(--dv-muted);
+}
+.dv-links-ring {
+  fill: none;
+  stroke: var(--dv-accent);
+  stroke-width: 1.5;
+  opacity: 0.35;
+}
+/* Stands in for a linked card that's scrolled out of sight. */
+.dv-links-pill {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--dv-accent) 35%, var(--dv-border));
+  border-radius: var(--dv-radius-full);
+  background: var(--dv-panel);
+  color: var(--dv-text);
+  font-size: var(--dv-text-xs);
+}
+@keyframes dv-links-in {
+  from {
+    opacity: 0;
+  }
+}
 /* Someone else is editing this card: outlined in their colour, their name on the corner. */
 .dv-peer-edit {
   position: absolute;
@@ -1512,6 +1564,7 @@ div.dv-person {
   .dv-modal,
   .dv-modal-backdrop,
   .dv-skel-line,
+  .dv-links,
   .dv-flash {
     transition: none;
     animation: none;

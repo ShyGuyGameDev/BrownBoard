@@ -12,6 +12,7 @@ import {
   Kanban,
   Keyboard,
   LayoutTemplate,
+  Link2,
   MoreHorizontal,
   Pencil,
   PenTool,
@@ -25,7 +26,9 @@ import { supabase } from './lib/supabase'
 import { colorFor } from './lib/room-links'
 import { useRoom, type Peer } from './lib/room-context'
 import { inkOn } from './lib/highlight'
-import { bus, getLinkCounts, isTyping, toast, undoToast, withUploadFeedback } from './lib/bus'
+import { CardLinks } from './card-links'
+import { type CardLink, linkedCards } from './lib/card-links'
+import { bus, getCardLinks, getLinkCounts, isTyping, toast, undoToast, withUploadFeedback } from './lib/bus'
 import { useAuth } from './lib/auth-context'
 import {
   type Attachment,
@@ -413,6 +416,7 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
   const dropAtRef = useRef<{ cat: string; index: number } | null>(null)
   const [flashId, setFlashId] = useState<string | null>(null)
   const [links, setLinks] = useState<Map<string, number>>(getLinkCounts)
+  const [cardLinks, setCardLinks] = useState<CardLink[]>(getCardLinks)
   const [viewer, setViewer] = useState<{ files: Attachment[]; index: number } | null>(null)
   const [fileOverId, setFileOverId] = useState<string | null>(null)
   const [uploadingId, setUploadingId] = useState<string | null>(null)
@@ -667,8 +671,36 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
     })
   }, [])
 
-  // Canvas link counts, so cards can show "3 linked" and jump into focus mode.
-  useEffect(() => bus.on('canvas:links', (m: Map<string, number>) => setLinks(new Map(m))), [])
+  // What the canvas links each card to, for the cards' "2 linked cards" and the arrows on hover.
+  useEffect(
+    () =>
+      bus.on('canvas:links', () => {
+        setLinks(getLinkCounts())
+        setCardLinks(getCardLinks())
+      }),
+    [],
+  )
+  const linkedTo = useMemo(() => linkedCards(cardLinks), [cardLinks])
+  const cardTitles = useMemo(
+    () => new Map(categories.flatMap((c) => c.tasks.map((t) => [t.id, t.title] as const))),
+    [categories],
+  )
+  /** "2 linked cards · 1 other": the other things are notes, files and so on, with no card here. */
+  const linkSummary = (id: string) => {
+    const all = [...(linkedTo.get(id) ?? [])]
+    const names = all.flatMap((t) => cardTitles.get(t) ?? [])
+    const others = Math.max(0, (links.get(id) ?? 0) - all.length)
+    const parts = [
+      names.length ? `${names.length} linked card${names.length === 1 ? '' : 's'}` : '',
+      others ? (names.length ? `${others} other` : `${others} linked`) : '',
+    ].filter(Boolean)
+    return {
+      text: parts.join(' · ') || 'On canvas',
+      title: names.length
+        ? `Linked to ${names.join(', ')}. Click to see it on the canvas`
+        : 'Zoom the canvas to this task and everything linked to it',
+    }
+  }
 
   // "/" focuses search.
   useEffect(() => {
@@ -3341,12 +3373,12 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
                               background: 'var(--dv-accent-soft)',
                               color: 'var(--dv-accent)',
                             }}
-                            title="Zoom the canvas to this task and everything linked to it"
+                            title={linkSummary(task.id).title}
                             onClick={() => focusOnCanvas(task.id)}
                           >
-                            <PenTool size={12} />
-                            On canvas · {links.get(task.id)} linked
-                            <span className="ml-auto">Focus →</span>
+                            {linkedTo.has(task.id) ? <Link2 size={12} /> : <PenTool size={12} />}
+                            <span className="truncate">{linkSummary(task.id).text}</span>
+                            <span className="ml-auto shrink-0">Focus →</span>
                           </button>
                         )}
                       </article>
@@ -3481,6 +3513,28 @@ export const KanbanBoard: React.FC<{ active?: boolean }> = ({ active = true }) =
           )}
         </div>
       </div>
+
+      <CardLinks
+        links={cardLinks}
+        boardRef={colsRef}
+        titleOf={(id) => cardTitles.get(id) ?? 'Card'}
+        enabled={
+          active &&
+          view === 'board' &&
+          !isMobile &&
+          !dragId &&
+          !colDragId &&
+          !resizingId &&
+          !openCardId &&
+          !menu &&
+          !listMenu &&
+          !templateMenu &&
+          !settingsOpen &&
+          !transfer &&
+          !viewer &&
+          !boardTemplateOpen
+        }
+      />
 
       <input
         ref={fileInputRef}

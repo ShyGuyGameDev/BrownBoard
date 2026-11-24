@@ -38,7 +38,8 @@ import { generateNKeysBetween } from 'fractional-indexing'
 import { supabase } from './lib/supabase'
 import { useRoom } from './lib/room-context'
 import { inkOn } from './lib/highlight'
-import { bus, isTyping, setLinkCounts, toast, withUploadFeedback } from './lib/bus'
+import { cardLinksOf } from './lib/card-links'
+import { bus, isTyping, setCanvasLinks, toast, withUploadFeedback } from './lib/bus'
 import { formatDueDate, type TaskLite, useRoomTasks } from './lib/tasks'
 import { clearCanvas as clearRoomCanvas } from './lib/rooms'
 import { canvas, font, noteColors, noteInk, swatches } from './design/tokens'
@@ -1384,7 +1385,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
     return set
   }
 
-  /** Tells the board how many canvas items each task card is linked to (only when something changed). */
+  /** Tells the board what each task card is linked to on the canvas (only when something changed). */
   const publishLinks = () => {
     const cards = new Map<string, string>()
     for (const e of st.els) if (e.type === 'task' && e.taskId) cards.set(e.id, e.taskId)
@@ -1402,10 +1403,11 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
       const taskId = cards.get(id)!
       counts.set(taskId, (counts.get(taskId) ?? 0) + set.size)
     })
-    const sig = [...counts].sort().join('|')
+    const cardLinks = cardLinksOf(st.els)
+    const sig = [...counts, ...cardLinks.map((l) => [l.from, l.to])].sort().join('|')
     if (sig === st.linkSig) return
     st.linkSig = sig
-    setLinkCounts(counts)
+    setCanvasLinks(counts, cardLinks)
   }
 
   const setEls = (next: El[]) => {
@@ -2588,7 +2590,7 @@ export const Whiteboard: React.FC<{ active?: boolean; theme?: 'light' | 'dark' }
   useEffect(() => {
     let cancelled = false
     st.linkSig = ''
-    setLinkCounts(new Map())
+    setCanvasLinks(new Map(), [])
     const load = async () => {
       const rows: { id: string; data: RawEl }[] = []
       for (let from = 0; ; from += 1000) {

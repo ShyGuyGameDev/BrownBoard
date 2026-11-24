@@ -1,3 +1,5 @@
+import type { CardLink } from './card-links'
+
 type Handler<T = unknown> = (data: T) => void
 
 const handlers = new Map<string, Set<Handler>>()
@@ -60,8 +62,12 @@ export const isTyping = (e: Event) => {
  * A task id being present means "this task has a card on the canvas".
  */
 let linkCounts = new Map<string, number>()
+/** The links that run from one task card straight to another, for the board's arrows. */
+let cardLinks: CardLink[] = []
 export const getLinkCounts = () => linkCounts
-export const setLinkCounts = (counts: Map<string, number>) => {
+export const getCardLinks = () => cardLinks
+export const setCanvasLinks = (counts: Map<string, number>, links: CardLink[]) => {
   linkCounts = counts
-  bus.emit('canvas:links', counts)
+  cardLinks = links
+  bus.emit('canvas:links')
 }
