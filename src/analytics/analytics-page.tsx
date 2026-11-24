@@ -5,7 +5,27 @@ type Counts = { pageviews: number; visitors: number }
 type Metric = keyof Counts
 type Day = Counts & { date: string }
 type Item = Counts & { name: string }
-type Data = { total: Counts; days: Day[]; referrers: Item[]; countries: Item[]; devices: Item[]; updatedAt: string }
+type Visits = {
+  visits: number
+  bounces: number
+  avgSeconds: number
+  medianSeconds: number
+  screensPerVisit: number
+  activeNow: number
+  hours: number[]
+  lengths: Record<string, number>
+  landings: Record<string, number>
+  screenSizes: Record<string, number>
+  languages: Record<string, number>
+}
+type Data = {
+  total: Counts
+  previous: Counts | null
+  days: Day[]
+  breakdowns: Record<string, Item[] | null>
+  visits: Visits | null
+  updatedAt: string
+}
 
 const METRICS: Record<Metric, string> = { visitors: 'Visitors', pageviews: 'Page views' }
 const fmt = (n: number) => n.toLocaleString()
@@ -21,6 +41,38 @@ function country(code: string) {
     return code
   }
 }
+const languages = new Intl.DisplayNames(undefined, { type: 'language', fallback: 'code' })
+const language = (code: string) => {
+  try {
+    return code === 'unknown' ? 'Unknown' : (languages.of(code) ?? code)
+  } catch {
+    return code
+  }
+}
+const duration = (s: number) =>
+  s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+const share = (part: number, whole: number) => (whole ? `${Math.round((part / whole) * 100)}%` : '–')
+const change = (now: number, before: number | undefined) => {
+  if (!before) return null
+  const pct = Math.round(((now - before) / before) * 100)
+  return `${pct > 0 ? '+' : ''}${pct}% vs previous period`
+}
+const SIZES: Record<string, string> = { phone: 'Phone', tablet: 'Tablet', laptop: 'Laptop', large: 'Large screen' }
+const LENGTHS = ['Under 10 seconds', '10 to 59 seconds', '1 to 5 minutes', '5 to 30 minutes', 'Over 30 minutes']
+
+/** Breakdowns from Vercel, in page order. Campaigns only show when there are some. */
+const BREAKDOWNS: { key: string; title: string; label?: (s: string) => string; empty?: string; hideEmpty?: boolean }[] = [
+  { key: 'referrers', title: 'Referrers', empty: 'Direct or unknown' },
+  { key: 'countries', title: 'Countries', label: country },
+  { key: 'pages', title: 'Pages' },
+  { key: 'devices', title: 'Devices', label: (s) => capital(s) },
+  { key: 'browsers', title: 'Browsers' },
+  { key: 'systems', title: 'Operating systems' },
+  { key: 'utmSources', title: 'Campaign sources', hideEmpty: true },
+  { key: 'utmMediums', title: 'Campaign mediums', hideEmpty: true },
+  { key: 'utmCampaigns', title: 'Campaigns', hideEmpty: true },
+]
+
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
 async function load(range: number): Promise<Data> {
@@ -70,6 +122,7 @@ export function AnalyticsPage() {
                   <button key={m} aria-pressed={metric === m} onClick={() => setMetric(m)}>
                     <span>{METRICS[m]}</span>
                     <strong>{fmt(data.total[m])}</strong>
+                    <small>{change(data.total[m], data.previous?.[m])}</small>
                   </button>
                 ))}
               </div>
@@ -88,14 +141,23 @@ export function AnalyticsPage() {
                 </table>
               </details>
             </section>
+            <Stats data={data} />
             <div className="an-grid">
-              <Breakdown title="Referrers" items={data.referrers} metric={metric} label={(s) => s} empty="Direct or unknown" />
-              <Breakdown title="Countries" items={data.countries} metric={metric} label={country} />
-              <Breakdown title="Devices" items={data.devices} metric={metric} label={capital} />
+              {BREAKDOWNS.map(({ key, title, label, empty, hideEmpty }) => {
+                const items = data.breakdowns[key]
+                if (!items || (hideEmpty && !items.some((i) => i.name))) return null
+                return <Breakdown key={key} title={title} items={items} metric={metric} label={label} empty={empty} />
+              })}
             </div>
+            {data.visits ? (
+              <VisitDetails visits={data.visits} />
+            ) : (
+              <p className="an-note">Bounce rate and visit details are unavailable right now.</p>
+            )}
             <p className="an-note">
               Updated {new Date(data.updatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. Days are in
-              UTC, and today is still in progress.
+              UTC, and today is still in progress. Visitors are counted once per day. A bounce is a visit that opened one
+              screen for under 10 seconds.
             </p>
           </>
         )}
@@ -193,11 +255,11 @@ function Chart({ days, metric }: { days: Day[]; metric: Metric }) {
   )
 }
 
-function Breakdown({ title, items, metric, label, empty = 'Unknown' }: {
+function Breakdown({ title, items, metric, label = (s) => s, empty = 'Unknown' }: {
   title: string
   items: Item[]
   metric: Metric
-  label: (name: string) => string
+  label?: (name: string) => string
   empty?: string
 }) {
   // Largest first, with the grouped remainder always last.
@@ -221,6 +283,98 @@ function Breakdown({ title, items, metric, label, empty = 'Unknown' }: {
           )
         })}
       </ul>
+    </section>
+  )
+}
+
+function Stats({ data: { total, days, visits } }: { data: Data }) {
+  const best = days.reduce((a, d) => (d.visitors > a.visitors ? d : a))
+  const stats: [string, string][] = [
+    ['Views per visitor', total.visitors ? (total.pageviews / total.visitors).toFixed(1) : '–'],
+    ['Average visitors a day', (total.visitors / days.length).toFixed(1)],
+    ['Visitors today', fmt(days[days.length - 1].visitors)],
+    ['Busiest day', best.visitors ? `${dayLabel(best.date)} (${fmt(best.visitors)})` : '–'],
+  ]
+  if (visits) {
+    const any = visits.visits > 0
+    stats.unshift(
+      ['On the site now', fmt(visits.activeNow)],
+      ['Visits', fmt(visits.visits)],
+      ['Bounce rate', share(visits.bounces, visits.visits)],
+      ['Average visit', any ? duration(visits.avgSeconds) : '–'],
+      ['Typical (median) visit', any ? duration(visits.medianSeconds) : '–'],
+      ['Screens per visit', any ? String(visits.screensPerVisit) : '–'],
+    )
+  }
+  return (
+    <dl className="an-card an-stats">
+      {stats.map(([name, value]) => (
+        <div key={name}>
+          <dt>{name}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+function VisitDetails({ visits }: { visits: Visits }) {
+  const toItems = (o: Record<string, number>) => Object.entries(o).map(([name, n]) => ({ name, n }))
+  const sorted = (o: Record<string, number>) => toItems(o).sort((a, b) => b.n - a.n)
+  // Hours come in UTC; show them on the viewer's clock.
+  const offset = Math.round(-new Date().getTimezoneOffset() / 60)
+  const hours = Array.from({ length: 24 }, (_, h) => visits.hours[(h - offset + 48) % 24])
+  const max = Math.max(1, ...hours)
+  const hourLabel = (h: number) => new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })
+  return (
+    <>
+      <section className="an-card an-gap">
+        <h2>Visits by hour (your time)</h2>
+        <div className="an-hours">
+          {hours.map((n, h) => (
+            <div key={h} className="an-hour" tabIndex={0} role="img" aria-label={`${hourLabel(h)}: ${fmt(n)} visits`}>
+              <span style={{ height: `${(n / max) * 100}%` }} />
+              <div className="an-tip"><strong>{fmt(n)}</strong> visits at {hourLabel(h)}</div>
+            </div>
+          ))}
+        </div>
+        <div className="an-hour-labels">
+          {[0, 6, 12, 18].map((h) => <span key={h}>{hourLabel(h)}</span>)}
+        </div>
+      </section>
+      <div className="an-grid">
+        <VisitList title="Visit length" items={LENGTHS.map((name) => ({ name, n: visits.lengths[name] ?? 0 }))} total={visits.visits} />
+        <VisitList title="Landed on" items={sorted(visits.landings)} total={visits.visits} label={(s) => (s === 'room' ? 'A room link' : 'Home')} />
+        <VisitList title="Screen sizes" items={sorted(visits.screenSizes)} total={visits.visits} label={(s) => SIZES[s] ?? 'Unknown'} />
+        <VisitList title="Languages" items={sorted(visits.languages)} total={visits.visits} label={language} />
+      </div>
+    </>
+  )
+}
+
+function VisitList({ title, items, total, label = (s) => s }: {
+  title: string
+  items: { name: string; n: number }[]
+  total: number
+  label?: (name: string) => string
+}) {
+  const max = Math.max(1, ...items.map((i) => i.n))
+  return (
+    <section className="an-card">
+      <h2>{title}</h2>
+      {total === 0 ? (
+        <p className="an-note">No data yet</p>
+      ) : (
+        <ul>
+          {items.map((i) => (
+            <li key={i.name}>
+              <span className="an-name">{label(i.name)}</span>
+              <span>{fmt(i.n)} <small>{share(i.n, total)}</small></span>
+              <span className="an-bar" style={{ width: `${(i.n / max) * 100}%` }} />
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   )
 }

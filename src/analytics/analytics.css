@@ -42,3 +42,16 @@ li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; p
 .an-bar { grid-column: 1 / -1; height: 6px; background: var(--dv-accent); border-radius: 0 4px 4px 0; }
 .an-note { color: var(--dv-muted); font-size: var(--dv-text-sm); }
 .an-retry { color: var(--dv-accent); text-decoration: underline; }
+small { color: var(--dv-muted); font-size: var(--dv-text-xs); }
+.an-gap { margin-top: 16px; }
+.an-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 16px; margin: 16px 0 0; }
+.an-stats dt { color: var(--dv-muted); font-size: var(--dv-text-sm); }
+.an-stats dd { margin: 0; font-size: 20px; font-weight: 600; }
+.an-hours { display: flex; align-items: flex-end; gap: 2px; height: 120px; border-bottom: 1px solid var(--dv-border); }
+.an-hour { position: relative; display: flex; flex: 1; align-items: flex-end; height: 100%; }
+.an-hour > span { width: 100%; max-width: 24px; margin: 0 auto; background: var(--dv-accent); border-radius: 4px 4px 0 0; }
+.an-hour .an-tip { display: none; left: 50%; z-index: 1; }
+.an-hour:is(:hover, :focus-visible) .an-tip { display: block; }
+.an-hour:nth-child(-n + 6) .an-tip { left: 0; transform: none; }
+.an-hour:nth-last-child(-n + 6) .an-tip { left: auto; right: 0; transform: none; }
+.an-hour-labels { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 4px; color: var(--dv-muted); font-size: var(--dv-text-xs); }

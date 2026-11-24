@@ -6,9 +6,11 @@ import App from './App.tsx'
 import './devboard.css'
 import { installTokens } from './design/tokens'
 import { initialTheme } from './lib/theme'
+import { trackVisit } from './lib/track-visit'
 
 installTokens()
 document.documentElement.dataset.theme = initialTheme()
+trackVisit()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
