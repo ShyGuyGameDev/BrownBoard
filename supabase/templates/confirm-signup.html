@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>Confirm your Chromatic account</title>
+<style>
+  @media (max-width: 600px) {
+    .card-pad { padding: 32px 24px !important; }
+    .outer-pad { padding: 16px 8px !important; }
+  }
+</style>
+</head>
+<body style="margin:0; padding:0; background-color:#f4f5f7; -webkit-text-size-adjust:100%;">
+<div style="display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all;">One click to finish creating your account.&#8203;&nbsp;&#8203;&nbsp;&#8203;&nbsp;&#8203;&nbsp;&#8203;&nbsp;&#8203;&nbsp;&#8203;&nbsp;&#8203;&nbsp;</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f4f5f7" style="background-color:#f4f5f7;">
+  <tr>
+    <td class="outer-pad" align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;">
+
+        <!-- Brand -->
+        <tr>
+          <td style="padding:0 8px 24px 8px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td valign="middle" style="padding-right:8px;">
+                  <img src="https://chromatic.vercel.app/email/chromatic-mark.png" width="32" height="32" alt="" style="display:block; width:32px; height:32px; border:0;">
+                </td>
+                <td valign="middle" style="font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:18px; line-height:24px; font-weight:600; color:#0f1013; letter-spacing:-0.2px;">Chromatic</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- Card -->
+        <tr>
+          <td bgcolor="#ffffff" style="background-color:#ffffff; border:1px solid #dfe2e8; border-radius:14px; overflow:hidden;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td height="4" bgcolor="#4a62f0" style="height:4px; line-height:4px; font-size:0; background-color:#4a62f0; background-image:linear-gradient(90deg, #4da3ff, #8b7cff); border-radius:14px 14px 0 0;">&nbsp;</td>
+              </tr>
+              <tr>
+                <td class="card-pad" style="padding:40px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+                  <h1 style="margin:0 0 16px 0; font-size:24px; line-height:32px; font-weight:600; color:#0f1013; letter-spacing:-0.3px;">Confirm your email</h1>
+                  <p style="margin:0 0 32px 0; font-size:16px; line-height:24px; color:#343843;">Thanks for signing up for Chromatic. Confirm <strong style="color:#0f1013; font-weight:600;">{{ .Email }}</strong> to finish creating your account.</p>
+
+                  <!-- Button -->
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                    <tr>
+                      <td align="center" bgcolor="#4a62f0" style="border-radius:8px; background-color:#4a62f0;">
+                        <a href="{{ .ConfirmationURL }}" target="_blank" style="display:inline-block; padding:12px 24px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:16px; line-height:24px; font-weight:600; color:#ffffff; text-decoration:none; border-radius:8px;">Confirm email</a>
+                      </td>
+                    </tr>
+                  </table>
+
+                  
+
+                  <!-- Fallback link -->
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:32px;">
+                    <tr><td style="border-top:1px solid #dfe2e8; font-size:0; line-height:0;">&nbsp;</td></tr>
+                    <tr>
+                      <td style="padding-top:24px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:13px; line-height:20px; color:#6b7280;">
+                        Button not working? Copy and paste this link into your browser:<br>
+                        <a href="{{ .ConfirmationURL }}" target="_blank" style="color:#4a62f0; text-decoration:underline; word-break:break-all;">{{ .ConfirmationURL }}</a>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td style="padding:24px 8px 0 8px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:13px; line-height:20px; color:#6b7280;">
+            If you didn't request this, you can ignore this email.<br>
+            Questions? Email <a href="mailto:shyguygamedev@gmail.com" style="color:#6b7280; text-decoration:underline;">shyguygamedev@gmail.com</a>.
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:16px 8px 0 8px; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size:12px; line-height:16px; color:#6b7280;">
+            Chromatic &middot; <a href="https://chromatic.vercel.app" style="color:#6b7280; text-decoration:none;">chromatic.vercel.app</a>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>
