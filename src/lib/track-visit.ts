@@ -8,7 +8,7 @@ export function trackVisit() {
   const optedOut =
     navigator.doNotTrack === '1' || (navigator as { globalPrivacyControl?: boolean }).globalPrivacyControl
   // Not in development, the desktop app, preview deployments or automated browsers.
-  if (!import.meta.env.PROD || location.hostname !== 'brownboard.vercel.app' || optedOut || navigator.webdriver) return
+  if (!import.meta.env.PROD || location.hostname !== 'chromatic.vercel.app' || optedOut || navigator.webdriver) return
 
   const url = `${import.meta.env.VITE_SUPABASE_URL}/rest/v1/rpc/track_visit`
   const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string

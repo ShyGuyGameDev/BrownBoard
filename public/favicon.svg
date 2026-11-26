@@ -4,7 +4,7 @@
     Light tab bars get the inverted logo, matching the app's light mode. (The colours are what
     CSS invert(1) hue-rotate(180deg) gives; favicons can't rely on CSS filters.)
   -->
-  <title>BrownBoard</title>
+  <title>Chromatic</title>
   <style>
     .note { fill: #000; }
     .fold { fill: #38316e; }

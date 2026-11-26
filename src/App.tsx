@@ -140,7 +140,7 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const canShareNatively = typeof navigator.share === 'function' && isMobileNow()
   const shareNatively = () =>
     navigator
-      .share({ title: roomName, text: `Join ${roomName} on BrownBoard`, url: link })
+      .share({ title: roomName, text: `Join ${roomName} on Chromatic`, url: link })
       .catch(() => {
         /* dismissed */
       })
@@ -201,7 +201,7 @@ const SharePopover: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             Send the link…
           </button>
         )}
-        {link.startsWith('brownboard://') && (
+        {link.startsWith('chromatic://') && (
           <p className="text-[11px]" style={{ color: 'var(--dv-muted)' }}>
             This opens the desktop app. Set <code>VITE_SHARE_BASE_URL</code> to also share a web
             link.

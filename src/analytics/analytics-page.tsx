@@ -96,7 +96,7 @@ export function AnalyticsPage() {
       <header className="an-header">
         <a className="an-brand" href="/">
           <img src="/brownboard-mark.svg" alt="" />
-          BrownBoard
+          Chromatic
         </a>
         <div className="an-ranges" role="group" aria-label="Time range">
           {[7, 30].map((n) => (

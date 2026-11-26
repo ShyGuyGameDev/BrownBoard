@@ -2,21 +2,24 @@ import { app, BrowserWindow, dialog, Menu, nativeTheme, shell } from 'electron'
 import path from 'path'
 
 // __dirname is available in CommonJS output.
-const PROTOCOL = 'brownboard'
-const LEGACY_PROTOCOL = 'devboard'
+const PROTOCOL = 'chromatic'
+const LEGACY_PROTOCOLS = ['brownboard', 'devboard']
 const isMac = process.platform === 'darwin'
+
+// The data folder is named after the app, so keep the pre-rename one: it holds the sign-in session.
+if (app.isPackaged) app.setPath('userData', path.join(app.getPath('appData'), 'BrownBoard'))
 
 let mainWindow: BrowserWindow | null = null
 let pendingRoom: string | null = null
 
-/** BrownBoard desktop links (including the legacy scheme) -> room id, validated before injection. */
+/** Chromatic desktop links (including the legacy schemes) -> room id, validated before injection. */
 const parseDeepLink = (url: string): string | null => {
-  const m = url.match(/^(?:brownboard|devboard):\/\/(?:r|join)\/([A-Za-z0-9_-]{3,64})\/?$/)
+  const m = url.match(/^(?:chromatic|brownboard|devboard):\/\/(?:r|join)\/([A-Za-z0-9_-]{3,64})\/?$/)
   return m ? m[1] : null
 }
 
 const isDeepLink = (url: string) =>
-  url.startsWith(`${PROTOCOL}://`) || url.startsWith(`${LEGACY_PROTOCOL}://`)
+  [PROTOCOL, ...LEGACY_PROTOCOLS].some((scheme) => url.startsWith(`${scheme}://`))
 
 /** Run a tiny snippet in the renderer. Keeps us from needing any preload changes. */
 const sendToRenderer = (event: string, detail?: unknown) => {
@@ -138,17 +141,14 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-// Register both schemes so existing shared devboard:// links continue to open.
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    const appPath = process.execPath
-    const appArgs = [path.resolve(process.argv[1])]
-    app.setAsDefaultProtocolClient(PROTOCOL, appPath, appArgs)
-    app.setAsDefaultProtocolClient(LEGACY_PROTOCOL, appPath, appArgs)
+// Register every scheme so existing shared brownboard:// and devboard:// links continue to open.
+for (const scheme of [PROTOCOL, ...LEGACY_PROTOCOLS]) {
+  if (process.defaultApp) {
+    if (process.argv.length >= 2)
+      app.setAsDefaultProtocolClient(scheme, process.execPath, [path.resolve(process.argv[1])])
+  } else {
+    app.setAsDefaultProtocolClient(scheme)
   }
-} else {
-  app.setAsDefaultProtocolClient(PROTOCOL)
-  app.setAsDefaultProtocolClient(LEGACY_PROTOCOL)
 }
 
 // macOS delivers deep links here (possibly before the window exists).

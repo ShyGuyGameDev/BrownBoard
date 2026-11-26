@@ -76,7 +76,7 @@ import './landing.css'
 export const Brand: React.FC = () => (
   <div className="flex items-center gap-2">
     <img src="/brownboard-mark.svg" alt="" className="dv-logo h-8 w-8" />
-    <span className="text-[14px] font-semibold tracking-tight">BrownBoard</span>
+    <span className="text-[14px] font-semibold tracking-tight">Chromatic</span>
   </div>
 )
 
@@ -542,7 +542,7 @@ const LandingPage: React.FC<{ onStart: () => void; onSignIn: () => void }> = ({
       <div
         className="dv-landing-preview"
         role="img"
-        aria-label="A sample BrownBoard room with a task board, sticky notes, and a linked task on the canvas"
+        aria-label="A sample Chromatic room with a task board, sticky notes, and a linked task on the canvas"
       >
         <div className="dv-preview-window">
           <div className="dv-preview-topbar">
@@ -601,7 +601,7 @@ const LandingPage: React.FC<{ onStart: () => void; onSignIn: () => void }> = ({
         <button className="dv-link" onClick={onStart}>Make a room to get started <ArrowRight size={14} /></button>
       </div>
     </section>
-    <footer className="dv-landing-footer">BrownBoard</footer>
+    <footer className="dv-landing-footer">Chromatic</footer>
   </main>
 )
 
@@ -664,9 +664,9 @@ export const Onboarding: React.FC = () => {
     <AuthLayout>
       {step === 'choose' && (
         <>
-          <BackButton label="About BrownBoard" onClick={() => setStep('landing')} />
+          <BackButton label="About Chromatic" onClick={() => setStep('landing')} />
           <div className="flex flex-col gap-2">
-            <h1>Welcome to BrownBoard</h1>
+            <h1>Welcome to Chromatic</h1>
             <p className="dv-sub">
               A shared task board and canvas for your team. How would you like to start?
             </p>
